@@ -1389,6 +1389,24 @@ local function RefreshLibraryImpl()
     end
     SB:Debug("RefreshLibrary done: usedEntries=%d usedHeaders=%d totalShown=%d y=%d anyRealSection=%s",
         usedEntries, usedHeaders, totalShown, y, tostring(anyRealSection))
+    if usedEntries > 0 then
+        local b = entryButtons[1]
+        SB:Debug("btn1: shown=%s alpha=%s left=%s top=%s w=%s h=%s name=%q strata=%s level=%s",
+            tostring(b:IsShown()), tostring(b:GetAlpha()), tostring(b:GetLeft()), tostring(b:GetTop()),
+            tostring(b:GetWidth()), tostring(b:GetHeight()), tostring(b.nameText and b.nameText:GetText()),
+            tostring(b.GetFrameStrata and b:GetFrameStrata()), tostring(b:GetFrameLevel()))
+    end
+    if usedHeaders > 0 then
+        local h = sectionHeaders[1]
+        SB:Debug("hdr1: shown=%s alpha=%s left=%s top=%s w=%s title=%q",
+            tostring(h:IsShown()), tostring(h:GetAlpha()), tostring(h:GetLeft()), tostring(h:GetTop()),
+            tostring(h:GetWidth()), tostring(h.title and h.title:GetText()))
+    end
+    SB:Debug("scroll: shown=%s alpha=%s content.shown=%s content.alpha=%s content.left=%s content.top=%s main.alpha=%s main.shown=%s",
+        tostring(scroll.scroll:IsShown()), tostring(scroll.scroll:GetAlpha()),
+        tostring(scroll.content:IsShown()), tostring(scroll.content:GetAlpha()),
+        tostring(scroll.content:GetLeft()), tostring(scroll.content:GetTop()),
+        tostring(main:GetAlpha()), tostring(main:IsShown()))
 end
 
 -- WoW hides Lua errors from players by default (Interface Options ->
