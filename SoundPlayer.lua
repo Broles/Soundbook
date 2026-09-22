@@ -348,6 +348,21 @@ function SB:StopAllSounds()
     SB:Fire("PLAYBACK_STOPPED")
 end
 
+-- Interrupts exactly ONE currently-playing handle (the Announcer's
+-- right-click - explicit request: "stop this sound that's bothering me
+-- right now", not StopAllSounds' every-Soundbook-sound-at-once, and not a
+-- permanent per-sound mute either). Silently does nothing for a handle
+-- this client never tracked (already ended, or `supportsHandles` is false
+-- on this client build - see this file's top-of-file comment) rather than
+-- erroring, same as StopAllOwnSounds' own pcall.
+function SB:StopSoundHandle(handle)
+    if not handle or not activeHandles[handle] then return false end
+    if trackedHandles[handle] then trackedHandles[handle].interrupted = true end
+    pcall(StopSound, handle, 0)
+    activeHandles[handle] = nil
+    return true
+end
+
 -- Tries each supported extension (.ogg, .mp3, .wav by default) for this
 -- sound's base path until one actually plays. WoW can't tell us which
 -- extension exists ahead of time (addons can't list folder contents), so

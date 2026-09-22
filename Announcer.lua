@@ -231,13 +231,17 @@ local function BuildBanner()
     banner.overlapBadge = overlapBadge
 
     banner:SetScript("OnMouseUp", function(self, mouseButton)
+        -- Explicit report: this must interrupt THIS one playback (a quick
+        -- "stop the sound that's bothering me right now"), not permanently
+        -- mute the sound - permanent per-sound mute already has its own
+        -- dedicated control (Edit Sound's "Muted" checkbox). Setting
+        -- saved.muted here didn't even stop the audio itself (SoundPlayer
+        -- has no code path that reacts to that flag mid-playback) - only
+        -- the banner disappeared while the sound kept playing to the end.
         if mouseButton ~= "RightButton" or not self.soundbookSoundID then return end
         local soundID = self.soundbookSoundID
-        local saved = SB:GetSoundSaved(soundID)
-        if not saved then return end
-        saved.muted = true
-        SB:Fire("SOUND_DISPLAY_CHANGED", soundID)
-        SB:Print(string.format('Muted "%s"', SoundName(soundID)))
+        if SB.StopSoundHandle then SB:StopSoundHandle(self.soundbookHandle) end
+        SB:Print(string.format('Stopped "%s"', SoundName(soundID)))
         SB.RemoveAnnouncerDisplayForSound(soundID)
     end)
 
@@ -250,7 +254,7 @@ local function BuildBanner()
         -- still threw "bad argument #5" on at least one of those clients,
         -- meaning that argument's real position/type isn't consistent
         -- across all of them. Every client accepts this base form.
-        GameTooltip:SetText("Right-click to mute this sound", 1, 0.85, 0.4)
+        GameTooltip:SetText("Right-click to stop this sound", 1, 0.85, 0.4)
         GameTooltip:Show()
     end)
     banner:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -300,6 +304,7 @@ local function RenderPrimary()
     if not entry then return end
 
     banner.soundbookSoundID = entry.soundID
+    banner.soundbookHandle = entry.handle
     banner.slot.texture:SetTexture(SoundIcon(entry.soundID))
     banner.nameText:SetText(SoundName(entry.soundID))
     banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
