@@ -1,29 +1,22 @@
 # Changelog
 
-## 2.8.1
-
-### Multi-client support: collapsed to one TOC file
-
-- Replaced the five separate per-flavor TOC files from 2.8.0 (`Soundbook.toc`, `Soundbook-Classic.toc`, `Soundbook-BCC.toc`, `Soundbook-Mists.toc` + `Soundbook_Mists.toc`, `Soundbook_Mainline.toc`) with a single `Soundbook.toc` using the comma-separated multi-interface line: `## Interface: 11509, 16001, 20506, 50504, 120005`.
-- Reason: cloned and directly inspected the BigWigs repo (github.com/BigWigsMods/BigWigs) after a claim that it ships a separate `BigWigs_Mists.toc` file turned out not to hold up - BigWigs actually ships exactly one `BigWigs.toc` with a comma-separated interface list, and that list independently includes `16001`, corroborating our WoW Forever interface number from a second, unrelated source. This removes every filename-suffix guess (`-Mists` vs `_Mists`, `-Mainline` vs `_Mainline`) that the previous approach depended on.
-- `SB.GetNumGroupMembers()`'s solo-case return value (`0`) was checked against a developer report of the live API and is correct as shipped; no code change needed.
-
-## 2.8.0
+## 2.7.2
 
 ### Multi-client support
 
-- Added dedicated TOC files: `Soundbook.toc` (WoW Forever, Interface 16001), `Soundbook-Classic.toc` (Classic Era, Interface 11509), `Soundbook-BCC.toc` (Burning Crusade Classic Anniversary, Interface 20506), `Soundbook-Mists.toc` + `Soundbook_Mists.toc` (Mists of Pandaria Classic, Interface 50504 - shipped under both naming conventions since the client-recognized suffix for this flavor wasn't confirmed), `Soundbook_Mainline.toc` (Retail, Interface 120005). CurseForge/WowUp now install the correct build per client automatically.
-- Season of Discovery and Hardcore realms share Classic Era's client build, so `Soundbook-Classic.toc` covers them without any extra file. Wrath Classic and Cataclysm Classic are not shipped: neither is currently offered as a standalone live realm type (the progression-realm cycle has moved on to Mists).
-- Added `SB.GetNumGroupMembers()` compat wrapper (falls back to `GetNumRaidMembers`/`GetNumPartyMembers` on clients without the unified `GetNumGroupMembers` API) and switched every group-size check in `AdminPanel.lua` and `Communication.lua` to use it.
-- Removed the OPie integration entirely (`OPieIntegration.lua` deleted, dropped from all TOCs) to cut a third-party, Retail-only dependency out of the multi-client compatibility surface.
+- One `Soundbook.toc` now covers every currently live WoW client family via the comma-separated multi-interface line: `## Interface: 11509, 16001, 20506, 50504, 120005` (Classic Era, WoW Forever, Burning Crusade Classic Anniversary, Mists of Pandaria Classic, Retail). This is the same mechanism BigWigs uses in its own single TOC file (verified directly against github.com/BigWigsMods/BigWigs), which also independently corroborates `16001` as WoW Forever's interface number. No per-flavor filenames, no filename-suffix guessing.
+- Season of Discovery and Hardcore realms share Classic Era's client build, so interface `11509` covers them too. Wrath Classic and Cataclysm Classic are not listed: neither is currently offered as a standalone live realm type (the progression-realm cycle has moved on to Mists) - add their interface numbers to the comma list if/when Blizzard reopens them.
+- Added `SB.GetNumGroupMembers()` compat wrapper (falls back to `GetNumRaidMembers`/`GetNumPartyMembers` on clients without the unified `GetNumGroupMembers` API) and switched every group-size check in `AdminPanel.lua` and `Communication.lua` to use it. Solo-case return value (`0`) checked against an external report of the live API - matches, no code change needed.
+- Removed the OPie integration entirely (`OPieIntegration.lua` deleted, dropped from the TOC) to cut a third-party, Retail-only dependency out of the multi-client compatibility surface.
 
 ### Known open items
 
-- WoW Forever is in beta; `C_Timer`, unified group APIs, and addon-message registration are assumed available based on the client's modern internals (confirmed via a third-party addon's TOC and in-game `GetBuildInfo()` check) but not yet confirmed by a live playtest of Soundbook itself.
+- WoW Forever is in beta; `C_Timer`, unified group APIs, and addon-message registration are assumed available based on the client's modern internals (corroborated by a third-party addon's TOC, a Blizzard statement on WoW Forever sharing Retail's 12.1.5 UI architecture, and an in-game `GetBuildInfo()` check) but not yet confirmed by a live playtest of Soundbook itself.
 - Classic Era and BCC builds are static-analysis-verified against the existing compat layer in `Core.lua`; not covered by a live playtest as part of this change.
 - Mists of Pandaria Classic and Retail were added without the same dedicated audit pass given to Forever/Classic Era/BCC - they rely on `Core.lua`'s existing modern-API-first fallbacks but flavor-specific concerns (combat-lockdown/taint edge cases) have not been separately checked.
-- Retail's Interface number (120005) is unconfirmed - Patch 12.1 may have already shifted it to 120100; verify with `/run print(select(4,GetBuildInfo()))` in-game.
+- Retail's Interface number (`120005`) is unconfirmed and now actively in doubt: BigWigs' own current TOC lists `120007`, `120100`, and `120105` for Retail - none of which is `120005`. Verify with `/run print(select(4,GetBuildInfo()))` in-game and correct if needed.
 - Mists of Pandaria Classic's AddOns folder name was not confirmed against a live install.
+- Whether every one of the five targeted clients actually parses the comma-separated `## Interface:` line (versus reading only the first number and ignoring the rest) is not individually confirmed per client - only inferred from BigWigs shipping the same format for the same client set.
 
 ## 2.7.1
 

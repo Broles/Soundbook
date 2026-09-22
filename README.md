@@ -1,8 +1,8 @@
-# Soundbook 2.8.1
+# Soundbook 2.7.2
 
 Soundbook is an Arcane Codex-style soundboard for **World of Warcraft**. It combines local playback, a 20-slot Mini Soundbook, per-sound customization, multiplayer sharing, receive controls, raid administration, history, and anonymous community statistics in one lightweight addon.
 
-Version 2.8.0 ships a single TOC file covering every currently live WoW client family, using the comma-separated multi-interface format:
+Version 2.7.2 ships a single TOC file covering every currently live WoW client family, using the comma-separated multi-interface format:
 
 ```
 ## Interface: 11509, 16001, 20506, 50504, 120005
