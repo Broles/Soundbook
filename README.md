@@ -1,20 +1,26 @@
-# Soundbook 2.8.0
+# Soundbook 2.8.1
 
 Soundbook is an Arcane Codex-style soundboard for **World of Warcraft**. It combines local playback, a 20-slot Mini Soundbook, per-sound customization, multiplayer sharing, receive controls, raid administration, history, and anonymous community statistics in one lightweight addon.
 
-Version 2.8.0 ships TOC files for every currently live WoW client family, so CurseForge/WowUp install the matching build automatically:
+Version 2.8.0 ships a single TOC file covering every currently live WoW client family, using the comma-separated multi-interface format:
 
-| Client | TOC file | Interface | Status |
-| --- | --- | --- | --- |
-| WoW Forever (beta) | `Soundbook.toc` | 16001 | Static-analysis verified only, not yet live-tested |
-| Classic Era (incl. Season of Discovery, Hardcore) | `Soundbook-Classic.toc` | 11509 | Static-analysis verified only, not yet live-tested |
-| Burning Crusade Classic (Anniversary) | `Soundbook-BCC.toc` | 20506 | Confirmed in live use |
-| Mists of Pandaria Classic (progression realms) | `Soundbook-Mists.toc` + `Soundbook_Mists.toc` (both shipped — the client-recognized suffix for this flavor wasn't confirmed, so both naming conventions are included as a safety net) | 50504 | Not yet audited, not yet live-tested |
-| Retail | `Soundbook_Mainline.toc` | 120005 (unconfirmed — patch 12.1 may have shifted this to 120100; verify with `/run print(select(4,GetBuildInfo()))` in-game) | Added without a dedicated audit pass — see note below |
+```
+## Interface: 11509, 16001, 20506, 50504, 120005
+```
 
-Season of Discovery and Hardcore realms run on the same client build as Classic Era, so `Soundbook-Classic.toc` covers them too. Wrath Classic and Cataclysm Classic are not shipped separately: as of this writing those expansions aren't offered as standalone live realm types (the progression-realm cycle has moved past them to Mists) — that TOC coverage will need adding if/when Blizzard reopens them.
+This is the same mechanism [BigWigs](https://github.com/BigWigsMods/BigWigs/blob/master/BigWigs.toc) - one of the most widely used multi-client addons - uses in its own single TOC file (verified directly against their repo, which independently confirms 16001 as WoW Forever's interface number). One physical file, no filename-suffix guessing, no risk of a client silently not recognizing a suffix it doesn't know about.
 
-"Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. The Mists and Retail TOCs have not had that audit pass at all yet; they rely on `Core.lua`'s existing fallbacks (which all prefer the modern API most recent clients use natively) but haven't been checked for flavor-specific concerns such as combat-lockdown/taint edge cases. Report issues if something breaks.
+| Client | Interface | Status |
+| --- | --- | --- |
+| Classic Era (incl. Season of Discovery, Hardcore) | 11509 | Static-analysis verified only, not yet live-tested |
+| WoW Forever (beta) | 16001 | Static-analysis verified only, not yet live-tested |
+| Burning Crusade Classic (Anniversary) | 20506 | Confirmed in live use |
+| Mists of Pandaria Classic (progression realms) | 50504 | Not yet audited, not yet live-tested |
+| Retail | 120005 (unconfirmed — patch 12.1 may have shifted this to 120100; verify with `/run print(select(4,GetBuildInfo()))` in-game) | Added without a dedicated audit pass — see note below |
+
+Season of Discovery and Hardcore realms run on the same client build as Classic Era, so interface 11509 covers them too. Wrath Classic and Cataclysm Classic are not listed separately: as of this writing those expansions aren't offered as standalone live realm types (the progression-realm cycle has moved past them to Mists) — add their interface numbers to the comma list if/when Blizzard reopens them.
+
+"Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. The Mists and Retail entries have not had that audit pass at all yet; they rely on `Core.lua`'s existing fallbacks (which all prefer the modern API most recent clients use natively) but haven't been checked for flavor-specific concerns such as combat-lockdown/taint edge cases. Report issues if something breaks.
 
 ## Install or upgrade
 

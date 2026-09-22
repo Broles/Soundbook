@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.8.1
+
+### Multi-client support: collapsed to one TOC file
+
+- Replaced the five separate per-flavor TOC files from 2.8.0 (`Soundbook.toc`, `Soundbook-Classic.toc`, `Soundbook-BCC.toc`, `Soundbook-Mists.toc` + `Soundbook_Mists.toc`, `Soundbook_Mainline.toc`) with a single `Soundbook.toc` using the comma-separated multi-interface line: `## Interface: 11509, 16001, 20506, 50504, 120005`.
+- Reason: cloned and directly inspected the BigWigs repo (github.com/BigWigsMods/BigWigs) after a claim that it ships a separate `BigWigs_Mists.toc` file turned out not to hold up - BigWigs actually ships exactly one `BigWigs.toc` with a comma-separated interface list, and that list independently includes `16001`, corroborating our WoW Forever interface number from a second, unrelated source. This removes every filename-suffix guess (`-Mists` vs `_Mists`, `-Mainline` vs `_Mainline`) that the previous approach depended on.
+- `SB.GetNumGroupMembers()`'s solo-case return value (`0`) was checked against a developer report of the live API and is correct as shipped; no code change needed.
+
 ## 2.8.0
 
 ### Multi-client support
