@@ -2,16 +2,19 @@
 
 Soundbook is an Arcane Codex-style soundboard for **World of Warcraft**. It combines local playback, a 20-slot Mini Soundbook, per-sound customization, multiplayer sharing, receive controls, raid administration, history, and anonymous community statistics in one lightweight addon.
 
-Version 2.8.0 ships four TOC files so CurseForge/WowUp install the matching build automatically:
+Version 2.8.0 ships TOC files for every currently live WoW client family, so CurseForge/WowUp install the matching build automatically:
 
 | Client | TOC file | Interface | Status |
 | --- | --- | --- | --- |
 | WoW Forever (beta) | `Soundbook.toc` | 16001 | Static-analysis verified only, not yet live-tested |
-| Classic Era | `Soundbook-Classic.toc` | 11509 | Static-analysis verified only, not yet live-tested |
+| Classic Era (incl. Season of Discovery, Hardcore) | `Soundbook-Classic.toc` | 11509 | Static-analysis verified only, not yet live-tested |
 | Burning Crusade Classic (Anniversary) | `Soundbook-BCC.toc` | 20506 | Confirmed in live use |
-| Retail | `Soundbook_Mainline.toc` | 120005 | Added without a dedicated audit pass — see note below |
+| Mists of Pandaria Classic (progression realms) | `Soundbook-Mists.toc` + `Soundbook_Mists.toc` (both shipped — the client-recognized suffix for this flavor wasn't confirmed, so both naming conventions are included as a safety net) | 50504 | Not yet audited, not yet live-tested |
+| Retail | `Soundbook_Mainline.toc` | 120005 (unconfirmed — patch 12.1 may have shifted this to 120100; verify with `/run print(select(4,GetBuildInfo()))` in-game) | Added without a dedicated audit pass — see note below |
 
-"Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. The Retail TOC has not had that audit pass at all yet; it relies on `Core.lua`'s existing fallbacks (which all prefer the modern API Retail uses natively) but hasn't been checked for Retail-specific concerns such as combat-lockdown/taint edge cases. Report issues if something breaks.
+Season of Discovery and Hardcore realms run on the same client build as Classic Era, so `Soundbook-Classic.toc` covers them too. Wrath Classic and Cataclysm Classic are not shipped separately: as of this writing those expansions aren't offered as standalone live realm types (the progression-realm cycle has moved past them to Mists) — that TOC coverage will need adding if/when Blizzard reopens them.
+
+"Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. The Mists and Retail TOCs have not had that audit pass at all yet; they rely on `Core.lua`'s existing fallbacks (which all prefer the modern API most recent clients use natively) but haven't been checked for flavor-specific concerns such as combat-lockdown/taint edge cases. Report issues if something breaks.
 
 ## Install or upgrade
 
@@ -20,6 +23,7 @@ Version 2.8.0 ships four TOC files so CurseForge/WowUp install the matching buil
 3. Copy the included `Soundbook` folder into your client's AddOns folder, e.g.:
    - Retail: `World of Warcraft/_retail_/Interface/AddOns/`
    - Burning Crusade Classic (Anniversary): `World of Warcraft/_anniversary_/Interface/AddOns/`
+   - Mists of Pandaria Classic: same `_classic_era_`-style dedicated folder Blizzard assigns to that progression client (folder name not yet confirmed against a live install)
    - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/`
    - WoW Forever (beta): `World of Warcraft/_classic_beta_/Interface/AddOns/`
 4. Confirm that the final path is `Interface/AddOns/Soundbook/Soundbook.toc`.
@@ -121,7 +125,7 @@ Stable sound IDs use `<category>::<name>`. A customized display name does not ch
 
 ## Compatibility and recovery
 
-- Target interfaces: `16001` (WoW Forever), `11509` (Classic Era), `20506` (Burning Crusade Classic Anniversary), `120005` (Retail) — see the table above for verification status.
+- Target interfaces: `16001` (WoW Forever), `11509` (Classic Era), `20506` (Burning Crusade Classic Anniversary), `50504` (Mists of Pandaria Classic), `120005` (Retail, unconfirmed) — see the table above for verification status.
 - Retail-style APIs are used only when available and have Classic-compatible fallbacks where required.
 - Optional sound-handle progress tracking degrades cleanly when `C_Sound.IsPlaying` is unavailable.
 - A database written by a newer Soundbook version is opened in non-committing compatibility mode; it is never downgraded.

@@ -1,0 +1,36 @@
+## Interface: 50504
+## Title: Soundbook
+## Notes: Arcane Codex soundboard for local sounds and multiplayer sharing.
+## Version: 2.8.0
+## SavedVariables: SoundbookDB
+## DefaultState: Enabled
+
+Core.lua
+Validation.lua
+Database.lua
+Debug.lua
+Theme.lua
+Sounds.lua
+SoundDurations.lua
+SoundAlternates.lua
+SoundRegistry.lua
+SoundPlayer.lua
+Transport.lua
+Favorites.lua
+Keybindings.lua
+Communication.lua
+Analytics.lua
+History.lua
+Macros.lua
+IconPicker.lua
+EditWindow.lua
+Intro.lua
+NewSoundsWindow.lua
+FavouritesWindow.lua
+SendMenu.lua
+MutePlayers.lua
+MinimapButton.lua
+Settings.lua
+AdminPanel.lua
+AnalyticsUI.lua
+UI.lua

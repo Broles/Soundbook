@@ -4,7 +4,8 @@
 
 ### Multi-client support
 
-- Added dedicated TOC files: `Soundbook.toc` (WoW Forever, Interface 16001), `Soundbook-Classic.toc` (Classic Era, Interface 11509), `Soundbook-BCC.toc` (Burning Crusade Classic Anniversary, Interface 20506), `Soundbook_Mainline.toc` (Retail, Interface 120005). CurseForge/WowUp now install the correct build per client automatically.
+- Added dedicated TOC files: `Soundbook.toc` (WoW Forever, Interface 16001), `Soundbook-Classic.toc` (Classic Era, Interface 11509), `Soundbook-BCC.toc` (Burning Crusade Classic Anniversary, Interface 20506), `Soundbook-Mists.toc` + `Soundbook_Mists.toc` (Mists of Pandaria Classic, Interface 50504 - shipped under both naming conventions since the client-recognized suffix for this flavor wasn't confirmed), `Soundbook_Mainline.toc` (Retail, Interface 120005). CurseForge/WowUp now install the correct build per client automatically.
+- Season of Discovery and Hardcore realms share Classic Era's client build, so `Soundbook-Classic.toc` covers them without any extra file. Wrath Classic and Cataclysm Classic are not shipped: neither is currently offered as a standalone live realm type (the progression-realm cycle has moved on to Mists).
 - Added `SB.GetNumGroupMembers()` compat wrapper (falls back to `GetNumRaidMembers`/`GetNumPartyMembers` on clients without the unified `GetNumGroupMembers` API) and switched every group-size check in `AdminPanel.lua` and `Communication.lua` to use it.
 - Removed the OPie integration entirely (`OPieIntegration.lua` deleted, dropped from all TOCs) to cut a third-party, Retail-only dependency out of the multi-client compatibility surface.
 
@@ -12,7 +13,9 @@
 
 - WoW Forever is in beta; `C_Timer`, unified group APIs, and addon-message registration are assumed available based on the client's modern internals (confirmed via a third-party addon's TOC and in-game `GetBuildInfo()` check) but not yet confirmed by a live playtest of Soundbook itself.
 - Classic Era and BCC builds are static-analysis-verified against the existing compat layer in `Core.lua`; not covered by a live playtest as part of this change.
-- Retail (`Soundbook_Mainline.toc`) was added without the same dedicated audit pass given to the other three - it relies on `Core.lua`'s existing modern-API-first fallbacks but Retail-specific concerns (combat-lockdown/taint edge cases) have not been separately checked.
+- Mists of Pandaria Classic and Retail were added without the same dedicated audit pass given to Forever/Classic Era/BCC - they rely on `Core.lua`'s existing modern-API-first fallbacks but flavor-specific concerns (combat-lockdown/taint edge cases) have not been separately checked.
+- Retail's Interface number (120005) is unconfirmed - Patch 12.1 may have already shifted it to 120100; verify with `/run print(select(4,GetBuildInfo()))` in-game.
+- Mists of Pandaria Classic's AddOns folder name was not confirmed against a live install.
 
 ## 2.7.1
 
