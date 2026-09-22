@@ -1306,6 +1306,17 @@ local function RefreshLibraryImpl()
     -- the section headers' collapse to 0). This is exactly what made the
     -- Library go fully blank on the very first scroll/collapse action.
     scroll.content:SetWidth(contentWidth)
+    -- Explicit report: bumping Settings -> Soundbook Text Size made sound
+    -- names truncate, because the column grid never knew the font had
+    -- grown - ROW_H/THREE_COLUMN_WIDTH were fixed constants. Both now grow
+    -- with the same scale (never shrink below their base size - text
+    -- getting cut off is the only reported direction), so a bigger font
+    -- gets a taller row and switches to 3 columns later (favouring fewer,
+    -- wider columns instead of cramming a bigger font into the same
+    -- column width).
+    local fontScale = math.max(1, (SB.db.settings and SB.db.settings.mainFontScale) or 1)
+    ROW_H = math.floor(32 * fontScale + 0.5)
+    THREE_COLUMN_WIDTH = math.floor(600 * fontScale + 0.5)
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
     -- Explicit report: the first (leftmost) column's icons were visibly
     -- clipped, the others weren't - column 0 sits flush at x=0 of

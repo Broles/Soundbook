@@ -80,8 +80,11 @@ function SB.CreateIconGrid(parent, opts)
 
     -- Flat, resolved icon list (path+name), rebuilt on every Populate() -
     -- separate from the pooled BUTTONS below, which no longer map 1:1 to
-    -- this list.
+    -- this list. Exposed on the container too (container.icons) purely
+    -- for /sb debug diagnostics elsewhere (SB.OpenIconPicker) - same
+    -- table reference, always in sync, nothing else reads it.
     local icons = {}
+    container.icons = icons
 
     -- Virtualized button pool - explicit requirement: only as many real
     -- Button frames as the visible area (plus a small scroll buffer) need,
@@ -288,4 +291,11 @@ function SB.OpenIconPicker(callback, currentPath)
     popup.grid:Populate()
     popup.grid:SetSelectedIcon(currentPath)
     popup:Show()
+    -- Explicit report ("kann das Icon nicht ändern") with no clear repro
+    -- yet - this pins down whether the popup opens at all, how many icons
+    -- GetMacroIcons() actually resolved, and where it's drawn, without
+    -- needing /console scriptErrors.
+    SB:Debug("IconPicker: shown=%s frameLevel=%s frameStrata=%s icons=%d popup.left=%s popup.top=%s",
+        tostring(popup:IsShown()), tostring(popup:GetFrameLevel()), tostring(popup:GetFrameStrata()),
+        #(popup.grid.icons or {}), tostring(popup:GetLeft()), tostring(popup:GetTop()))
 end

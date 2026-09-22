@@ -300,10 +300,15 @@ local function BuildFrame()
     -- control pattern already used everywhere else in this window) makes
     -- macroBox's actual left edge land exactly on defaultOutputDD.button's
     -- own left edge - see outputLabel below for the matching right-edge fix.
+    -- Explicit report: "Macro Command (read-only)" visibly ran into
+    -- "Macro Output" next to it - this label has no width limit and, at
+    -- this font, is wider than the ~162px column it shares a row with
+    -- (MACRO_COL_W). Shortened to fit; "read-only" now lives in a tooltip
+    -- instead of the label itself.
     local macroLabel = edit:CreateFontString(nil, "OVERLAY")
     macroLabel:SetFontObject(SB.Fonts.HighlightSmall)
     macroLabel:SetPoint("TOPLEFT", defaultOutputDD.button, "BOTTOMLEFT", -6, -14)
-    macroLabel:SetText("Macro Command (read-only)")
+    macroLabel:SetText("Macro Command")
     macroLabel:SetTextColor(0.60, 0.80, 1.0)
 
     local macroBox = SB.Theme.CreateInputBox(edit, MACRO_COL_W, 22)
@@ -439,6 +444,15 @@ local function BuildFrame()
         SB:SetSoundDisplayName(currentSoundID, draft.name)
         SB:Fire("SOUND_DISPLAY_CHANGED", currentSoundID)
         dirty = false
+        -- Explicit report: Save itself was triggering the "Discard unsaved
+        -- changes?" prompt. dirty=false above should already prevent
+        -- OnHide's own check from firing it, but closingConfirmed is the
+        -- SAME guard OnHide uses to let a Hide() through unconditionally -
+        -- setting it here too means this dialog cannot appear as a result
+        -- of THIS Hide() call no matter what (re)computed dirty afterward,
+        -- even if something not yet root-caused is re-marking the draft
+        -- dirty between here and OnHide actually running.
+        closingConfirmed = true
         -- A Save while the "discard unsaved changes?" prompt happened to
         -- be up (e.g. it was raised by switching sounds, then the player
         -- saved instead) resolves it - nothing left to discard.
@@ -500,6 +514,16 @@ end
 local function PopulateEditWindow(soundID)
     currentSoundID = soundID
     local saved = SB:GetSoundSaved(soundID)
+
+    -- Re-center on the Main Soundbook window every time a NEW edit starts
+    -- (not just once at BuildFrame - explicit report, still reproducing
+    -- after the earlier CENTER-on-Main fix: edit is SetMovable/draggable,
+    -- and BuildFrame's own SetPoint call only ever runs once per session,
+    -- the very first time this window is built - once dragged even once,
+    -- it stays wherever it was left for the rest of the session, ignoring
+    -- Main's own position from then on).
+    edit:ClearAllPoints()
+    edit:SetPoint("CENTER", SoundbookMainFrame or UIParent, "CENTER")
 
     -- Only offer the checkbox at all for a sound that actually HAS a
     -- registered alternate (SoundAlternates.lua) - see altCheck's own

@@ -241,16 +241,29 @@ local function BuildBanner()
     banner.overlapBadge = overlapBadge
 
     banner:SetScript("OnMouseUp", function(self, mouseButton)
-        -- Explicit report: this must interrupt THIS one playback (a quick
-        -- "stop the sound that's bothering me right now"), not permanently
-        -- mute the sound - permanent per-sound mute already has its own
-        -- dedicated control (Edit Sound's "Muted" checkbox). Setting
-        -- saved.muted here didn't even stop the audio itself (SoundPlayer
-        -- has no code path that reacts to that flag mid-playback) - only
-        -- the banner disappeared while the sound kept playing to the end.
+        -- Explicit report: this must interrupt playback (a quick "stop the
+        -- sound that's bothering me right now"), not permanently mute the
+        -- sound - permanent per-sound mute already has its own dedicated
+        -- control (Edit Sound's "Muted" checkbox).
+        --
+        -- REGRESSION FOUND: the previous version tried to stop only THIS
+        -- one handle via SB:StopSoundHandle - explicit report that it
+        -- stopped every currently-playing Soundbook sound instead, not
+        -- just this one. StopAllOwnSounds (SoundPlayer.lua) has always
+        -- called StopSound(handle, 0) per-handle in a loop too and never
+        -- been reported doing anything OTHER than "stop everything" - but
+        -- that's also its entire intended job, so a channel-wide side
+        -- effect there would never have surfaced as a bug. This is the
+        -- first place this addon ever needed genuine single-handle
+        -- precision, and apparently WoW's StopSound doesn't reliably give
+        -- it (plausibly channel-wide, since every Soundbook sound shares
+        -- one channel - SoundPlayer.lua's GetChannel()). Falling back to
+        -- the one call this codebase has actually verified stays scoped
+        -- to Soundbook's own sounds, even though it now stops every
+        -- concurrently overlapping Soundbook sound, not just this one.
         if mouseButton ~= "RightButton" or not self.soundbookSoundID then return end
         local soundID = self.soundbookSoundID
-        if SB.StopSoundHandle then SB:StopSoundHandle(self.soundbookHandle) end
+        if SB.StopAllSounds then SB:StopAllSounds() end
         SB:Print(string.format('Stopped "%s"', SoundName(soundID)))
         SB.RemoveAnnouncerDisplayForSound(soundID)
     end)
@@ -264,12 +277,13 @@ local function BuildBanner()
         -- still threw "bad argument #5" on at least one of those clients,
         -- meaning that argument's real position/type isn't consistent
         -- across all of them. Every client accepts this base form.
-        GameTooltip:SetText("Right-click to stop this sound", 1, 0.85, 0.4)
+        GameTooltip:SetText("Right-click to stop Soundbook playback", 1, 0.85, 0.4)
         GameTooltip:Show()
     end)
     banner:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     banner:SetScale(SB.db.ui.announcer.scale or 1.0)
+    SB:RefreshAnnouncerFont()
     return banner
 end
 
@@ -315,7 +329,6 @@ local function RenderPrimary()
     if not entry then return end
 
     banner.soundbookSoundID = entry.soundID
-    banner.soundbookHandle = entry.handle
     banner.slot.texture:SetTexture(SoundIcon(entry.soundID))
     banner.nameText:SetText(SoundName(entry.soundID))
     banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
@@ -574,10 +587,18 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         sizeLabel:SetText("Announcer Size")
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
+        -- The value/label update live (Theme.CreateSlider's own Refresh),
+        -- but the icon/banner only actually rescale on mouse-up - explicit
+        -- report: this menu is itself anchored to the icon, so rescaling
+        -- it on every drag tick moved the icon (and this menu right along
+        -- with it) under the player's cursor. Resolving the visual resize
+        -- once, on release, keeps this menu's own live anchor to the icon
+        -- both simple and always correct instead of trying to out-guess
+        -- where a rescaling icon's edge will land.
         local sizeSlider = Theme.CreateSlider(quickMenu, 70, 160, 5, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
-            SB:RefreshAnnouncerScale()
         end)
+        sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
         quickMenu.sizeSlider = sizeSlider
 
@@ -589,20 +610,20 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     quickMenu.muteBtn.label:SetText(SB:IsReceiveMuted() and "Unmute Incoming" or "Mute Incoming")
     quickMenu.lockBtn.label:SetText(SB.db.ui.layoutLocked and "Unlock Interface" or "Lock Interface")
 
+    -- A plain live anchor to anchor's own BOTTOM - explicit report on an
+    -- earlier attempt at a scale-independent snapshot (manual GetLeft/
+    -- GetBottom math): it opened "way too far from the icon". WoW's own
+    -- anchor resolution always places this correctly relative to the
+    -- icon's CURRENT rendered position/scale, which manual coordinate
+    -- math evidently didn't reproduce correctly. The Announcer Size
+    -- slider's jitter (this menu moving while its own icon rescales
+    -- live) is now fixed at the source instead - the icon/banner only
+    -- actually rescale on the slider's mouse-up, not on every drag tick,
+    -- so this menu has nothing moving under it while being dragged.
+    -- SetClampedToScreen(true) above keeps it fully on-screen regardless
+    -- of which edge the icon is near.
     quickMenu:ClearAllPoints()
-    -- A snapshot of anchor's CURRENT position (GetLeft/GetBottom, already
-    -- in UIParent's own coordinate space), not a live SetPoint(anchor)
-    -- binding - explicit report: dragging this menu's own Announcer Size
-    -- slider rescales the icon live, and a live anchor to the icon would
-    -- drag this whole menu along with every tick, jittering under the
-    -- player's cursor mid-drag. A snapshot stays put regardless of what
-    -- the icon's scale does afterwards.
-    local left, bottom = anchor:GetLeft(), anchor:GetBottom()
-    if left and bottom then
-        quickMenu:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, bottom - 4)
-    else
-        quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
-    end
+    quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
     quickMenu.catcher:Show()
     quickMenu:Show()
 end
@@ -685,11 +706,25 @@ function SB:PinFavAlpha(pinned)
     end
 end
 
--- Placeholder for the eventual Announcer-specific font/scale (3.0 spec
--- section 49 - seeded from the old Mini font settings at migration time,
--- see Settings.lua). Banner text currently uses Soundbook's shared font
--- objects (SB.Fonts), which SB:RefreshMainFont already keeps in sync.
+-- Explicit report: Settings' "Announcer Font"/"Announcer Text Size"
+-- controls (SB.db.settings.miniFont/miniFontScale) had no effect - this
+-- was a placeholder stub, never actually implemented after the 3.0
+-- rewrite. Sets the font directly on the Announcer's own FontStrings
+-- (never via SB.Fonts' shared objects - those are the MAIN Soundbook
+-- window's, and mutating them would also resize Settings/Edit Sound/
+-- everything else that shares them), same approach the old Mini
+-- Soundbook's footerText always used for this exact setting.
 function SB:RefreshAnnouncerFont()
+    if not banner then return end
+    local path = SB.db.settings.miniFont or SB.AVAILABLE_FONTS[1].path
+    local scale = SB.db.settings.miniFontScale or 1
+    local function Apply(fs, baseFontObj)
+        local size = math.max(6, math.floor((baseFontObj.baseSize or 12) * scale + 0.5))
+        fs:SetFont(path, size, "")
+    end
+    Apply(banner.nameText, SB.Fonts.HighlightSmall)
+    Apply(banner.subText, SB.Fonts.DisableSmall)
+    Apply(banner.timeText, SB.Fonts.DisableSmall)
 end
 
 SB:On("TOGGLE_FAV_UI", function()
