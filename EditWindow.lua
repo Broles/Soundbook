@@ -302,16 +302,27 @@ local function BuildFrame()
     macroBox:SetPoint("TOPLEFT", macroLabel, "BOTTOMLEFT", 6, -6)
     macroBox:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     macroBox:SetBackdropColor(0.008, 0.020, 0.040, 0.82)
+    -- WoW's EditBox leaves the cursor (and therefore its horizontal scroll)
+    -- wherever it last was after SetText - for a box that's never actually
+    -- focused/typed into, that's the END of the string by default, showing
+    -- the tail of the macro command instead of its start (explicit report:
+    -- "es::Weiss Nicht Digga" instead of the real command's beginning).
+    -- SetCursorPosition(0) after every SetText fixes that.
+    local function SetMacroBoxText(text)
+        macroBox:SetText(text)
+        macroBox:SetCursorPosition(0)
+    end
     macroBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     macroBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     macroBox:SetScript("OnEditFocusLost", function(self)
         -- Read-only in spirit: whatever was typed is discarded and it
         -- snaps back to the real command on focus loss.
         if currentSoundID then
-            self:SetText(SB:GetMacroString(currentSoundID, draft and draft.macroTarget))
+            SetMacroBoxText(SB:GetMacroString(currentSoundID, draft and draft.macroTarget))
         end
     end)
     edit.macroBox = macroBox
+    edit.SetMacroBoxText = SetMacroBoxText
 
     -- Macro Output - who this specific sound's macro sends to, on top of
     -- always playing locally. "All" (default) leaves the macro exactly as
@@ -335,7 +346,7 @@ local function BuildFrame()
     outputDD:SetOnChange(function(value)
         if not currentSoundID then return end
         draft.macroTarget = (value ~= "ALL") and value or nil
-        edit.macroBox:SetText(SB:GetMacroString(currentSoundID, draft.macroTarget))
+        edit.SetMacroBoxText(SB:GetMacroString(currentSoundID, draft.macroTarget))
         RecomputeDirty()
     end)
     edit.outputDD = outputDD
@@ -343,7 +354,11 @@ local function BuildFrame()
     local MACRO_HINT_TEXT = "Click to select all, then Ctrl+C to copy. Paste as the body of a macro you create yourself, using this sound's icon if you like."
     local macroHint = edit:CreateFontString(nil, "OVERLAY")
     macroHint:SetFontObject(SB.Fonts.DisableSmall)
-    macroHint:SetPoint("TOPLEFT", macroBox, "BOTTOMLEFT", -6, -4)
+    -- Flush with macroBox's own left edge, not further left than it
+    -- (explicit report: this text's leading characters were getting cut
+    -- off - it was anchored 6px to the LEFT of macroBox, which itself
+    -- already sits at the leftmost edge of this window's whole form).
+    macroHint:SetPoint("TOPLEFT", macroBox, "BOTTOMLEFT", 0, -4)
     macroHint:SetPoint("RIGHT", -20, 0)
     macroHint:SetJustifyH("LEFT")
     macroHint:SetWordWrap(true)
@@ -506,7 +521,7 @@ local function PopulateEditWindow(soundID)
     edit.iconSlot:SetOutputTint(outputColor)
     edit.iconSlot:SetVisualState("normal", draft.favourite, draft.muted, outputColor)
     edit.nameBox:SetText(draft.name)
-    edit.macroBox:SetText(SB:GetMacroString(soundID, saved.macroTarget))
+    edit.SetMacroBoxText(SB:GetMacroString(soundID, saved.macroTarget))
 
     edit.favCheck:SetChecked(draft.favourite)
     edit.muteCheck:SetChecked(draft.muted)

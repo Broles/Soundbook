@@ -13,6 +13,11 @@ local ICON_SIZE   = 22
 local THREE_COLUMN_WIDTH = 600
 local SECTION_HEADER_H = 24
 local SECTION_GAP = 10
+-- Left margin for the entry grid so column 0's icon decoration (the
+-- Favourite hover preview's 130% scale-up especially) has room before the
+-- ScrollFrame's own hard clip edge at scroll.content's x=0 - see its use
+-- in RefreshLibraryImpl/LayoutEntries.
+local GRID_LEFT_PAD = 6
 
 -- The "private" tab only actually appears once SB:HasPrivateSounds() is
 -- true (Soundbook_Private or similar installed with at least one sound
@@ -1240,7 +1245,7 @@ local function LayoutEntries(ids, n, y, columns, entryW, iconExtent, hotkeyWidth
         local row = math.floor((idx - 1) / columns)
         btn:ClearAllPoints()
         btn:SetSize(entryW, ROW_H)
-        btn:SetPoint("TOPLEFT", main.libraryScroll.content, "TOPLEFT", col * entryW, -(y + row * ROW_H))
+        btn:SetPoint("TOPLEFT", main.libraryScroll.content, "TOPLEFT", GRID_LEFT_PAD + col * entryW, -(y + row * ROW_H))
         btn.slot:SetSize(iconExtent, iconExtent)
         btn.favouriteHover:SetSize(iconExtent * 1.30, iconExtent * 1.30)
         btn.favouriteHoverOrnament:SetSize(iconExtent * 1.30 * 1.50, iconExtent * 1.30 * 1.50)
@@ -1298,7 +1303,17 @@ local function RefreshLibraryImpl()
     -- Library go fully blank on the very first scroll/collapse action.
     scroll.content:SetWidth(contentWidth)
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
-    local entryW = math.floor(contentWidth / columns)
+    -- Explicit report: the first (leftmost) column's icons were visibly
+    -- clipped, the others weren't - column 0 sits flush at x=0 of
+    -- scroll.content, exactly on the ScrollFrame's own hard clip edge, so
+    -- anything that visually extends past its icon slot's nominal bounds
+    -- there (the Favourite hover preview scales the icon to 130%, and the
+    -- slot's own selection/ornament textures aren't perfectly inset either)
+    -- gets hard-clipped. Every other column has ordinary row content as a
+    -- buffer to its left instead of a clip boundary, so the same overflow
+    -- there was never visible. A small left grid margin gives column 0 the
+    -- same breathing room every other column already had.
+    local entryW = math.floor((contentWidth - GRID_LEFT_PAD) / columns)
     local iconExtent = 24
     local hotkeyWidth = math.max(70, math.min(104, entryW * 0.28))
 
@@ -2212,6 +2227,15 @@ end
 
 function SB:ShowMainWindow()
     if not main then BuildMainFrame() end
+    -- Explicit report: clicking the Announcer's icon reopened whichever
+    -- internal view (Settings, Raid Admin) was last active instead of the
+    -- Library, because isSettingsOpen/isAdminOpen are module-level flags
+    -- that don't reset just because the window was hidden. Both of this
+    -- function's callers (the icon click via ToggleMainWindow, and Intro's
+    -- onboarding) want the Library every time - same as ShowDefaultSounds
+    -- already does for its own onboarding entry point.
+    isSettingsOpen = false
+    isAdminOpen = false
     InvalidateSortedListCache()
     main:Show()
     SB:RefreshMainWindow()

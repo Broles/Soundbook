@@ -203,20 +203,25 @@ local function BuildBanner()
     subText:SetWordWrap(false)
     banner.subText = subText
 
+    -- Explicit report: too small/subtle, wants it as visible as the old
+    -- 2.7 HUD's bar - a near-invisible 2px sliver at 0.12 alpha wasn't
+    -- reading as a progress bar at all. Thicker track, real background
+    -- contrast, brighter full-opacity fill, drawn one layer above the
+    -- track so it's never blended into it.
     local track = banner:CreateTexture(nil, "ARTWORK")
     track:SetPoint("BOTTOMLEFT", slot, "TOPRIGHT", 6, -2)
     track:SetPoint("BOTTOMRIGHT", -8, 2)
-    track:SetHeight(2)
+    track:SetHeight(5)
     track:SetTexture("Interface\\Buttons\\WHITE8X8")
-    track:SetVertexColor(1, 1, 1, 0.12)
+    track:SetVertexColor(0, 0, 0, 0.55)
     banner.track = track
 
-    local fill = banner:CreateTexture(nil, "ARTWORK")
+    local fill = banner:CreateTexture(nil, "ARTWORK", nil, 1)
     fill:SetPoint("TOPLEFT", track, "TOPLEFT")
     fill:SetPoint("BOTTOMLEFT", track, "BOTTOMLEFT")
     fill:SetWidth(1)
     fill:SetTexture("Interface\\Buttons\\WHITE8X8")
-    fill:SetVertexColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 0.9)
+    fill:SetVertexColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 1)
     banner.fill = fill
 
     local overlapBadge = banner:CreateFontString(nil, "OVERLAY")
