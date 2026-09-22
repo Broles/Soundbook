@@ -1391,22 +1391,36 @@ local function RefreshLibraryImpl()
         usedEntries, usedHeaders, totalShown, y, tostring(anyRealSection))
     if usedEntries > 0 then
         local b = entryButtons[1]
+        -- GetLeft/GetTop can return zero Lua values (not nil) when the frame's
+        -- position isn't resolvable yet; assigning to locals first normalizes
+        -- that to nil so tostring() never receives zero arguments.
+        local bShown, bAlpha, bLeft, bTop = b:IsShown(), b:GetAlpha(), b:GetLeft(), b:GetTop()
+        local bW, bH = b:GetWidth(), b:GetHeight()
+        local bName = b.nameText and b.nameText:GetText()
+        local bStrata = b.GetFrameStrata and b:GetFrameStrata()
+        local bLevel = b:GetFrameLevel()
         SB:Debug("btn1: shown=%s alpha=%s left=%s top=%s w=%s h=%s name=%q strata=%s level=%s",
-            tostring(b:IsShown()), tostring(b:GetAlpha()), tostring(b:GetLeft()), tostring(b:GetTop()),
-            tostring(b:GetWidth()), tostring(b:GetHeight()), tostring(b.nameText and b.nameText:GetText()),
-            tostring(b.GetFrameStrata and b:GetFrameStrata()), tostring(b:GetFrameLevel()))
+            tostring(bShown), tostring(bAlpha), tostring(bLeft), tostring(bTop),
+            tostring(bW), tostring(bH), tostring(bName),
+            tostring(bStrata), tostring(bLevel))
     end
     if usedHeaders > 0 then
         local h = sectionHeaders[1]
+        local hShown, hAlpha, hLeft, hTop = h:IsShown(), h:GetAlpha(), h:GetLeft(), h:GetTop()
+        local hW = h:GetWidth()
+        local hTitle = h.title and h.title:GetText()
         SB:Debug("hdr1: shown=%s alpha=%s left=%s top=%s w=%s title=%q",
-            tostring(h:IsShown()), tostring(h:GetAlpha()), tostring(h:GetLeft()), tostring(h:GetTop()),
-            tostring(h:GetWidth()), tostring(h.title and h.title:GetText()))
+            tostring(hShown), tostring(hAlpha), tostring(hLeft), tostring(hTop),
+            tostring(hW), tostring(hTitle))
     end
+    local scrShown, scrAlpha = scroll.scroll:IsShown(), scroll.scroll:GetAlpha()
+    local cShown, cAlpha, cLeft, cTop = scroll.content:IsShown(), scroll.content:GetAlpha(), scroll.content:GetLeft(), scroll.content:GetTop()
+    local mAlpha, mShown = main:GetAlpha(), main:IsShown()
     SB:Debug("scroll: shown=%s alpha=%s content.shown=%s content.alpha=%s content.left=%s content.top=%s main.alpha=%s main.shown=%s",
-        tostring(scroll.scroll:IsShown()), tostring(scroll.scroll:GetAlpha()),
-        tostring(scroll.content:IsShown()), tostring(scroll.content:GetAlpha()),
-        tostring(scroll.content:GetLeft()), tostring(scroll.content:GetTop()),
-        tostring(main:GetAlpha()), tostring(main:IsShown()))
+        tostring(scrShown), tostring(scrAlpha),
+        tostring(cShown), tostring(cAlpha),
+        tostring(cLeft), tostring(cTop),
+        tostring(mAlpha), tostring(mShown))
 end
 
 -- WoW hides Lua errors from players by default (Interface Options ->
