@@ -174,6 +174,9 @@ SB.ADMIN_ICON       = "Interface\\Icons\\INV_Shield_04"
 -- StarFall) - if it doesn't render, swap the path here for another.
 SB.PRIVATE_TAB_NAME = "Stammtisch"
 SB.PRIVATE_TAB_ICON = "Interface\\Icons\\Spell_Misc_Drink"
+-- The virtual "Hide" category's own icon (explicit request) - the Rogue
+-- ability Vanish, matching "things that disappear from view".
+SB.HIDE_ICON        = "Interface\\Icons\\Ability_Vanish"
 
 -- Font choices offered under Settings -> General / Favourites Window. Kept
 -- to the handful of typefaces the WoW client itself always ships (every

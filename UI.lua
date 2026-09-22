@@ -11,7 +11,11 @@ local ENTRY_W     = 190
 local ROW_H       = 32
 local ICON_SIZE   = 22
 local THREE_COLUMN_WIDTH = 600
-local SECTION_HEADER_H = 24
+-- Explicit report: category headers (Favourites/Legacy/...) should stand
+-- out more from the sound rows below them, and the collapse caret wasn't
+-- obviously a collapse control. Grown from 24 for the bigger title font
+-- (NormalLarge instead of Highlight) and the bigger caret glyph below.
+local SECTION_HEADER_H = 30
 local SECTION_GAP = 10
 -- Left margin for the entry grid so column 0's icon decoration (the
 -- Favourite hover preview's 130% scale-up especially) has room before the
@@ -43,6 +47,12 @@ local TABS = {
     { key = "German Memes" },
     { key = 1, hideIfEmpty = true },
     { key = 2, hideIfEmpty = true },
+    -- Explicit request: a virtual "Hide" category, always last, holding
+    -- every sound whose Edit Sound "Hide" checkbox is on - see
+    -- GetHiddenSoundList/hideIfEmpty below and BuildSectionList/
+    -- RefreshLibraryImpl for its own (session-only, never-persisted)
+    -- collapse handling.
+    { key = "hide", isHide = true, hideIfEmpty = true },
 }
 
 local main
@@ -64,6 +74,12 @@ local playingSoundID
 local playingStateTimer
 local mainDragGhostFrame, mainDragGhostIcon, mainDragGhostOrnament
 local mainDragSourceSlot, mainDragSoundID
+-- The virtual "Hide" section's own collapse state - explicit request:
+-- unlike every real category, this must NOT persist. Every time the
+-- Soundbook window opens it starts collapsed again, regardless of
+-- whether the player expanded it earlier in the same session. A plain
+-- session-local (reset in SB:ShowMainWindow), never SavedVariables.
+local hideSectionExpanded = false
 local RefreshLibrary
 local usedEntries, usedHeaders
 
@@ -77,6 +93,9 @@ local function TabDisplayInfo(tab)
     end
     if tab.isPrivate then
         return SB.PRIVATE_TAB_NAME, SB.PRIVATE_TAB_ICON
+    end
+    if tab.isHide then
+        return "Hide", SB.HIDE_ICON
     end
     local info = SB.db.categories[tab.key]
     return info.name, info.icon
@@ -93,18 +112,58 @@ end
 -- synced, ...).
 local sortedListCache = {}
 
+-- "Hide" (explicit request) - Edit Sound's own "Hide" checkbox
+-- (SB.db.sounds[id].hidden). A hidden sound is pulled OUT of its normal
+-- category tab (FilterHidden below) and only shows up under the virtual
+-- "hide" tab (GetHiddenSoundList) instead - a pure Library-visibility
+-- toggle, doesn't touch Favourites/mute/anything else.
+local function IsSoundHidden(id)
+    local saved = SB.db.sounds and SB.db.sounds[id]
+    return saved and saved.hidden and true or false
+end
+
+local function FilterHidden(ids)
+    local out = {}
+    for _, id in ipairs(ids) do
+        if not IsSoundHidden(id) then table.insert(out, id) end
+    end
+    return out
+end
+
+local function GetHiddenSoundList()
+    local out = {}
+    for id in pairs(SB.registry or {}) do
+        if IsSoundHidden(id) then table.insert(out, id) end
+    end
+    table.sort(out, function(a, b)
+        return SB:GetSoundDisplayName(a):lower() < SB:GetSoundDisplayName(b):lower()
+    end)
+    return out
+end
+
+local function HasHiddenSounds()
+    for id in pairs(SB.registry or {}) do
+        if IsSoundHidden(id) then return true end
+    end
+    return false
+end
+
 local function GetTabSoundList(tabKey)
     if tabKey == "favourites" then
         -- Never sorted - fixed positions the player deliberately dragged
         -- into place, not a ranked list.
         return SB:GetFavourites()
     end
+    if tabKey == "hide" then
+        return GetHiddenSoundList()
+    end
     if not SB.SortSoundIDsBySetting then
-        return tabKey == "private" and SB:GetPrivateSounds() or SB:GetCategorySounds(tabKey)
+        local ids = tabKey == "private" and SB:GetPrivateSounds() or SB:GetCategorySounds(tabKey)
+        return FilterHidden(ids)
     end
     if not sortedListCache[tabKey] then
         local ids = (tabKey == "private") and SB:GetPrivateSounds() or SB:GetCategorySounds(tabKey)
-        sortedListCache[tabKey] = SB.SortSoundIDsBySetting(ids)
+        sortedListCache[tabKey] = SB.SortSoundIDsBySetting(FilterHidden(ids))
     end
     return sortedListCache[tabKey]
 end
@@ -717,6 +776,19 @@ local function StopMainFavouriteDrag()
     end
     mainDragSourceSlot, mainDragSoundID = nil, nil
     RefreshLibrary()
+    -- Explicit report: dropping a swap onto a slot the cursor is still
+    -- sitting on kept showing the PREVIOUS occupant's enlarged hover
+    -- preview until the mouse actually moved - OnEnter (which sets that
+    -- preview's texture) only fires on a fresh mouse-enter, not just
+    -- because RefreshLibrary repopulated the button underneath the
+    -- cursor. Re-sync it here for whichever button the cursor is
+    -- actually over right now.
+    for _, candidate in ipairs(entryButtons) do
+        if candidate:IsShown() and candidate.favouriteHover and candidate.favouriteHover:IsShown()
+            and candidate:IsMouseOver() and candidate.soundID then
+            candidate.favouriteHoverIcon:SetTexture(SB:GetSoundIcon(candidate.soundID))
+        end
+    end
 end
 
 ------------------------------------------------------------------------
@@ -1115,21 +1187,28 @@ local function CreateSectionHeaderRow(index)
     local hdr = SB.CreateFrame("Button", "SoundbookSection" .. index, main.libraryScroll.content)
     hdr:SetHeight(SECTION_HEADER_H)
 
+    -- Explicit report: not obviously a collapse/expand control - bigger,
+    -- bolder and brighter gold than the rest of the row, not just a small
+    -- dim ">"/"v" easy to miss entirely.
     local caret = hdr:CreateFontString(nil, "OVERLAY")
-    caret:SetFontObject(SB.Fonts.HighlightSmall)
+    caret:SetFontObject(SB.Fonts.NormalLarge)
     caret:SetPoint("LEFT", 2, 0)
-    caret:SetWidth(14)
-    caret:SetTextColor(unpack(SB.Theme.GOLD))
+    caret:SetWidth(18)
+    caret:SetTextColor(1, 0.82, 0.15)
     hdr.caret = caret
 
     local icon = hdr:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(16, 16)
+    icon:SetSize(18, 18)
     icon:SetPoint("LEFT", caret, "RIGHT", 2, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     hdr.icon = icon
 
+    -- Explicit report: should stand out more from the sound rows below it
+    -- - a bigger font (NormalLarge, same one the window's own header/title
+    -- text uses) instead of Highlight, which is the same size regular
+    -- sound names already use.
     local title = hdr:CreateFontString(nil, "OVERLAY")
-    title:SetFontObject(SB.Fonts.Highlight)
+    title:SetFontObject(SB.Fonts.NormalLarge)
     title:SetPoint("LEFT", icon, "RIGHT", 6, 0)
     title:SetTextColor(unpack(SB.Theme.TEXT))
     hdr.title = title
@@ -1156,6 +1235,11 @@ local function CreateSectionHeaderRow(index)
 
     hdr:SetScript("OnClick", function(self)
         if not self.sectionKey then return end
+        if self.sectionKey == "hide" then
+            hideSectionExpanded = not hideSectionExpanded
+            RefreshLibrary()
+            return
+        end
         -- "favourites" here is a reserved internal persistence key, never
         -- the visible label ("Favourites") - explicit requirement, so a
         -- future label/rename never silently resets this collapse state.
@@ -1224,8 +1308,13 @@ local function BuildSectionList()
     local list = { { type = "favourites" } }
     for _, tab in ipairs(TABS) do
         if not tab.isFavourites then
-            local visible = (not tab.isPrivate or SB:HasPrivateSounds())
-                and (not tab.hideIfEmpty or SB:HasCategorySounds(tab.key))
+            local visible
+            if tab.isHide then
+                visible = HasHiddenSounds()
+            else
+                visible = (not tab.isPrivate or SB:HasPrivateSounds())
+                    and (not tab.hideIfEmpty or SB:HasCategorySounds(tab.key))
+            end
             if visible then
                 table.insert(list, { type = "category", tab = tab })
             end
@@ -1384,7 +1473,12 @@ local function RefreshLibraryImpl()
             local tab = block.tab
             local key = tab.key
             local name, icon = TabDisplayInfo(tab)
-            local collapsed = SB.db.ui.categoryCollapsed[tostring(key)] and true or false
+            local collapsed
+            if tab.isHide then
+                collapsed = not hideSectionExpanded
+            else
+                collapsed = SB.db.ui.categoryCollapsed[tostring(key)] and true or false
+            end
             local list = GetTabSoundList(key)
             local n = #list
             totalShown = totalShown + n
@@ -2046,7 +2140,7 @@ local function BuildMainFrame()
     local toolbar = SB.CreateFrame("Frame", nil, main)
     toolbar:SetPoint("TOPLEFT", 8, -8)
     toolbar:SetPoint("TOPRIGHT", -8, -8)
-    toolbar:SetHeight(30)
+    toolbar:SetHeight(34) -- grown from 30 to fit the enlarged 26px toolbar controls
     main.toolbar = toolbar
 
     local toolbarLine = toolbar:CreateTexture(nil, "ARTWORK")
@@ -2069,25 +2163,14 @@ local function BuildMainFrame()
         SB:RefreshMainWindow()
     end
 
-    local adminBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
-    adminBtn:SetPoint("LEFT", 0, 0)
-    local adminIcon = adminBtn:CreateTexture(nil, "ARTWORK")
-    adminIcon:SetPoint("TOPLEFT", 2, -2)
-    adminIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    adminIcon:SetTexture(SB.ADMIN_ICON)
-    adminIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    adminBtn:SetScript("OnClick", ToggleAdmin)
-    SB.Theme.AttachTooltip(adminBtn, "Raid Admin", "Temporarily mute sending/receiving for the raid or party.")
-    adminBtn:Hide()
-    adminToolbarBtn = adminBtn
-
     -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
     -- (mute incoming / lock / muted players / open Soundbook / Announcer
     -- size), so there is exactly one such menu in the whole addon rather
-    -- than two diverging copies. Explicit request: top-left, next to the
-    -- search field (not bottom-left, where Settings alone now lives).
-    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
-    audioBtn:SetPoint("LEFT", adminBtn, "RIGHT", 4, 0)
+    -- than two diverging copies. Explicit request: flush at the toolbar's
+    -- own left edge (matching Settings' own left-edge placement below),
+    -- and a bit bigger like the search field next to it.
+    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 26)
+    audioBtn:SetPoint("LEFT", 0, 0)
     local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
     audioIcon:SetPoint("TOPLEFT", 2, -2)
     audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
@@ -2098,9 +2181,21 @@ local function BuildMainFrame()
     end)
     SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
 
-    -- Explicit request: Lock moved to the right, between the search field
-    -- and the close button (was on the left, after Raid Admin).
-    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 22)
+    local adminBtn = SB.Theme.CreateMiniControlButton(toolbar, 26)
+    adminBtn:SetPoint("LEFT", audioBtn, "RIGHT", 4, 0)
+    local adminIcon = adminBtn:CreateTexture(nil, "ARTWORK")
+    adminIcon:SetPoint("TOPLEFT", 2, -2)
+    adminIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    adminIcon:SetTexture(SB.ADMIN_ICON)
+    adminIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    adminBtn:SetScript("OnClick", ToggleAdmin)
+    SB.Theme.AttachTooltip(adminBtn, "Raid Admin", "Temporarily mute sending/receiving for the raid or party.")
+    adminBtn:Hide()
+    adminToolbarBtn = adminBtn
+
+    -- Explicit request: Lock stays on the right, between the search field
+    -- and the close button.
+    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 26)
     lockToolbarBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
     lockToolbarBtn:SetScript("OnClick", function()
         SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
@@ -2108,8 +2203,10 @@ local function BuildMainFrame()
     end)
     SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
 
-    searchBox = SB.Theme.CreateInputBox(toolbar, 100, 22)
-    searchBox:SetPoint("LEFT", audioBtn, "RIGHT", 8, 0)
+    -- Explicit request: a bit bigger, matching the toolbar icons' own
+    -- size bump.
+    searchBox = SB.Theme.CreateInputBox(toolbar, 100, 26)
+    searchBox:SetPoint("LEFT", adminBtn, "RIGHT", 8, 0)
     searchBox:SetPoint("RIGHT", lockToolbarBtn, "LEFT", -8, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -2213,12 +2310,19 @@ local function BuildMainFrame()
     favEmptyHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     favEmptyHint:Hide()
 
+    -- Explicit report: too small/hard to actually click on. Bigger hit
+    -- box, and the grabber texture itself is enlarged and inset from that
+    -- box (rather than filling it) so it also reads as more prominent,
+    -- not just a bigger empty click zone around the same tiny glyph.
     local resizeGrip = SB.CreateFrame("Button", nil, main)
-    resizeGrip:SetSize(22, 22)
-    resizeGrip:SetPoint("BOTTOMRIGHT", -8, 8)
+    resizeGrip:SetSize(34, 34)
+    resizeGrip:SetPoint("BOTTOMRIGHT", -6, 6)
     resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
     resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
     resizeGrip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
+    resizeGrip:GetNormalTexture():SetAllPoints()
+    resizeGrip:GetHighlightTexture():SetAllPoints()
+    resizeGrip:GetPushedTexture():SetAllPoints()
     resizeGrip:SetScript("OnMouseDown", function()
         if SB.db.ui.layoutLocked then return end
         main:StartSizing("BOTTOMRIGHT")
@@ -2313,6 +2417,9 @@ function SB:ShowMainWindow()
     -- already does for its own onboarding entry point.
     isSettingsOpen = false
     isAdminOpen = false
+    -- Explicit request: the virtual Hide section always starts collapsed
+    -- again on a fresh open, even if it was expanded earlier this session.
+    hideSectionExpanded = false
     InvalidateSortedListCache()
     main:Show()
     SB:RefreshMainWindow()

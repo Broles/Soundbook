@@ -20,6 +20,12 @@ local icon           -- idle/always-visible app icon (a Button, draggable)
 local banner         -- expanding "now playing" content, anchored to icon
 local muteDot        -- small indicator: incoming receive-mute is active
 local raidDot        -- small indicator: raid-admin currently restricts you
+-- True while the banner is showing DEMO content (Announcer Size slider,
+-- explicit request: "damit ich die Größe besser einschätzen kann") rather
+-- than an actual playing sound - see ShowAnnouncerQuickOptions/
+-- HideDemoBanner below. Never true at the same time a real sound is
+-- displayed (activeDisplays takes priority - see AddDisplay).
+local demoBannerActive = false
 
 -- The most recently seen PLAYBACK_PROGRESS_STARTED, consumed by the very
 -- next LOCAL_SOUND_PLAYED/REMOTE_SOUND_PLAYED for the SAME soundID. These
@@ -157,17 +163,23 @@ end
 -- The active banner
 ------------------------------------------------------------------------
 
--- BANNER_H grew from 40 - explicit report ("nicht nur ein kleiner dünner
--- Balken") wants a genuinely prominent, chunky progress bar, not a
--- marginally thicker line; giving it its own real vertical space below
--- the text rows instead of squeezing it into the original height.
-local BANNER_W, BANNER_H = 232, 48
+-- BANNER_H is no longer a fixed constant - explicit report: at a large
+-- Announcer Text Size, the name/source text grew tall enough to overlap
+-- the progress bar, which sat at a fixed distance from the banner's own
+-- (also fixed) bottom edge. RelayoutBannerHeight (below BuildBanner)
+-- recomputes both the banner's total height and the track's position
+-- from the ACTUAL current font metrics every time the font/scale
+-- changes, so there's no fixed size for a big font to outgrow.
+local BANNER_W = 232
+local ICON_SLOT_SIZE = 30
+local TRACK_H = 8
 
 local function BuildBanner()
     if banner then return banner end
 
     banner = SB.CreateFrame("Frame", "SoundbookAnnouncerBanner", UIParent)
-    banner:SetSize(BANNER_W, BANNER_H)
+    banner:SetWidth(BANNER_W)
+    banner:SetHeight(48)
     banner:SetFrameStrata("MEDIUM")
     banner:EnableMouse(true)
     banner:Hide()
@@ -214,9 +226,10 @@ local function BuildBanner()
     -- frames - unambiguous position/size, no anchor-resolution guessing)
     -- instead of a thin line squeezed against the bottom border.
     local track = SB.CreateFrame("Frame", nil, banner)
-    track:SetPoint("BOTTOMLEFT", banner, "BOTTOMLEFT", 41, 5)
-    track:SetPoint("BOTTOMRIGHT", banner, "BOTTOMRIGHT", -8, 5)
-    track:SetHeight(8)
+    -- Positioned by RelayoutBannerHeight below, not a fixed offset from
+    -- banner's own bottom - that's exactly what let it collide with the
+    -- text above it at a large font size.
+    track:SetHeight(TRACK_H)
     track:SetBackdrop({
         bgFile = "Interface\\Buttons\\WHITE8X8",
         edgeFile = "Interface\\Buttons\\WHITE8X8",
@@ -438,6 +451,7 @@ local function AddDisplay(soundID, sender, channelLabel)
     -- display at all while the HUD itself is hidden (a fresh install
     -- defaults to hidden - see Core.lua's "safer first start").
     if not icon or not icon:IsShown() then return end
+    demoBannerActive = false -- a real sound always wins over the size-preview demo
     BuildBanner()
     local start = pendingStart
     local handle, duration, startedAt = nil, nil, GetTime()
@@ -521,6 +535,37 @@ SB:On("RECEIVE_MUTE_CHANGED", RefreshIndicators)
 
 local quickMenu
 
+-- Explicit request: while adjusting the Announcer Size slider, show a
+-- demo "now playing" banner (placeholder name/sender/bar/time) so the
+-- player can actually judge the size - only while no REAL sound is
+-- currently displayed there (never overrides genuine playback).
+local function ShowDemoBanner()
+    if #activeDisplays > 0 then return end
+    BuildBanner()
+    demoBannerActive = true
+    banner.soundbookSoundID = nil
+    banner.slot.texture:SetTexture(SB.DEFAULT_ICON)
+    banner.nameText:SetText("Sound Name")
+    banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
+    local selfColor = SB.GetChannelColor("Self")
+    banner.subText:SetText(string.format("You |cff%s- Self|r", selfColor.hex))
+    banner.timeText:SetText("2.0 / 2.0")
+    banner.overlapBadge:SetText("")
+    banner.track:Show()
+    banner.fill:Show()
+    local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2)
+    banner.fill:SetWidth(trackW * 0.6)
+    LayoutBanner()
+    banner:Show()
+    icon:SetAlpha(1)
+end
+
+local function HideDemoBanner()
+    if not demoBannerActive then return end
+    demoBannerActive = false
+    if #activeDisplays == 0 then CollapseToIdle() end
+end
+
 function SB.ShowAnnouncerQuickOptions(anchor)
     if quickMenu and quickMenu:IsShown() then
         quickMenu:Hide()
@@ -540,7 +585,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         catcher:Hide()
         catcher:SetScript("OnClick", function() quickMenu:Hide(); catcher:Hide() end)
         quickMenu.catcher = catcher
-        quickMenu:SetScript("OnHide", function() catcher:Hide() end)
+        quickMenu:SetScript("OnHide", function() catcher:Hide(); HideDemoBanner() end)
 
         local rows = {}
         local function AddRow(label, onClick)
@@ -626,6 +671,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
     quickMenu.catcher:Show()
     quickMenu:Show()
+    ShowDemoBanner()
 end
 
 ------------------------------------------------------------------------
@@ -714,6 +760,26 @@ end
 -- window's, and mutating them would also resize Settings/Edit Sound/
 -- everything else that shares them), same approach the old Mini
 -- Soundbook's footerText always used for this exact setting.
+-- Explicit report: at a large Announcer Text Size, the name/source text
+-- overlapped the progress bar below it - both were at fixed positions
+-- within a fixed-height banner. Recomputes the banner's total height and
+-- the track's position from the SAME font metrics just applied above, so
+-- there's no fixed geometry for a bigger font to outgrow. Uses the
+-- known base sizes/line-height math rather than querying rendered
+-- GetHeight() (which needs an extra frame to settle after SetFont) -
+-- deterministic and correct the instant this runs.
+local function RelayoutBannerHeight()
+    local scale = SB.db.settings.miniFontScale or 1
+    local nameH = math.ceil((SB.Fonts.HighlightSmall.baseSize or 12) * scale * 1.4)
+    local subH = math.ceil((SB.Fonts.DisableSmall.baseSize or 10) * scale * 1.4)
+    local textBottom = 1 + nameH + 2 + subH -- top inset + name + gap + sub
+    local contentH = math.max(ICON_SLOT_SIZE, textBottom)
+    banner:SetHeight(math.max(40, contentH + 6 + TRACK_H + 5))
+    banner.track:ClearAllPoints()
+    banner.track:SetPoint("TOPLEFT", banner, "TOPLEFT", 41, -(contentH + 6))
+    banner.track:SetPoint("RIGHT", banner, "RIGHT", -8, 0)
+end
+
 function SB:RefreshAnnouncerFont()
     if not banner then return end
     local path = SB.db.settings.miniFont or SB.AVAILABLE_FONTS[1].path
@@ -725,6 +791,7 @@ function SB:RefreshAnnouncerFont()
     Apply(banner.nameText, SB.Fonts.HighlightSmall)
     Apply(banner.subText, SB.Fonts.DisableSmall)
     Apply(banner.timeText, SB.Fonts.DisableSmall)
+    RelayoutBannerHeight()
 end
 
 SB:On("TOGGLE_FAV_UI", function()

@@ -37,6 +37,7 @@ local function RecomputeDirty()
         or draft.name ~= originalDraft.name
         or draft.favourite ~= originalDraft.favourite
         or draft.muted ~= originalDraft.muted
+        or draft.hidden ~= originalDraft.hidden
         or draft.useAlternate ~= originalDraft.useAlternate
         or draft.outputOverride ~= originalDraft.outputOverride
         or draft.macroTarget ~= originalDraft.macroTarget
@@ -119,7 +120,8 @@ local function BuildFrame()
     -- here (a "Change Icon" button opens IconPicker.lua's own popup
     -- instead) - this window is correspondingly much more compact than the
     -- pre-3.0 512px version.
-    edit:SetSize(WINDOW_W, 372) -- content-driven modal with a small safe inset below
+    edit:SetSize(WINDOW_W, 396) -- +24 from 372 for the new Hide checkbox's own row
+                                 -- content-driven modal with a small safe inset below
                                  -- (trimmed from 565 - that value was sized
                                  -- back when Macro Output still sat on its
                                  -- own row BELOW Macro Command; once the two
@@ -226,6 +228,22 @@ local function BuildFrame()
     muteCheck:SetPoint("LEFT", favCheck, "RIGHT", 90, 0)
     edit.muteCheck = muteCheck
 
+    -- "Hide" (explicit request) - a new virtual "Hide" category at the very
+    -- bottom of the Library (always last, collapsed every time the window
+    -- opens - see UI.lua's BuildSectionList/hideSectionExpanded) holds
+    -- everything checked here; the sound simply no longer appears in its
+    -- own category tab. Purely a Library-visibility toggle - doesn't touch
+    -- Favourite slots, mute, or anything else.
+    local hideCheck = SB.Theme.CreateCheckbox(edit, "Hide", function(checked)
+        if not currentSoundID then return end
+        draft.hidden = checked and true or false
+        RecomputeDirty()
+    end)
+    hideCheck:SetPoint("TOPLEFT", favCheck, "BOTTOMLEFT", 0, -12)
+    edit.hideCheck = hideCheck
+    SB.Theme.AttachTooltip(hideCheck, "Hide",
+        "Removes this sound from its category - still reachable under Hide at the bottom of the Library.")
+
     -- "Alternative Sound" (SoundAlternates.lua, explicit request) - only
     -- ever shown for a sound that actually HAS a registered alternate file
     -- (hidden otherwise in SB.OpenEditWindow below, not just disabled) -
@@ -262,7 +280,7 @@ local function BuildFrame()
     -- actually applied and coloured everywhere the sound's icon appears.
     local defaultOutputLabel = edit:CreateFontString(nil, "OVERLAY")
     defaultOutputLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    defaultOutputLabel:SetPoint("TOPLEFT", favCheck, "BOTTOMLEFT", 4, -14)
+    defaultOutputLabel:SetPoint("TOPLEFT", hideCheck, "BOTTOMLEFT", 4, -14)
     defaultOutputLabel:SetText("Default Output (overrides Settings for this sound)")
     defaultOutputLabel:SetTextColor(0.60, 0.80, 1.0)
 
@@ -437,6 +455,7 @@ local function BuildFrame()
         local saved = SB:GetSoundSaved(currentSoundID)
         saved.icon = draft.icon
         saved.muted = draft.muted
+        saved.hidden = draft.hidden
         if SB.AnalyticsSetPersonalMute then SB:AnalyticsSetPersonalMute(currentSoundID, draft.muted) end
         saved.macroTarget = draft.macroTarget
         saved.useAlternate = draft.useAlternate
@@ -535,13 +554,14 @@ local function PopulateEditWindow(soundID)
         name = SB:GetSoundDisplayName(soundID),
         favourite = SB:IsFavourite(soundID),
         muted = saved.muted and true or false,
+        hidden = saved.hidden and true or false,
         macroTarget = saved.macroTarget,
         useAlternate = hasAlternate and saved.useAlternate and true or false,
         outputOverride = saved.outputOverride,
     }
     originalDraft = {
         icon = draft.icon, name = draft.name, favourite = draft.favourite,
-        muted = draft.muted, useAlternate = draft.useAlternate,
+        muted = draft.muted, hidden = draft.hidden, useAlternate = draft.useAlternate,
         outputOverride = draft.outputOverride, macroTarget = draft.macroTarget,
     }
     dirty = false
@@ -557,6 +577,7 @@ local function PopulateEditWindow(soundID)
 
     edit.favCheck:SetChecked(draft.favourite)
     edit.muteCheck:SetChecked(draft.muted)
+    edit.hideCheck:SetChecked(draft.hidden)
     edit.altCheck:SetShown(hasAlternate)
     edit.altCheck:SetChecked(draft.useAlternate)
 
