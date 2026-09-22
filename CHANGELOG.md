@@ -4,19 +4,23 @@
 
 ### Multi-client support
 
-- One `Soundbook.toc` now covers every currently live WoW client family via the comma-separated multi-interface line: `## Interface: 11509, 16001, 20506, 50504, 120005` (Classic Era, WoW Forever, Burning Crusade Classic Anniversary, Mists of Pandaria Classic, Retail). This is the same mechanism BigWigs uses in its own single TOC file (verified directly against github.com/BigWigsMods/BigWigs), which also independently corroborates `16001` as WoW Forever's interface number. No per-flavor filenames, no filename-suffix guessing.
+- One `Soundbook.toc` now covers every currently live WoW client family via the comma-separated multi-interface line: `## Interface: 11509, 16001, 20506, 50504, 120100` (Classic Era, WoW Forever, Burning Crusade Classic Anniversary, Mists of Pandaria Classic, Retail). This is the same mechanism BigWigs uses in its own single TOC file (verified directly against github.com/BigWigsMods/BigWigs), which also independently corroborates `16001` as WoW Forever's interface number and `120100` as Retail's current one. No per-flavor filenames, no filename-suffix guessing.
 - Season of Discovery and Hardcore realms share Classic Era's client build, so interface `11509` covers them too. Wrath Classic and Cataclysm Classic are not listed: neither is currently offered as a standalone live realm type (the progression-realm cycle has moved on to Mists) - add their interface numbers to the comma list if/when Blizzard reopens them.
 - Added `SB.GetNumGroupMembers()` compat wrapper (falls back to `GetNumRaidMembers`/`GetNumPartyMembers` on clients without the unified `GetNumGroupMembers` API) and switched every group-size check in `AdminPanel.lua` and `Communication.lua` to use it. Solo-case return value (`0`) checked against an external report of the live API - matches, no code change needed.
 - Removed the OPie integration entirely (`OPieIntegration.lua` deleted, dropped from the TOC) to cut a third-party, Retail-only dependency out of the multi-client compatibility surface.
 
+### Known upstream bug: WoW Forever SavedVariables
+
+- Confirmed on builds 1.60.1.69893 and 1.60.1.69913 via multiple independent Blizzard forum threads (EU and US) plus a third-party workaround tool (`ForeverSVFix` on GitHub): addon SavedVariables are written correctly but not loaded back on login, `/reload`, or character switch. Every session starts blank. This is a client bug upstream of Soundbook - nothing in `Core.lua`'s compat layer can work around it. Expect favourites/settings/history to reset on Forever until Blizzard fixes it.
+
 ### Known open items
 
-- WoW Forever is in beta; `C_Timer`, unified group APIs, and addon-message registration are assumed available based on the client's modern internals (corroborated by a third-party addon's TOC, a Blizzard statement on WoW Forever sharing Retail's 12.1.5 UI architecture, and an in-game `GetBuildInfo()` check) but not yet confirmed by a live playtest of Soundbook itself.
+- `C_Timer`, unified group APIs, and addon-message registration on WoW Forever are assumed available based on the client's modern internals (corroborated by a third-party addon's TOC, a Blizzard statement on WoW Forever sharing Retail's 12.1.5 UI architecture, and an in-game `GetBuildInfo()` check) but not yet confirmed by a live playtest of Soundbook itself.
 - Classic Era and BCC builds are static-analysis-verified against the existing compat layer in `Core.lua`; not covered by a live playtest as part of this change.
 - Mists of Pandaria Classic and Retail were added without the same dedicated audit pass given to Forever/Classic Era/BCC - they rely on `Core.lua`'s existing modern-API-first fallbacks but flavor-specific concerns (combat-lockdown/taint edge cases) have not been separately checked.
-- Retail's Interface number (`120005`) is unconfirmed and now actively in doubt: BigWigs' own current TOC lists `120007`, `120100`, and `120105` for Retail - none of which is `120005`. Verify with `/run print(select(4,GetBuildInfo()))` in-game and correct if needed.
 - Mists of Pandaria Classic's AddOns folder name was not confirmed against a live install.
-- Whether every one of the five targeted clients actually parses the comma-separated `## Interface:` line (versus reading only the first number and ignoring the rest) is not individually confirmed per client - only inferred from BigWigs shipping the same format for the same client set.
+- Whether every one of the five targeted clients actually parses the comma-separated `## Interface:` line (versus reading only the first number and ignoring the rest) is not individually confirmed per client - inferred from BigWigs and multiple CurseForge-published addons (e.g. GuildOS) shipping the same format for the same client set, including Forever specifically.
+- CurseForge's "WoW Forever" flavor is confirmed to exist and be usable by ordinary authors (not beta-partner-restricted), evidenced by real GitHub issues/PRs from third-party addon projects publishing to it. Not yet confirmed how it appears in this specific project's upload form.
 
 ## 2.7.1
 

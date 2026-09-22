@@ -5,22 +5,26 @@ Soundbook is an Arcane Codex-style soundboard for **World of Warcraft**. It comb
 Version 2.7.2 ships a single TOC file covering every currently live WoW client family, using the comma-separated multi-interface format:
 
 ```
-## Interface: 11509, 16001, 20506, 50504, 120005
+## Interface: 11509, 16001, 20506, 50504, 120100
 ```
 
-This is the same mechanism [BigWigs](https://github.com/BigWigsMods/BigWigs/blob/master/BigWigs.toc) - one of the most widely used multi-client addons - uses in its own single TOC file (verified directly against their repo, which independently confirms 16001 as WoW Forever's interface number). One physical file, no filename-suffix guessing, no risk of a client silently not recognizing a suffix it doesn't know about.
+This is the same mechanism [BigWigs](https://github.com/BigWigsMods/BigWigs/blob/master/BigWigs.toc) - one of the most widely used multi-client addons - uses in its own single TOC file (verified directly against their repo, which independently confirms 16001 as WoW Forever's interface number and 120100 as Retail's current one). One physical file, no filename-suffix guessing, no risk of a client silently not recognizing a suffix it doesn't know about.
 
 | Client | Interface | Status |
 | --- | --- | --- |
 | Classic Era (incl. Season of Discovery, Hardcore) | 11509 | Static-analysis verified only, not yet live-tested |
-| WoW Forever (beta) | 16001 | Static-analysis verified only, not yet live-tested |
+| WoW Forever (beta) | 16001 | Static-analysis verified only, not yet live-tested — see the known upstream bug below before relying on it |
 | Burning Crusade Classic (Anniversary) | 20506 | Confirmed in live use |
 | Mists of Pandaria Classic (progression realms) | 50504 | Not yet audited, not yet live-tested |
-| Retail | 120005 (unconfirmed — patch 12.1 may have shifted this to 120100; verify with `/run print(select(4,GetBuildInfo()))` in-game) | Added without a dedicated audit pass — see note below |
+| Retail | 120100 | Added without a dedicated audit pass — see note below |
 
 Season of Discovery and Hardcore realms run on the same client build as Classic Era, so interface 11509 covers them too. Wrath Classic and Cataclysm Classic are not listed separately: as of this writing those expansions aren't offered as standalone live realm types (the progression-realm cycle has moved past them to Mists) — add their interface numbers to the comma list if/when Blizzard reopens them.
 
 "Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. The Mists and Retail entries have not had that audit pass at all yet; they rely on `Core.lua`'s existing fallbacks (which all prefer the modern API most recent clients use natively) but haven't been checked for flavor-specific concerns such as combat-lockdown/taint edge cases. Report issues if something breaks.
+
+### Known upstream bug: WoW Forever SavedVariables
+
+The WoW Forever beta client (confirmed on builds 1.60.1.69893 and 1.60.1.69913) has an active, widely-reported bug: addon SavedVariables are written to disk correctly but are **not loaded back** on the next login, `/reload`, or character switch - every session effectively starts blank. This is a client bug, not a Soundbook bug; it's tracked in multiple threads on Blizzard's own forums, and a third-party workaround tool ([`ForeverSVFix`](https://github.com/nobewayo/ForeverSVFix)) exists. Until Blizzard fixes it, expect favourites, settings, and history to reset on Forever between sessions regardless of what this addon does. Not something we can code around from inside Soundbook.
 
 ## Install or upgrade
 
@@ -131,7 +135,7 @@ Stable sound IDs use `<category>::<name>`. A customized display name does not ch
 
 ## Compatibility and recovery
 
-- Target interfaces: `16001` (WoW Forever), `11509` (Classic Era), `20506` (Burning Crusade Classic Anniversary), `50504` (Mists of Pandaria Classic), `120005` (Retail, unconfirmed) — see the table above for verification status.
+- Target interfaces: `16001` (WoW Forever), `11509` (Classic Era), `20506` (Burning Crusade Classic Anniversary), `50504` (Mists of Pandaria Classic), `120100` (Retail) — see the table above for verification status.
 - Retail-style APIs are used only when available and have Classic-compatible fallbacks where required.
 - Optional sound-handle progress tracking degrades cleanly when `C_Sound.IsPlaying` is unavailable.
 - A database written by a newer Soundbook version is opened in non-committing compatibility mode; it is never downgraded.
