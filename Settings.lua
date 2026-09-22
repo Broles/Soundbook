@@ -34,6 +34,7 @@ local CHECKBOX_HELP = {
     ["Show Favourites Window"] = "Show or hide the Mini Soundbook.",
     ["Lock Favourite Window"] = "Prevent moving and resizing the Mini Soundbook.",
     ["Debug Mode"] = "Print additional diagnostic information to chat.",
+    ["Share Anonymous Analytics"] = "Contributes anonymous per-sound play counts to the shared community stats (Trending/Popular/Legendary/...). No character name, realm, guild, or account identifier is ever included.",
 }
 
 local function Help(frame, title, body)
@@ -899,20 +900,33 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     end
 
     -- ADVANCED / DEBUG
-    -- No visible Analytics opt-out here by design (explicit request): the
-    -- community-wide tag system (Trending/Popular/Legendary/...) depends on
-    -- a shared data pool, and a prominent toggle invites players to switch
-    -- it off individually, thinning that pool for everyone. The underlying
-    -- SB:SetAnalyticsEnabled/`/sb analytics on|off` escape hatch still
-    -- exists for a player who deliberately wants out (see Analytics.lua).
     local debugHeader = Section(content, "Advanced / Debug", lastAnchor, -16)
     local debugCheck = Checkbox(content, "Debug Mode", debugHeader, 0, -8, function(checked)
         SB.db.settings.debug = checked
     end)
     debugCheck:SetChecked(SB.db.settings.debug)
 
-    -- Four utility actions in a clean 2x2 grid. History shares the same
-    -- window opened by /sb history.
+    -- Analytics discoverability (3.0 spec section 55 - the Discovery
+    -- Report's own Critical UX Finding #1: the Analytics window previously
+    -- had ZERO ui entry point anywhere, only `/sb analytics`). The
+    -- checkbox itself stays understated (same row as Debug Mode, not a
+    -- giant toggle) - the community-wide tag system (Trending/Popular/
+    -- Legendary/...) still depends on a shared data pool, so this
+    -- deliberately isn't presented as a prominent decision either way,
+    -- just no longer hidden entirely. SB:SetAnalyticsEnabled (Analytics.lua)
+    -- also cancels in-flight sync work and drops unsent packets, same as
+    -- `/sb analytics off`.
+    local analyticsCheck = Checkbox(content, "Share Anonymous Analytics", debugHeader, 160, -8, function(checked)
+        if SB.SetAnalyticsEnabled then
+            SB:SetAnalyticsEnabled(checked)
+        else
+            SB.db.settings.analyticsEnabled = checked
+        end
+    end)
+    analyticsCheck:SetChecked(SB.db.settings.analyticsEnabled ~= false)
+
+    -- Five utility actions - History and Analytics share the same windows
+    -- opened by /sb history and /sb analytics.
     local utilityGap = 8
     local utilityBtnW = (CONTENT_W - 20 - utilityGap) / 2
     local restartIntroBtn = SB.Theme.CreateFlatButton(content, "Restart Intro", utilityBtnW, 22)
@@ -943,6 +957,13 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
         SlashCmdList["SOUNDBOOK"]("reset")
     end)
     Help(resetLayoutBtn, "Reset Window Layout", "Restore the saved Soundbook window positions and sizes.")
+
+    local analyticsBtn = SB.Theme.CreateFlatButton(content, "Community Analytics", utilityBtnW, 22)
+    analyticsBtn:SetPoint("TOPLEFT", historyBtn, "BOTTOMLEFT", 0, -utilityGap)
+    analyticsBtn:SetScript("OnClick", function()
+        if SB.ShowAnalyticsWindow then SB:ShowAnalyticsWindow() end
+    end)
+    Help(analyticsBtn, "Community Analytics", "Open anonymous community usage statistics - most-played, trending, and more.")
 
     content:SetHeight(2000) -- provisional, corrected below
 

@@ -111,8 +111,8 @@ local function BuildPopup()
     -- centred, no text - so "click any sound" is something you can actually
     -- try right there instead of just reading about it. SB:TriggerSound is
     -- the exact same call a normal Favourites-slot/main-window click makes,
-    -- so this plays the sound AND produces the same Now Playing visual in
-    -- the Mini Soundbook a real click would - not a special-cased demo.
+    -- so this plays the sound AND produces the same Announcer banner a
+    -- real click would - not a special-cased demo.
     local celebrationID = SB.MakeSoundID("Legacy", "Celebration")
     local PLAY_BTN_SIZE = 34
     local PLAY_BTN_MARGIN = 14
@@ -236,7 +236,7 @@ local function BuildPopup()
     local shareCard = CreateStep(playCard, SB.Theme.ACCENT, "2", "CHOOSE WHO HEARS IT",
         "Start in Self mode, then choose Direct, Friends, Guild, Raid or Party when you want to share. Everyone who sends or receives Soundbook sounds needs the addon installed.")
     local customCard = CreateStep(shareCard, { 1, 0.72, 0.18 }, "3", "MAKE IT YOURS",
-        "Shift + Left-click to favourite. Arrange sounds in the Mini Soundbook and assign hotkeys in Settings.")
+        "Shift + Left-click to favourite - up to 20 slots, always shown first in your Library. Drag to reorder them, and assign hotkeys to any slot in Settings.")
 
     -- Explicit request: a 4th, dimmer/grey entry pointing at the optional
     -- Soundbook_MySounds companion addon (see UI.lua's empty-category hint
