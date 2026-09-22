@@ -1,5 +1,34 @@
 # Changelog
 
+## 3.0.0
+
+### Main Soundbook redesign
+
+- Replaced the paged, right-side-tabbed book with one continuously scrolling Sound Library: Favourites first (compact - occupied slots only, expanding to all 20 as drop targets during a drag), then a collapsible section per category. Collapse state is remembered per category.
+- New compact toolbar (Settings / Raid Admin / Lock / Search / Quick Audio / Close) replaces the old tall crest header and the right-side category-tab dock.
+- Search and the tag filter pills (New/Trending/Popular/Loved/Legendary/Cringe/Dusty) now render as one flat cross-category result list, auto-expanding matching sections and restoring their collapsed state afterward.
+- New Output Rail (`ALL` / `G` / `P/R` / `F` / `NO`, left edge) replaces the old header dropdown for the global Default Output Channel. Hovering Guild/Party-Raid/Friends opens a flyout offering the whole group or an individual recipient subset, fanned out through the existing Direct/whisper transport - no new wire protocol.
+- Community Analytics finally has a real menu entry (Settings -> Advanced/Debug -> "Community Analytics"), alongside a visible "Share Anonymous Analytics" checkbox.
+
+### Announcer (replaces the Mini Soundbook window)
+
+- New always-on HUD: an idle app icon that expands into a compact banner (sound name, sender, channel, real playback progress - never a faked percentage for an unknown duration) whenever a Soundbook sound plays, local or received, then collapses back down.
+- Handles overlapping sounds (`+N` badge, promotes the next one when the primary ends) and shows a compact queue indicator when remote sounds are waiting.
+- Right-click the active banner to mute just that one sound; right-click the idle icon for Quick Options (mute incoming, lock, muted players, open Soundbook).
+- Expands away from whichever screen edge it's closest to, so it always stays fully on-screen. Small indicators for an active incoming-mute or raid-admin restriction show directly on the idle icon.
+- Favourites themselves moved out of this HUD and into the Main Soundbook's own Library (see above) - the Announcer's only job now is "what is Soundbook doing right now."
+
+### Edit Sound
+
+- No longer permanently embeds the icon grid - "Change Icon" opens a popup picker instead, shrinking the window noticeably.
+- Fixed: saving with all 20 Favourite slots full used to abort the entire save (name/icon/mute/output/macro changes lost too); now only the favourite change is reverted, with an inline message, and everything else still saves.
+- Added a "Discard unsaved changes?" prompt before closing (X, Cancel, Escape, or clicking outside) with unsaved edits, and before switching to edit a different sound while the current one is still unsaved.
+
+### Compatibility
+
+- SavedVariables migrated automatically and non-destructively on first login (database v26 -> v27) - existing favourites, keybinds, sound customizations, history, analytics, and settings all carry over. The old Mini Soundbook's position/visibility/opacity seed the new Announcer's once; its own SavedVariables fields are left untouched, not deleted.
+- Every existing slash command, the minimap button, companion-addon sound registration (`Soundbook_Private`/`Soundbook_MySounds`), and the `/sb play` macro contract are unchanged.
+
 ## 2.7.2
 
 ### Multi-client support
