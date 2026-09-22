@@ -1,0 +1,12 @@
+Place your sound files for Category 1 in this folder.
+Supported formats: .ogg, .mp3, .wav
+
+Example:
+  Sounds\Category1\lets go.ogg
+
+Then add the exact name (WITHOUT the extension) to the [1] list in Sounds.lua:
+  [1] = {
+      "lets go",
+  },
+
+A full WoW client restart is required before new files show up - see README.md.

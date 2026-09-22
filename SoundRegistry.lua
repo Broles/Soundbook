@@ -1,0 +1,499 @@
+-- SoundRegistry.lua
+-- Builds the single source of truth lookup table from Sounds.lua.
+-- Every other module (UI, Macros, Favourites, Communication) resolves
+-- sounds exclusively through SB.registry / SB:GetSoundInfo - there is no
+-- second, independently implemented sound lookup anywhere in the addon.
+
+local ADDON_NAME, SB = ...
+
+SB.registry = {}          -- [soundID] = { id, category, name, fileBase }
+SB.registryByCategory = {} -- [category] = { soundID, soundID, ... } (in Sounds.lua order) - PUBLIC sounds only, see SB.privateSoundIDs below
+SB.privateSoundIDs = {}   -- soundID list for every sound registered via SB.RegisterPrivateSounds (e.g. Soundbook_Private) -
+                          -- kept OUT of registryByCategory entirely so it never mixes into the public Category
+                          -- tabs; instead it powers its own dedicated "Stammtisch" tab (UI.lua), which only
+                          -- shows up at all once this list is non-empty.
+
+-- Fixed internal category identifier used for every private sound,
+-- regardless of how many companion addons register them or what they call
+-- things - there's only ever the one "bonus content" bucket (Stammtisch),
+-- never a private Category split. A string, deliberately outside the
+-- numeric/"Default" range SB.CATEGORIES uses, so it can never collide with
+-- a real public category now or later. Never shown anywhere in the UI
+-- (only "Stammtisch" is), so the exact value doesn't matter except that it
+-- must never change once someone has favourited a private sound - their
+-- favourite is stored as this + the sound's name.
+SB.PRIVATE_CATEGORY = "Private"
+
+-- Builds a stable id such as "2::wir wipen" or "Default::Vine Boom".
+-- Category is always the physical category identifier (a number, or the
+-- "Default"/SB.PRIVATE_CATEGORY string), never an array index, so ids
+-- never break when sounds are reordered, renamed (category display name),
+-- or resorted.
+function SB.MakeSoundID(category, name)
+    return tostring(category) .. "::" .. name
+end
+
+function SB.ParseSoundID(soundID)
+    if not SB.IsValidSoundID(soundID) then return nil end
+    local cat, name = soundID:match("^([^:]+)::(.*)$")
+    if not cat then return nil end
+    return tonumber(cat) or cat, name
+end
+
+-- `sourceAddon` defaults to this addon's own folder (Soundbook), but a
+-- companion addon registering sounds via SB.RegisterPrivateSounds below
+-- can pass its OWN folder name here instead, so its sound files live
+-- entirely inside its own folder - e.g. a private, separately-distributed
+-- "Soundbook_Private" addon never needs its files copied into Soundbook's
+-- own Sounds folder at all.
+-- `flat` (private sounds only) skips the "CategoryN" subfolder entirely -
+-- there's only ever the one bucket of private/bonus sounds, so there's no
+-- reason to make anyone split files across three folders for it; they all
+-- just live directly in that addon's own Sounds\ folder.
+local function BuildFileBase(category, name, sourceAddon, flat)
+    -- Path relative to the WoW installation root (without extension - see
+    -- SB.SOUND_EXTENSIONS / SoundPlayer.lua for how the real file is found).
+    local root = "Interface\\AddOns\\" .. (sourceAddon or ADDON_NAME) .. "\\Sounds\\"
+    if flat then
+        return root .. name
+    end
+    -- "Legacy" and "German Memes" are named folders (Sounds\Legacy\,
+    -- Sounds\German Memes\), not "CategoryLegacy\"/"CategoryGerman Memes\" -
+    -- only the plain numeric categories (1, 2, ...) get the "CategoryN\"
+    -- treatment. Used to be just "Default" (Sounds\Default\) before the
+    -- category split - see Core.lua's MigrateDB v17->v18 block.
+    if category == "Legacy" then
+        return root .. "Legacy\\" .. name
+    elseif category == "German Memes" then
+        return root .. "German Memes\\" .. name
+    end
+    return root .. "Category" .. category .. "\\" .. name
+end
+
+-- SB.SoundDurations (SoundDurations.lua) is keyed by the physical file
+-- name on disk, generated outside the game - but a sound's registered
+-- `name` (used to build fileBase here) is typed independently in
+-- Sounds.lua and can differ in CASE from the real file name (e.g. file
+-- "bongo.mp3" but Sounds.lua's `name = "Bongo"`). Windows itself doesn't
+-- care (PlaySoundFile finds the file either way), but a plain Lua table
+-- lookup is case-SENSITIVE, so an exact-match lookup silently returns
+-- nothing for a sound like this - it never gets its precomputed duration
+-- and has to wait to be learned live instead. Built lazily, once, the
+-- first time it's needed - not at file-load time, since SB.SoundDurations
+-- itself might not be loaded/populated yet at that exact moment.
+local soundDurationsLower
+local function LookupPrecomputedDuration(fileBase)
+    if not SB.SoundDurations then return nil end
+    local exact = SB.SoundDurations[fileBase]
+    if exact then return exact end
+    if not soundDurationsLower then
+        soundDurationsLower = {}
+        for k, v in pairs(SB.SoundDurations) do
+            soundDurationsLower[k:lower()] = v
+        end
+    end
+    return soundDurationsLower[fileBase:lower()]
+end
+
+-- `entry` is normally just a plain name string (as in every existing
+-- Sounds.lua), but can also be a table { name = "...", icon = ... } to
+-- ship a DEFAULT icon with the sound in code, so everyone who gets this
+-- entry (via CurseForge, Soundbook_Private, etc.) sees that icon from the
+-- first time they see the sound - not just whoever manually picks one in
+-- the Edit window. `icon` can be either a string path
+-- ("Interface\\Icons\\...") or a numeric file ID (WoW's own icon picker
+-- saves whichever one the modern client's macro icon list returned -
+-- SetTexture accepts both). It's still only a starting point: picking a
+-- different icon in-game overrides it as normal, per-player, same as ever
+-- (see SB:GetSoundSaved's icon backfill).
+local function InsertSoundEntry(category, entry, sourceAddon, isPrivate)
+    local name, defaultIcon, explicitDuration, entryTags
+    if type(entry) == "string" then
+        name = entry
+    elseif type(entry) == "table" then
+        name = entry.name
+        defaultIcon = entry.icon
+        explicitDuration = entry.duration
+        -- Optional search alias tags: { "laugh", "lol", "pirat", ... }
+        -- Validated and normalised to lowercase strings here so the search
+        -- path (UI.lua) never has to sanitise them at query time.
+        if type(entry.tags) == "table" then
+            entryTags = {}
+            for _, t in ipairs(entry.tags) do
+                if type(t) == "string" and #t > 0 and #t <= 64 then
+                    table.insert(entryTags, t:lower())
+                end
+            end
+            if #entryTags == 0 then entryTags = nil end
+        end
+    end
+    name = SB.TrimText(name)
+    if not SB.IsValidSoundName(name) then
+        SB:Debug("Rejected invalid sound entry from %s: %s", tostring(sourceAddon or ADDON_NAME), tostring(name))
+        return
+    end
+    if not SB.IsValidAddonFolder(sourceAddon) then
+        SB:Debug("Rejected sound entry with invalid addon folder: %s", tostring(sourceAddon))
+        return
+    end
+
+    local id = SB.MakeSoundID(category, name)
+    if SB.registry[id] then
+        SB:Debug("Duplicate sound entry ignored: %s", id)
+        return
+    end
+    local iconType = type(defaultIcon)
+    if not (iconType == "string" or iconType == "number") or defaultIcon == ""
+        or (iconType == "string" and (#defaultIcon > 240 or defaultIcon:find("[%z\1-\31\127]"))) then
+        defaultIcon = nil
+    end
+    local fileBase = BuildFileBase(category, name, sourceAddon, isPrivate)
+    -- Duration - see SoundDurations.lua and SoundPlayer.lua for the full
+    -- explanation. Priority: an explicit per-entry `duration` (e.g. a
+    -- companion addon's own Sounds.lua) > the precomputed table (this
+    -- addon's own shipped sounds) > a value already learned in a past
+    -- session (SB.db isn't ready yet for THIS addon's own built-in Sounds.
+    -- lua, which registers before ADDON_LOADED fires - harmless, that case
+    -- is always covered by the precomputed table instead). Never guessed -
+    -- nil here just means "unknown for now", not "silently pretend 0".
+    local durationType = type(explicitDuration)
+    if durationType ~= "number" or not SB.IsFiniteNumber(explicitDuration)
+        or explicitDuration <= 0 or explicitDuration > 600 then explicitDuration = nil end
+    local duration = explicitDuration
+        or LookupPrecomputedDuration(fileBase)
+        or (SB.db and SB.db.soundDurations and SB.db.soundDurations[id])
+    SB.registry[id] = {
+        id = id,
+        category = category,
+        name = name,
+        fileBase = fileBase,
+        defaultIcon = defaultIcon,
+        isPrivate = isPrivate or nil,
+        durationSeconds = duration,
+        tags = entryTags,
+    }
+    if isPrivate then
+        table.insert(SB.privateSoundIDs, id)
+    else
+        table.insert(SB.registryByCategory[category], id)
+    end
+end
+
+local function BuildRegistry()
+    wipe(SB.registry)
+    wipe(SB.registryByCategory)
+    wipe(SB.privateSoundIDs)
+    for _, category in ipairs(SB.CATEGORIES) do
+        SB.registryByCategory[category] = {}
+    end
+
+    local source = _G.SoundbookSounds
+    if type(source) ~= "table" then
+        SB:Print("|cffff5555Sounds.lua is missing or invalid.|r No sounds loaded.")
+        return
+    end
+
+    for _, category in ipairs(SB.CATEGORIES) do
+        local list = source[category]
+        if type(list) == "table" then
+            for _, name in ipairs(list) do
+                InsertSoundEntry(category, name)
+            end
+        end
+    end
+end
+
+-- Lets a second, SEPARATELY DISTRIBUTED addon add more sounds at runtime,
+-- without ever touching this addon's own (publicly shared) Sounds.lua -
+-- the intended way to keep personal/private sounds out of a public
+-- CurseForge upload while still sharing everything else.
+--
+-- `list` is a FLAT array - no category split, unlike Sounds.lua's
+-- SoundbookSounds table - since private sounds are all just one "bonus
+-- content" bucket (there's no private Category 2/3/4, only the one
+-- "Stammtisch" tab they all land in together - SB:GetPrivateSounds/
+-- SB:HasPrivateSounds below, UI.lua):
+--   { "name", { name = "...", icon = ... }, ... }
+-- (each entry a plain name string, or a table for a code-shipped default
+-- icon - see InsertSoundEntry above.)
+--
+-- `sourceAddonFolder` (optional) is the AddOns folder name the actual
+-- .mp3/.ogg/.wav files for these entries live in - pass the CALLING
+-- addon's own folder name (e.g. "Soundbook_Private") so its sound files
+-- stay entirely inside that addon's own (single, flat) Sounds\ folder,
+-- never needing to be copied into Soundbook's. Defaults to Soundbook's own
+-- folder if omitted.
+--
+-- Safe to call more than once/from more than one addon - entries are added
+-- incrementally (this never wipes what's already registered), and a name
+-- that collides with an existing one is skipped rather than overwritten.
+-- See README.md "Splitting public and private sounds".
+function SB.RegisterPrivateSounds(list, sourceAddonFolder)
+    if type(list) ~= "table" or not SB.IsValidAddonFolder(sourceAddonFolder) then return end
+    for _, entry in ipairs(list) do
+        InsertSoundEntry(SB.PRIVATE_CATEGORY, entry, sourceAddonFolder, true)
+    end
+    SB:Fire("SOUND_DISPLAY_CHANGED")
+end
+
+-- The UPDATE-SAFE way for anyone to add their own sounds to the regular
+-- category tabs (same shape as this addon's own
+-- Sounds.lua): from a SEPARATE companion addon folder instead of editing
+-- Soundbook's own Sounds.lua directly. CurseForge/WowUp updates replace
+-- Soundbook's entire folder wholesale on every update, so anything typed
+-- straight into Soundbook\Sounds.lua (or dropped into its Sounds\
+-- subfolders) is at risk of being wiped out the next time Soundbook
+-- updates. A companion addon (see the Soundbook_MySounds template) is
+-- never part of Soundbook's own package, so CurseForge never touches it -
+-- your entries and files survive every future update.
+--   source: { [Category] = { "name", { name=, icon= }, ... }, [1] = {...}, [2] = {...} }
+-- `sourceAddonFolder` (optional) is the AddOns folder name the actual
+-- .mp3/.ogg/.wav files live in - pass your own companion addon's folder
+-- name so its files stay entirely inside that folder. Defaults to
+-- Soundbook's own folder if omitted. Safe to call more than once/from more
+-- than one addon; a name colliding with an existing entry is skipped
+-- rather than overwritten. See README.md "Adding sounds that survive
+-- updates".
+function SB.RegisterSounds(source, sourceAddonFolder)
+    if type(source) ~= "table" or not SB.IsValidAddonFolder(sourceAddonFolder) then return end
+    for _, category in ipairs(SB.CATEGORIES) do
+        local list = source[category]
+        if type(list) == "table" then
+            for _, entry in ipairs(list) do
+                InsertSoundEntry(category, entry, sourceAddonFolder, false)
+            end
+        end
+    end
+    SB:Fire("SOUND_DISPLAY_CHANGED")
+end
+
+-- Public accessors -------------------------------------------------------
+
+function SB:GetSoundInfo(soundID)
+    return SB.registry[soundID]
+end
+
+function SB:SoundExists(soundID)
+    return SB.registry[soundID] ~= nil
+end
+
+function SB:GetCategorySounds(category)
+    return SB.registryByCategory[category] or {}
+end
+
+-- Every sound registered via SB.RegisterPrivateSounds (e.g. by
+-- Soundbook_Private) - they all show up together in the one "Stammtisch"
+-- tab. Order matches registration order (the private addon's own
+-- Sounds.lua).
+function SB:GetPrivateSounds()
+    return SB.privateSoundIDs
+end
+
+-- Whether the "Stammtisch" tab should exist at all this session - false
+-- when no companion addon (or none with any sounds in it) is installed.
+function SB:HasPrivateSounds()
+    return #SB.privateSoundIDs > 0
+end
+
+-- Same idea for the plain numbered categories (1, 2, ...): Soundbook itself
+-- only ever ships "Legacy"/"German Memes" with content. Category 1/2 are
+-- empty slots that stay entirely hidden in the main window until something - normally
+-- Soundbook_MySounds via SB.RegisterSounds - actually puts a sound in them,
+-- so nobody without MySounds ever sees an empty tab.
+function SB:HasCategorySounds(category)
+    local list = SB.registryByCategory[category]
+    return list ~= nil and #list > 0
+end
+
+function SB:GetAllSoundIDs()
+    local list = {}
+    for _, category in ipairs(SB.CATEGORIES) do
+        for _, id in ipairs(SB:GetCategorySounds(category)) do
+            table.insert(list, id)
+        end
+    end
+    for _, id in ipairs(SB.privateSoundIDs) do
+        table.insert(list, id)
+    end
+    return list
+end
+
+-- Per-sound saved data (icon/favourite/muted/volume) lives in SavedVariables
+-- and is created lazily with sane defaults the first time it's touched.
+-- Existing entries from before a given field existed get it backfilled
+-- here too (checked individually, not just on first creation).
+--
+-- IMPORTANT: `saved.icon` is intentionally left nil here and NEVER written
+-- by this function. The only place that ever sets it is EditWindow.lua's
+-- icon grid, when a player deliberately picks one - that's what makes its
+-- mere presence an unambiguous "this player chose this on purpose" signal.
+-- An earlier version of this function used to bake the code-shipped
+-- Sounds.lua default into saved.icon the first time a sound was touched;
+-- that froze it permanently (GetSoundIcon below always prefers a non-nil
+-- saved.icon), so any later improvement to a Sounds.lua icon silently had
+-- no effect for anyone who had already touched that sound even once. Now
+-- GetSoundIcon re-reads the current defaultIcon live every time there's no
+-- explicit per-player pick, so icon fixes in Sounds.lua actually show up.
+function SB:GetSoundSaved(soundID)
+    if not SB.db or not SB.registry[soundID] then return nil end
+    if type(SB.db.sounds) ~= "table" then SB.db.sounds = {} end
+    local saved = SB.db.sounds[soundID]
+    if not saved then
+        saved = {}
+        SB.db.sounds[soundID] = saved
+    end
+    if saved.favourite == nil then saved.favourite = false end
+    if saved.muted == nil then saved.muted = false end
+    if saved.volume == nil then saved.volume = 100 end
+    return saved
+end
+
+------------------------------------------------------------------------
+-- "New" tag - SB.db.sounds[soundID].addedAt (time() epoch), used by
+-- UI.lua's "New" pill. Never touched by GetSoundSaved itself (that's
+-- called for EVERY sound the grid ever renders, including ones a player
+-- just never happened to touch yet - stamping addedAt there would wrongly
+-- mark long-existing, simply-never-clicked sounds as "New"). Only ever
+-- set explicitly by BackfillAddedAt below, once per soundID, ever.
+------------------------------------------------------------------------
+
+local NEW_TAG_DAYS = 2 -- 48h, per explicit request (was 5 days)
+
+-- Explicit one-time list for the SAME release this "New" tag feature
+-- itself shipped in - these sounds were already added to Sounds.lua a
+-- little earlier in the same update and should genuinely show "New" from
+-- here, even though SB.db.knownSoundIDs (below) has no real history to
+-- compare against yet on its very first run. Never needs touching again
+-- after this release - any sound added in a LATER Sounds.lua update is
+-- automatically detected as new by BackfillAddedAt's normal path (a
+-- soundID that simply doesn't exist yet in SB.db.knownSoundIDs).
+--
+-- Permanently dead as of the "Default" category split (Core.lua's
+-- MigrateDB v17->v18) - these 4 ids can never exist again (the category
+-- got renamed), so this table can simply never match anything anymore.
+-- Left as-is rather than deleted, same as every historical MigrateDB
+-- block - harmless, and keeping the "was New once" record intact costs
+-- nothing. The same 4 sounds keep their "New" status through the split
+-- too, just via that migration block instead of this table.
+local MIGRATION_NEW_SOUND_IDS = {
+    ["Default::Zehahaha"] = true,
+    ["Default::Schoki"] = true,
+    ["Default::Donkey Hee Haw"] = true,
+    ["Default::Mir Egal"] = true,
+}
+
+-- Walks every CURRENTLY REGISTERED soundID once (idempotent - a soundID
+-- already in SB.db.knownSoundIDs is never touched again) and decides,
+-- once and permanently, whether it's "New" (real addedAt timestamp) or
+-- "legacy" (no addedAt at all, never shows the New tag):
+--   - The very first time this ever runs for this player (no
+--     knownSoundIDs table yet at all), every sound that already exists in
+--     the registry right now is legacy EXCEPT MIGRATION_NEW_SOUND_IDS
+--     above - we have no real history for a player's existing library,
+--     and marking their whole Soundbook "New" on upgrade would be wrong.
+--   - On every run after that, any soundID that's never been seen before
+--     (a real future Sounds.lua addition) is genuinely new - stamped with
+--     time() right away, no manual list needed for it.
+-- Must run before the grid ever renders (see Core.lua's PLAYER_LOGIN/
+-- ADDON_LOADED wiring) - GetSoundSaved's own lazy-create would otherwise
+-- create an addedAt-less entry for an unrelated reason (e.g. a favourite
+-- toggle) before this ever gets a chance to classify it correctly.
+function SB:BackfillAddedAt()
+    if not SB.db then return end
+    local isFirstRun = not SB.db.knownSoundIDs
+    SB.db.knownSoundIDs = SB.db.knownSoundIDs or {}
+    for soundID in pairs(SB.registry) do
+        if not SB.db.knownSoundIDs[soundID] then
+            SB.db.knownSoundIDs[soundID] = true
+            if MIGRATION_NEW_SOUND_IDS[soundID] or not isFirstRun then
+                local saved = SB:GetSoundSaved(soundID)
+                saved.addedAt = time()
+            end
+        end
+    end
+end
+
+-- Purely LOCAL, per-player "have I personally heard this enough" counters
+-- (explicit request) - [soundID] = { self = N, received = N }. `self` is
+-- how many times THIS player has personally triggered/sent this sound
+-- locally (SB:TriggerSound - a click, or a SendMenu.lua "send to...");
+-- `received` is how many times THIS player has actually heard it after
+-- someone ELSE sent it to them (HandlePlayCommand, Communication.lua).
+-- Deliberately independent of the shared multiplayer Analytics system
+-- (Analytics.lua's own totalPlays, which requires a real reciprocal ACK
+-- and excludes self-only plays on purpose) - this is only ever about one
+-- specific player's own listening history, never synced to anyone else.
+local function NewSoundHeardCounts()
+    SB.db.newSoundHeardCounts = SB.db.newSoundHeardCounts or {}
+    return SB.db.newSoundHeardCounts
+end
+
+--- Bumps this player's own local self/received counter for `soundID` -
+--- `kind` is "self" or "received". No-ops once the sound's own addedAt-
+--- based time window has already expired (or it never had one) - the
+--- counter only matters while the sound could still legitimately be
+--- tagged New at all, nothing left to track once time alone already
+--- settled it.
+function SB:BumpNewSoundHeardCount(soundID, kind)
+    local saved = soundID and SB.db and SB.db.sounds and SB.db.sounds[soundID]
+    if not saved or not saved.addedAt or saved.addedAt <= 0 then return end
+    if (time() - saved.addedAt) >= (NEW_TAG_DAYS * 86400) then return end
+    local counts = NewSoundHeardCounts()
+    local entry = counts[soundID] or { self = 0, received = 0 }
+    entry[kind] = (entry[kind] or 0) + 1
+    counts[soundID] = entry
+end
+
+--- True only while a real addedAt exists and is within NEW_TAG_DAYS -
+--- legacy sounds (no addedAt at all) never qualify, and it stops on its
+--- own once the window passes (no separate "clear" step needed anywhere).
+--- Explicit request: ALSO stops early, before the 48h window itself is
+--- even up, once THIS player has personally heard the sound enough - at
+--- least 3 self-triggered plays/sends AND at least 3 received plays, 6
+--- total (SB:BumpNewSoundHeardCount above) - "New" has done its job for
+--- this specific player at that point, whatever's left of the 48h window.
+function SB:IsSoundNew(soundID)
+    local saved = SB.db and SB.db.sounds[soundID]
+    if not saved or not saved.addedAt or saved.addedAt <= 0 then return false end
+    if (time() - saved.addedAt) >= (NEW_TAG_DAYS * 86400) then return false end
+    local counts = SB.db.newSoundHeardCounts and SB.db.newSoundHeardCounts[soundID]
+    if counts and (counts.self or 0) >= 3 and (counts.received or 0) >= 3 then
+        return false
+    end
+    return true
+end
+
+function SB:GetSoundIcon(soundID)
+    local saved = SB.db and SB.db.sounds[soundID]
+    if saved and saved.icon then return saved.icon end
+    local info = SB.registry[soundID]
+    return (info and info.defaultIcon) or SB.DEFAULT_ICON
+end
+
+-- The name shown in-game defaults to the exact Sounds.lua entry, but can be
+-- overridden per-sound from the Edit window without touching Sounds.lua.
+function SB:GetSoundDisplayName(soundID)
+    local saved = SB.db and SB.db.sounds[soundID]
+    if saved and saved.displayName and saved.displayName ~= "" then
+        return saved.displayName
+    end
+    local info = SB.registry[soundID]
+    return info and info.name or soundID
+end
+
+function SB:SetSoundDisplayName(soundID, name)
+    local saved = SB:GetSoundSaved(soundID)
+    if not saved then return end
+    local info = SB.registry[soundID]
+    name = SB.TrimText(name)
+    if not name or name == "" or (info and name == info.name) then
+        saved.displayName = nil -- back to the Sounds.lua default
+    elseif #name > 80 or name:find("[%z\1-\31\127]") then
+        return false
+    else
+        saved.displayName = name
+    end
+    return true
+end
+
+BuildRegistry() -- Sounds.lua has already loaded (earlier in the .toc) by this point.
