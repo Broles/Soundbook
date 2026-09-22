@@ -19,7 +19,7 @@ Version 2.8.0 ships three TOC files so CurseForge/WowUp install the matching bui
 3. Copy the included `Soundbook` folder into your client's AddOns folder, e.g.:
    - Burning Crusade Classic (Anniversary): `World of Warcraft/_anniversary_/Interface/AddOns/`
    - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/`
-   - WoW Forever: folder name not yet confirmed — check your own client's directory under `World of Warcraft/` for the `_forever_`-style folder once installed.
+   - WoW Forever (beta): `World of Warcraft/_classic_beta_/Interface/AddOns/`
 4. Confirm that the final path is `Interface/AddOns/Soundbook/Soundbook.toc`.
 5. Start the game, enable Soundbook, log in, and run `/sb doctor`.
 
