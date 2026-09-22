@@ -1362,23 +1362,47 @@ end
 ------------------------------------------------------------------------
 -- Output Rail - ALL / G / P-R / F / NO (3.0 spec section 20). Sets the
 -- global Default Output Channel (Communication.lua's
--- SB.db.settings.defaultOutputTarget) directly; per-recipient flyouts are
--- a later 3.0 stage.
+-- SB.db.settings.defaultOutputTarget) directly. Guild/Party-Raid/Friends
+-- also open a hover flyout offering the whole group or an individual
+-- recipient subset (SB.db.ui.outputRail, fanned out through the existing
+-- Direct/whisper transport - see Communication.lua's SB:DispatchDefaultOutput
+-- SUBSET branch, never a new wire command).
 ------------------------------------------------------------------------
 
 local OUTPUT_RAIL_ENTRIES = {
     { label = "ALL", value = "ALL", tooltip = "All currently enabled broadcast channels." },
-    { label = "G", value = "GUILD", tooltip = "Guild only." },
-    { label = "P/R", value = "RAID", tooltip = "Party or Raid, whichever you're currently in." },
-    { label = "F", value = "FRIENDS", tooltip = "Friends only." },
+    { label = "G", value = "GUILD", tooltip = "Guild only.", bucket = "GUILD", groupLabel = "Guild" },
+    { label = "P/R", value = "RAID", tooltip = "Party or Raid, whichever you're currently in.", bucket = "RAID" },
+    { label = "F", value = "FRIENDS", tooltip = "Friends only.", bucket = "FRIENDS", groupLabel = "Friends" },
     { label = "NO", value = "SELF", tooltip = "Local playback only - nothing is sent." },
 }
 
+local function IsRailBucketAvailable(bucket)
+    if bucket == "GUILD" then return IsInGuild() and true or false end
+    if bucket == "RAID" then return (IsInGroup() or IsInRaid()) and true or false end
+    if bucket == "FRIENDS" then
+        local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
+        return reachable and #reachable.FRIENDS > 0
+    end
+    return true
+end
+
+local function RailGroupLabel(entry)
+    if entry.bucket == "RAID" then
+        return IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party")
+    end
+    return entry.groupLabel
+end
+
 local function RefreshOutputRail()
     local current = SB.db.settings.defaultOutputTarget or "ALL"
+    local subsetMode = current == "SUBSET" and SB.db.ui.outputRail and SB.db.ui.outputRail.mode
+    local subsetCount = subsetMode and #(SB.db.ui.outputRail.recipients or {}) or 0
     for _, btn in ipairs(outputRailButtons) do
+        local entry = btn.railEntry
         local selected = btn.railValue == current
             or (btn.railValue == "RAID" and current == "PARTY")
+            or (subsetMode and btn.railValue == subsetMode)
         if selected then
             btn:SetBackdropBorderColor(unpack(SB.Theme.ACCENT))
             btn.label:SetTextColor(0.82, 0.90, 1.0)
@@ -1386,10 +1410,175 @@ local function RefreshOutputRail()
             btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
             btn.label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
         end
+        local baseLabel = entry.label
         if btn.railValue == "RAID" then
-            btn.label:SetText(IsInRaid() and "R" or (IsInGroup() and "P" or "P/R"))
+            baseLabel = IsInRaid() and "R" or (IsInGroup() and "P" or "P/R")
+        end
+        if subsetMode and btn.railValue == subsetMode and subsetCount > 0 then
+            -- Plain ASCII, not a Unicode middle dot - see this file's other
+            -- glyph-safety comments (WoW's bundled fonts don't reliably
+            -- cover every codepoint).
+            baseLabel = baseLabel .. ":" .. subsetCount
+        end
+        btn.label:SetText(baseLabel)
+
+        if entry.bucket then
+            local available = IsRailBucketAvailable(entry.bucket)
+            btn:SetAlpha(available and 1 or 0.45)
         end
     end
+end
+
+------------------------------------------------------------------------
+-- Output flyout - Guild/Party-Raid/Friends' hover popup (3.0 spec section
+-- 22). One shared floating panel, repopulated per hover target, same
+-- "stay open while the mouse crosses onto it" pattern Theme.CreateDropdown
+-- already uses for its own list.
+------------------------------------------------------------------------
+
+local outputFlyout
+local outputFlyoutOpenTimer, outputFlyoutCloseTimer
+
+local function ScheduleFlyoutClose()
+    if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel() end
+    outputFlyoutCloseTimer = C_Timer.NewTimer(0.15, function()
+        outputFlyoutCloseTimer = nil
+        if outputFlyout and not outputFlyout:IsMouseOver() then outputFlyout:Hide() end
+    end)
+end
+
+local function BuildOutputFlyout()
+    if outputFlyout then return outputFlyout end
+    local f = SB.CreateFrame("Frame", nil, UIParent)
+    f:SetFrameStrata("TOOLTIP")
+    f:SetWidth(190)
+    f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    f:SetBackdropColor(unpack(SB.Theme.BG_RAISED))
+    f:SetBackdropBorderColor(SB.Theme.GOLD_DIM[1], SB.Theme.GOLD_DIM[2], SB.Theme.GOLD_DIM[3], 0.8)
+    f:EnableMouse(true)
+    f:Hide()
+    f:SetScript("OnEnter", function()
+        if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel(); outputFlyoutCloseTimer = nil end
+    end)
+    f:SetScript("OnLeave", ScheduleFlyoutClose)
+
+    f.title = f:CreateFontString(nil, "OVERLAY")
+    f.title:SetFontObject(SB.Fonts.Highlight)
+    f.title:SetPoint("TOPLEFT", 10, -8)
+    f.title:SetTextColor(unpack(SB.Theme.GOLD))
+
+    f.unavailableText = f:CreateFontString(nil, "OVERLAY")
+    f.unavailableText:SetFontObject(SB.Fonts.DisableSmall)
+    f.unavailableText:SetJustifyH("LEFT")
+    f.unavailableText:SetWordWrap(true)
+    f.unavailableText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    f.unavailableText:Hide()
+
+    f.allRow = CreateFrame("Button", nil, f)
+    f.allRow:SetHeight(20)
+    local hl = f.allRow:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.15)
+    f.allRow.text = f.allRow:CreateFontString(nil, "OVERLAY")
+    f.allRow.text:SetFontObject(SB.Fonts.HighlightSmall)
+    f.allRow.text:SetPoint("LEFT", 10, 0)
+    f.allRow:Hide()
+
+    f.rows = {}
+    outputFlyout = f
+    return f
+end
+
+local function GetOrCreateFlyoutRow(f, index)
+    if f.rows[index] then return f.rows[index] end
+    local row = CreateFrame("Button", nil, f)
+    row:SetHeight(20)
+    local check = SB.Theme.CreateToggleTile(row, 14)
+    check:SetPoint("LEFT", 8, 0)
+    row.check = check
+    local text = row:CreateFontString(nil, "OVERLAY")
+    text:SetFontObject(SB.Fonts.HighlightSmall)
+    text:SetPoint("LEFT", check, "RIGHT", 6, 0)
+    row.text = text
+    f.rows[index] = row
+    return row
+end
+
+-- `bucketKey` is one of SB.ComputeReachablePlayers' own keys (GUILD/RAID/
+-- FRIENDS). Toggling an individual player builds a SUBSET target (3.0 spec
+-- section 23) - fanned out through the existing Direct transport by
+-- Communication.lua's SB:DispatchDefaultOutput, never a new wire command.
+local function PopulateOutputFlyout(bucketKey, groupLabel)
+    local f = BuildOutputFlyout()
+    f.title:SetText(groupLabel)
+
+    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
+    local names = (reachable and reachable[bucketKey]) or {}
+    local y = -28
+
+    if #names == 0 then
+        f.allRow:Hide()
+        for _, row in ipairs(f.rows) do row:Hide() end
+        local reason
+        if bucketKey == "GUILD" then reason = "Not currently in a guild"
+        elseif bucketKey == "RAID" then reason = "Not currently in a party or raid"
+        else reason = "No online Soundbook friends detected" end
+        f.unavailableText:ClearAllPoints()
+        f.unavailableText:SetPoint("TOPLEFT", 10, y)
+        f.unavailableText:SetPoint("RIGHT", -10, 0)
+        f.unavailableText:SetText(reason)
+        f.unavailableText:Show()
+        y = y - 32
+    else
+        f.unavailableText:Hide()
+        f.allRow:ClearAllPoints()
+        f.allRow:SetPoint("TOPLEFT", 0, y)
+        f.allRow:SetPoint("RIGHT", 0, 0)
+        f.allRow.text:SetText(string.format("All %s (%d)", groupLabel, #names))
+        f.allRow:SetScript("OnClick", function()
+            SB.db.settings.defaultOutputTarget = bucketKey
+            wipe(SB.db.ui.outputRail.recipients)
+            SB.db.ui.outputRail.mode = bucketKey
+            RefreshOutputRail()
+            outputFlyout:Hide()
+        end)
+        f.allRow:Show()
+        y = y - 22
+
+        local subset = SB.db.ui.outputRail.recipients
+        for i, name in ipairs(names) do
+            local row = GetOrCreateFlyoutRow(f, i)
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 0, y)
+            row:SetPoint("RIGHT", 0, 0)
+            row.text:SetText(SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name) or name)
+            local key = SB.PlayerKey and SB.PlayerKey(name)
+            local checked = false
+            for _, n in ipairs(subset) do
+                if key and SB.PlayerKey and SB.PlayerKey(n) == key then checked = true break end
+            end
+            row.check:SetChecked(checked)
+            row.check:SetScript("OnClick", function(self)
+                local list = SB.db.ui.outputRail.recipients
+                for idx = #list, 1, -1 do
+                    if key and SB.PlayerKey and SB.PlayerKey(list[idx]) == key then table.remove(list, idx) end
+                end
+                if self:GetChecked() then table.insert(list, name) end
+                if #list > 0 then
+                    SB.db.settings.defaultOutputTarget = "SUBSET"
+                    SB.db.ui.outputRail.mode = bucketKey
+                else
+                    SB.db.settings.defaultOutputTarget = bucketKey
+                end
+                RefreshOutputRail()
+            end)
+            row:Show()
+            y = y - 22
+        end
+        for i = #names + 1, #f.rows do f.rows[i]:Hide() end
+    end
+
+    f:SetHeight(math.abs(y) + 10)
 end
 
 local function BuildOutputRail(parent)
@@ -1403,6 +1592,7 @@ local function BuildOutputRail(parent)
         btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
         btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
         btn.railValue = entry.value
+        btn.railEntry = entry
 
         local label = btn:CreateFontString(nil, "OVERLAY")
         label:SetFontObject(SB.Fonts.HighlightSmall)
@@ -1412,18 +1602,43 @@ local function BuildOutputRail(parent)
 
         btn:SetScript("OnClick", function()
             SB.db.settings.defaultOutputTarget = entry.value
+            if entry.bucket then
+                wipe(SB.db.ui.outputRail.recipients)
+                SB.db.ui.outputRail.mode = entry.bucket
+            end
             RefreshOutputRail()
         end)
         btn:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText(entry.label == "P/R" and "Party/Raid" or entry.label, 1, 1, 1)
             GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
+            if entry.bucket and not IsRailBucketAvailable(entry.bucket) then
+                local reason
+                if entry.bucket == "GUILD" then reason = "Not currently in a guild"
+                elseif entry.bucket == "RAID" then reason = "Not currently in a party or raid"
+                else reason = "No online Soundbook friends detected" end
+                GameTooltip:AddLine(reason, 1, 0.55, 0.35, true)
+            end
             GameTooltip:Show()
             self:SetBackdropColor(0.04, 0.10, 0.20, 0.92)
+
+            if entry.bucket then
+                if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel(); outputFlyoutCloseTimer = nil end
+                if outputFlyoutOpenTimer then outputFlyoutOpenTimer:Cancel() end
+                outputFlyoutOpenTimer = C_Timer.NewTimer(0.12, function()
+                    outputFlyoutOpenTimer = nil
+                    PopulateOutputFlyout(entry.bucket, RailGroupLabel(entry))
+                    outputFlyout:ClearAllPoints()
+                    outputFlyout:SetPoint("TOPLEFT", self, "TOPRIGHT", 4, 0)
+                    outputFlyout:Show()
+                end)
+            end
         end)
         btn:SetScript("OnLeave", function(self)
             GameTooltip:Hide()
             self:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+            if outputFlyoutOpenTimer then outputFlyoutOpenTimer:Cancel(); outputFlyoutOpenTimer = nil end
+            if entry.bucket then ScheduleFlyoutClose() end
         end)
 
         outputRailButtons[i] = btn

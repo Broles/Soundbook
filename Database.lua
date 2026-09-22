@@ -277,6 +277,31 @@ local function SanitizeDatabase(db, defaults)
             ui.categoryCollapsed[key] = nil
         end
     end
+
+    -- Output Rail subset selection (UI.lua's Guild/Party-Raid/Friends
+    -- flyouts) - `mode` is which rail bucket the subset was built from
+    -- (purely for re-showing the right flyout/highlight), `recipients` is
+    -- the actual player list SB:DispatchDefaultOutput fans out to.
+    ui.outputRail = type(ui.outputRail) == "table" and ui.outputRail or {}
+    if ui.outputRail.mode ~= "GUILD" and ui.outputRail.mode ~= "RAID" and ui.outputRail.mode ~= "FRIENDS" then
+        ui.outputRail.mode = nil
+    end
+    local cleanRecipients, seenRecipients = {}, {}
+    local rawRecipients = type(ui.outputRail.recipients) == "table" and ui.outputRail.recipients or {}
+    for _, name in ipairs(rawRecipients) do
+        local key = SB.PlayerKey and SB.PlayerKey(name)
+        if SB.IsValidPlayerTarget(name) and key and not seenRecipients[key] then
+            seenRecipients[key] = true
+            table.insert(cleanRecipients, name)
+        end
+    end
+    ui.outputRail.recipients = cleanRecipients
+    -- A SUBSET target with nothing left in it (every saved recipient
+    -- pruned above) would otherwise silently send to nobody - fall back to
+    -- the whole group it was built from, or ALL if even that's unknown.
+    if settings.defaultOutputTarget == "SUBSET" and #cleanRecipients == 0 then
+        settings.defaultOutputTarget = ui.outputRail.mode or "ALL"
+    end
 end
 
 local function ValidateDatabase(db)

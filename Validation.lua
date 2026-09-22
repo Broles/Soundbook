@@ -113,7 +113,12 @@ end
 
 function SB.IsValidOutputTarget(value)
     if value == "ALL" or value == "SELF" or value == "FRIENDS"
-        or value == "GUILD" or value == "PARTY" or value == "RAID" then
+        or value == "GUILD" or value == "PARTY" or value == "RAID"
+        -- 3.0 Output Rail individual-recipient subset (UI.lua's flyouts) -
+        -- the actual recipient list lives in SB.db.ui.outputRail.recipients,
+        -- never encoded into this value itself; see Communication.lua's
+        -- SB:DispatchDefaultOutput.
+        or value == "SUBSET" then
         return true
     end
     local player = type(value) == "string" and value:match("^PLAYER:(.+)$")

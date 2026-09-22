@@ -575,6 +575,32 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
         return
     end
 
+    -- 3.0 Output Rail individual-recipient subset (UI.lua's Guild/Party-
+    -- Raid/Friends flyouts, SB.db.ui.outputRail.recipients) - fanned out
+    -- through the exact same Direct/whisper send every other single-player
+    -- target already uses (SendToPlayerSilent), one message per recipient,
+    -- deduplicated by realm-aware identity. Deliberately NOT a new wire
+    -- command - this is purely a local UI convenience over the existing
+    -- protocol (3.0 spec section 23). Per-recipient friend exemption, same
+    -- as the single-PLAYER branch above - a raid-admin "Mute Sending" still
+    -- lets a subset send through to whichever of its members are mutual
+    -- Friends, blocking only the rest.
+    if target == "SUBSET" then
+        local names = SB.db.ui.outputRail and SB.db.ui.outputRail.recipients
+        if type(names) == "table" then
+            local seen = {}
+            for _, name in ipairs(names) do
+                local key = SB.PlayerKey and SB.PlayerKey(name)
+                if key and not seen[key] and SB.IsValidPlayerTarget(name)
+                    and not (SB:IsSendBlockedByRaid() and not SB:IsFriend(name)) then
+                    seen[key] = true
+                    SendToPlayerSilent(soundID, name)
+                end
+            end
+        end
+        return
+    end
+
     if SB:IsSendBlockedByRaid() then return end
 
     if target == "ALL" then
