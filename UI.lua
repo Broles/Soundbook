@@ -47,6 +47,7 @@ local searchBox
 local searchPlaceholder
 local outputRailButtons = {}
 local emptyHint
+local emptyHintClear
 local settingsPanel
 local isSettingsOpen = false
 local adminPanel
@@ -1145,7 +1146,10 @@ local function CreateSectionHeaderRow(index)
     line:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.3)
 
     hdr:SetScript("OnClick", function(self)
-        if not self.sectionKey or self.sectionKey == "favourites" then return end
+        if not self.sectionKey then return end
+        -- "favourites" here is a reserved internal persistence key, never
+        -- the visible label ("Favourites") - explicit requirement, so a
+        -- future label/rename never silently resets this collapse state.
         local key = tostring(self.sectionKey)
         SB.db.ui.categoryCollapsed[key] = (not SB.db.ui.categoryCollapsed[key]) or nil
         RefreshLibrary()
@@ -1170,16 +1174,24 @@ local function ConfigureHeader(hdr, sectionKey, title, icon, collapsed, count, i
     else
         hdr.icon:Hide()
     end
+    -- Plain ASCII, not a Unicode triangle glyph - matches
+    -- Theme.CreateDropdown's own "v" arrow precedent elsewhere in this
+    -- addon; WoW's bundled fonts (FRIZQT__.TTF etc.) don't reliably cover
+    -- Unicode geometric shapes.
+    hdr.caret:SetText(collapsed and ">" or "v")
     if isFavourites then
-        hdr.caret:SetText("")
-        hdr.count:Hide()
-        hdr.keybindsBtn:Show()
+        -- Keybinds is only useful (and only shown) while expanded, mirroring
+        -- a category's own count - collapsed swaps it for the same kind of
+        -- "how much is hidden here" count a category shows.
+        if collapsed then
+            hdr.count:SetText(tostring(count or 0))
+            hdr.count:Show()
+            hdr.keybindsBtn:Hide()
+        else
+            hdr.count:Hide()
+            hdr.keybindsBtn:Show()
+        end
     else
-        -- Plain ASCII, not a Unicode triangle glyph - matches
-        -- Theme.CreateDropdown's own "v" arrow precedent elsewhere in this
-        -- addon; WoW's bundled fonts (FRIZQT__.TTF etc.) don't reliably
-        -- cover Unicode geometric shapes.
-        hdr.caret:SetText(collapsed and ">" or "v")
         hdr.count:SetText(tostring(count or 0))
         hdr.count:Show()
         hdr.keybindsBtn:Hide()
@@ -1308,24 +1320,33 @@ local function RefreshLibraryImpl()
             hdr:ClearAllPoints()
             hdr:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 0, -y)
             hdr:SetPoint("RIGHT", scroll.content, "RIGHT", 0, 0)
-            ConfigureHeader(hdr, "favourites", "Favourites", SB.FAVOURITES_ICON, false, nil, true)
+            -- "favourites" is a reserved internal key (see the header's own
+            -- OnClick above) - never the visible "Favourites" label.
+            local favCollapsed = SB.db.ui.categoryCollapsed["favourites"] and true or false
+            local favCount = SB:GetFavouriteCount()
+            ConfigureHeader(hdr, "favourites", "Favourites", SB.FAVOURITES_ICON, favCollapsed, favCount, true)
             y = y + SECTION_HEADER_H
-            local ids, slots = BuildFavouritesEntries()
-            totalShown = totalShown + SB:GetFavouriteCount()
-            if #ids == 0 then
-                -- Nothing occupied and no drag in progress (BuildFavouritesEntries
-                -- would otherwise include all 20 slots as drop targets) -
-                -- a small inline hint instead of an empty-looking gap, kept
-                -- local to this section rather than covering the whole
-                -- Library (other sections are still fully visible below it).
-                favEmptyHint:ClearAllPoints()
-                favEmptyHint:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 4, -y)
-                favEmptyHint:SetPoint("RIGHT", scroll.content, "RIGHT", -4, 0)
-                favEmptyHint:Show()
-                y = y + 20
-            else
+            totalShown = totalShown + favCount
+            if favCollapsed then
                 favEmptyHint:Hide()
-                y = LayoutEntries(ids, #ids, y, columns, entryW, iconExtent, hotkeyWidth, true, function(idx) return slots[idx] end)
+            else
+                local ids, slots = BuildFavouritesEntries()
+                if #ids == 0 then
+                    -- Nothing occupied and no drag in progress
+                    -- (BuildFavouritesEntries would otherwise include all 20
+                    -- slots as drop targets) - a small inline hint instead of
+                    -- an empty-looking gap, kept local to this section rather
+                    -- than covering the whole Library (other sections are
+                    -- still fully visible below it).
+                    favEmptyHint:ClearAllPoints()
+                    favEmptyHint:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 4, -y)
+                    favEmptyHint:SetPoint("RIGHT", scroll.content, "RIGHT", -4, 0)
+                    favEmptyHint:Show()
+                    y = y + 20
+                else
+                    favEmptyHint:Hide()
+                    y = LayoutEntries(ids, #ids, y, columns, entryW, iconExtent, hotkeyWidth, true, function(idx) return slots[idx] end)
+                end
             end
             y = y + SECTION_GAP
         else
@@ -1380,16 +1401,25 @@ local function RefreshLibraryImpl()
     -- all" case.
     if IsFiltering() then
         if totalShown == 0 then
-            emptyHint:SetText("No matches.")
+            emptyHint:SetText("No sounds match your search.")
             emptyHint:Show()
+            local searching, tagged = IsSearching(), HasActiveTagFilters()
+            emptyHintClear.text:SetText(
+                (searching and tagged) and "Clear Search & Filters"
+                or tagged and "Clear Filters"
+                or "Clear Search")
+            emptyHintClear:Show()
         else
             emptyHint:Hide()
+            emptyHintClear:Hide()
         end
     elseif not anyRealSection then
-        emptyHint:SetText("Nothing to show yet.")
+        emptyHint:SetText("No sounds available.")
         emptyHint:Show()
+        emptyHintClear:Hide()
     else
         emptyHint:Hide()
+        emptyHintClear:Hide()
     end
 
     if main.tagFilterUpdaters then
@@ -2057,6 +2087,26 @@ local function BuildMainFrame()
     emptyHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     emptyHint:SetSpacing(3)
     emptyHint:Hide()
+
+    -- "Clear Search"/"Clear Filters" - explicit requirement: a zero-result
+    -- search/filter state must offer a way out without having to find the
+    -- search box or tag pills again by hand.
+    emptyHintClear = SB.CreateFrame("Button", nil, libraryScroll.scroll)
+    emptyHintClear:SetPoint("TOP", emptyHint, "BOTTOM", 0, -8)
+    emptyHintClear:SetSize(140, 20)
+    local clearText = emptyHintClear:CreateFontString(nil, "OVERLAY")
+    clearText:SetFontObject(SB.Fonts.HighlightSmall)
+    clearText:SetAllPoints()
+    clearText:SetJustifyH("CENTER")
+    clearText:SetTextColor(unpack(SB.Theme.V3.ARCANE_CYAN))
+    emptyHintClear.text = clearText
+    emptyHintClear:SetScript("OnEnter", function() clearText:SetTextColor(unpack(SB.Theme.TEXT)) end)
+    emptyHintClear:SetScript("OnLeave", function() clearText:SetTextColor(unpack(SB.Theme.V3.ARCANE_CYAN)) end)
+    emptyHintClear:SetScript("OnClick", function()
+        ClearFiltering()
+        RefreshLibrary()
+    end)
+    emptyHintClear:Hide()
 
     favEmptyHint = libraryScroll.content:CreateFontString(nil, "OVERLAY")
     favEmptyHint:SetFontObject(SB.Fonts.DisableSmall)

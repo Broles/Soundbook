@@ -235,7 +235,7 @@ local function BuildBanner()
     banner:SetScript("OnEnter", function(self)
         if not self.soundbookSoundID then return end
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Right-click to mute this sound", 1, 0.85, 0.4, true)
+        GameTooltip:SetText("Right-click to mute this sound", 1, 0.85, 0.4, 1, true)
         GameTooltip:Show()
     end)
     banner:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -273,6 +273,13 @@ local function StopProgressTicker()
     end
 end
 
+-- A sound's reported duration can come from third-party/companion sound
+-- registrations (SB.RegisterSounds) whose values this addon doesn't
+-- control - guard against NaN/inf/non-numeric before ever dividing by it.
+local function ValidDuration(d)
+    return type(d) == "number" and d == d and d ~= math.huge and d > 0
+end
+
 local function RenderPrimary()
     local entry = activeDisplays[#activeDisplays]
     if not entry then return end
@@ -294,13 +301,13 @@ local function RenderPrimary()
     local queued = (SB.GetPendingQueueSize and SB:GetPendingQueueSize()) or 0
     if queued > 0 then
         banner.timeText:SetText(string.format("+%d queued", queued))
-    elseif entry.duration and entry.duration > 0 then
+    elseif ValidDuration(entry.duration) then
         banner.timeText:SetText("")
     else
         banner.timeText:SetText("Playing")
     end
 
-    if entry.duration and entry.duration > 0 then
+    if ValidDuration(entry.duration) then
         banner.track:Show()
         banner.fill:Show()
     else
@@ -316,16 +323,18 @@ local function RenderPrimary()
     if UIFrameFadeIn then UIFrameFadeIn(banner, 0.15, banner:GetAlpha() or 0, 1) else banner:SetAlpha(1) end
 
     StopProgressTicker()
-    if entry.duration and entry.duration > 0 then
+    if ValidDuration(entry.duration) then
         local trackW = banner.track:GetWidth() or 1
         banner.fill:SetWidth(0.01)
         progressTicker = C_Timer.NewTicker(0.1, function()
             local top = activeDisplays[#activeDisplays]
             if not top or top ~= entry then StopProgressTicker(); return end
             local elapsed = GetTime() - (entry.startedAt or GetTime())
-            local pct = math.max(0, math.min(1, elapsed / entry.duration))
+            if elapsed ~= elapsed then elapsed = 0 end -- NaN guard
+            local displayElapsed = math.max(0, math.min(elapsed, entry.duration))
+            local pct = math.max(0, math.min(1, displayElapsed / entry.duration))
             banner.fill:SetWidth(math.max(0.01, trackW * pct))
-            banner.timeText:SetText(string.format("%s / %s", FormatTime(elapsed), FormatTime(entry.duration)))
+            banner.timeText:SetText(string.format("%s / %s", FormatTime(displayElapsed), FormatTime(entry.duration)))
         end)
     end
 end
