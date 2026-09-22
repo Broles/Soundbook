@@ -64,7 +64,7 @@ local function BuildConfirmDialog()
     if confirmFrame then return confirmFrame end
     local f = SB.CreateFrame("Frame", nil, UIParent)
     f:SetSize(280, 104)
-    f:SetPoint("CENTER")
+    f:SetPoint("CENTER", SoundbookMainFrame or UIParent, "CENTER")
     f:SetFrameStrata("FULLSCREEN_DIALOG")
     SB.Theme.Panel(f)
     f:Hide()
@@ -133,7 +133,15 @@ local function BuildFrame()
                                  -- above it, not to this height, so as long as this is TALL
                                  -- ENOUGH nothing clips - any extra just becomes a small
                                  -- margin below the button, never a gap above it.
-    edit:SetPoint("CENTER")
+    -- Centered on the Main Soundbook window, not the whole screen -
+    -- explicit report: this window could visually stick out past the Main
+    -- window's own left edge, because it was centered independently of it
+    -- (screen-center and Main-window-center only coincide if Main itself
+    -- happens to be exactly centered, which most players' saved window
+    -- position isn't). SoundbookMainFrame is main's own global name
+    -- (UI.lua's BuildMainFrame), reachable here without UI.lua needing to
+    -- expose a dedicated getter.
+    edit:SetPoint("CENTER", SoundbookMainFrame or UIParent, "CENTER")
     edit:SetFrameStrata("DIALOG")
     edit:SetFrameLevel(modalBlocker:GetFrameLevel() + 10)
     SB.Theme.Panel(edit)

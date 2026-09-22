@@ -891,7 +891,11 @@ local function CreateEntryButton(index)
         -- background specifically - plain white, same choice SendMenu.lua's
         -- own hover rows already made for the identical reason.
         self.nameText:SetTextColor(0.72, 0.86, 1.0)
-        if self.isFavouriteView and self.favouriteHover then
+        -- Explicit request: every sound's icon enlarges on hover, not just
+        -- Favourites - the favouriteHover overlay frame already exists on
+        -- every entry (LayoutEntries sizes it uniformly regardless of
+        -- section), it was just gated to isFavouriteView here.
+        if self.favouriteHover then
             self.favouriteHoverIcon:SetTexture(SB:GetSoundIcon(self.soundID))
             self.favouriteHover:Show()
         end
@@ -1499,12 +1503,20 @@ end
 -- SUBSET branch, never a new wire command).
 ------------------------------------------------------------------------
 
+-- Explicit request: the Rail should use the same semantic channel colours
+-- as everywhere else in the addon (Announcer sender line, SendMenu, ...) -
+-- reusing SB.CHANNEL_COLOR (Core.lua) rather than inventing a second set.
 local OUTPUT_RAIL_ENTRIES = {
-    { label = "ALL", value = "ALL", tooltip = "All currently enabled broadcast channels." },
-    { label = "G", value = "GUILD", tooltip = "Guild only.", bucket = "GUILD", groupLabel = "Guild" },
-    { label = "P/R", value = "RAID", tooltip = "Party or Raid, whichever you're currently in.", bucket = "RAID" },
-    { label = "F", value = "FRIENDS", tooltip = "Friends only.", bucket = "FRIENDS", groupLabel = "Friends" },
-    { label = "NO", value = "SELF", tooltip = "Local playback only - nothing is sent." },
+    { label = "ALL", value = "ALL", tooltip = "All currently enabled broadcast channels.",
+      color = { 0.92, 0.94, 1.0 } },
+    { label = "G", value = "GUILD", tooltip = "Guild only.", bucket = "GUILD", groupLabel = "Guild",
+      color = { SB.CHANNEL_COLOR.GUILD.r, SB.CHANNEL_COLOR.GUILD.g, SB.CHANNEL_COLOR.GUILD.b } },
+    { label = "P/R", value = "RAID", tooltip = "Party or Raid, whichever you're currently in.", bucket = "RAID",
+      color = { SB.CHANNEL_COLOR.RAID.r, SB.CHANNEL_COLOR.RAID.g, SB.CHANNEL_COLOR.RAID.b } },
+    { label = "F", value = "FRIENDS", tooltip = "Friends only.", bucket = "FRIENDS", groupLabel = "Friends",
+      color = { SB.CHANNEL_COLOR.FRIENDS.r, SB.CHANNEL_COLOR.FRIENDS.g, SB.CHANNEL_COLOR.FRIENDS.b } },
+    { label = "NO", value = "SELF", tooltip = "Local playback only - nothing is sent.",
+      color = { SB.CHANNEL_COLOR.SELF.r, SB.CHANNEL_COLOR.SELF.g, SB.CHANNEL_COLOR.SELF.b } },
 }
 
 local function IsRailBucketAvailable(bucket)
@@ -1533,12 +1545,21 @@ local function RefreshOutputRail()
         local selected = btn.railValue == current
             or (btn.railValue == "RAID" and current == "PARTY")
             or (subsetMode and btn.railValue == subsetMode)
+        -- Explicit report: the active channel "geht voll unter" (gets
+        -- totally lost) - a border-colour-only change wasn't enough.
+        -- Selected now fills the tile with the channel's own colour, not
+        -- just its edge, so it's obvious at a glance which one is active.
         if selected then
-            btn:SetBackdropBorderColor(unpack(SB.Theme.ACCENT))
-            btn.label:SetTextColor(0.82, 0.90, 1.0)
+            local c = entry.color
+            btn:SetBackdropColor(c[1] * 0.32, c[2] * 0.32, c[3] * 0.32, 0.95)
+            btn:SetBackdropBorderColor(c[1], c[2], c[3], 1)
+            btn.label:SetTextColor(1, 1, 1)
+            btn.accent:SetVertexColor(c[1], c[2], c[3], 1)
         else
+            btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
             btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
             btn.label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+            btn.accent:SetVertexColor(entry.color[1], entry.color[2], entry.color[3], 0.85)
         end
         local baseLabel = entry.label
         if btn.railValue == "RAID" then
@@ -1597,6 +1618,20 @@ local function BuildOutputFlyout()
     f.title:SetPoint("TOPLEFT", 10, -8)
     f.title:SetTextColor(unpack(SB.Theme.GOLD))
 
+    -- Explicit request: the Rail's own hover tooltip and this flyout used
+    -- to appear one after another (tooltip first, flyout second) -
+    -- "störung", a two-step reveal instead of one clean hover. Bucketed
+    -- Rail entries (Guild/Party-Raid/Friends) now skip the native tooltip
+    -- entirely and show its explanation here instead, so hovering produces
+    -- exactly one popup.
+    f.subtitle = f:CreateFontString(nil, "OVERLAY")
+    f.subtitle:SetFontObject(SB.Fonts.DisableSmall)
+    f.subtitle:SetPoint("TOPLEFT", f.title, "BOTTOMLEFT", 0, -2)
+    f.subtitle:SetPoint("RIGHT", -10, 0)
+    f.subtitle:SetJustifyH("LEFT")
+    f.subtitle:SetWordWrap(true)
+    f.subtitle:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
     f.unavailableText = f:CreateFontString(nil, "OVERLAY")
     f.unavailableText:SetFontObject(SB.Fonts.DisableSmall)
     f.unavailableText:SetJustifyH("LEFT")
@@ -1638,13 +1673,18 @@ end
 -- FRIENDS). Toggling an individual player builds a SUBSET target (3.0 spec
 -- section 23) - fanned out through the existing Direct transport by
 -- Communication.lua's SB:DispatchDefaultOutput, never a new wire command.
-local function PopulateOutputFlyout(bucketKey, groupLabel)
+local function PopulateOutputFlyout(bucketKey, groupLabel, description)
     local f = BuildOutputFlyout()
     f.title:SetText(groupLabel)
+    f.subtitle:SetText(description or "")
+    f.subtitle:SetShown(description ~= nil and description ~= "")
 
     local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
     local names = (reachable and reachable[bucketKey]) or {}
-    local y = -28
+    -- Extra headroom when the subtitle is showing - its own height varies
+    -- with wrapping, so read it back after SetText/Show rather than
+    -- guessing a fixed offset.
+    local y = -28 - (description and description ~= "" and ((f.subtitle:GetHeight() or 0) + 4) or 0)
 
     if #names == 0 then
         f.allRow:Hide()
@@ -1724,6 +1764,18 @@ local function BuildOutputRail(parent)
         btn.railValue = entry.value
         btn.railEntry = entry
 
+        -- Always-visible channel accent (explicit request: known colour
+        -- coding - green Guild, blue Friends, orange Party/Raid, white
+        -- All, grey Self) - a left-edge strip rather than tinting the
+        -- whole tile, so it reads as a colour CODE, not a saturated block.
+        local accent = btn:CreateTexture(nil, "ARTWORK")
+        accent:SetPoint("TOPLEFT", 1, -1)
+        accent:SetPoint("BOTTOMLEFT", 1, 1)
+        accent:SetWidth(3)
+        accent:SetTexture("Interface\\Buttons\\WHITE8X8")
+        accent:SetVertexColor(entry.color[1], entry.color[2], entry.color[3], 0.85)
+        btn.accent = accent
+
         local label = btn:CreateFontString(nil, "OVERLAY")
         label:SetFontObject(SB.Fonts.HighlightSmall)
         label:SetPoint("CENTER")
@@ -1739,40 +1791,45 @@ local function BuildOutputRail(parent)
             RefreshOutputRail()
         end)
         btn:SetScript("OnEnter", function(self)
-            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:SetText(entry.label == "P/R" and "Party/Raid" or entry.label, 1, 1, 1)
-            GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
-            if entry.bucket and not IsRailBucketAvailable(entry.bucket) then
-                local reason
-                if entry.bucket == "GUILD" then reason = "Not currently in a guild"
-                elseif entry.bucket == "RAID" then reason = "Not currently in a party or raid"
-                else reason = "No online Soundbook friends detected" end
-                GameTooltip:AddLine(reason, 1, 0.55, 0.35, true)
-            end
-            GameTooltip:Show()
             self:SetBackdropColor(0.04, 0.10, 0.20, 0.92)
+            -- Explicit request: the Rail's own hover tooltip and the
+            -- flyout used to appear one after another ("störung") - a
+            -- bucketed entry (Guild/Party-Raid/Friends) now skips the
+            -- native tooltip entirely, since its explanation lives in the
+            -- flyout's own subtitle instead (PopulateOutputFlyout below).
+            -- Only ALL/Self, which have no flyout, still use a plain
+            -- tooltip.
+            if not entry.bucket then
+                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                GameTooltip:SetText(entry.label, 1, 1, 1)
+                GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
+                GameTooltip:Show()
+            end
 
             if entry.bucket then
                 if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel(); outputFlyoutCloseTimer = nil end
                 if outputFlyoutOpenTimer then outputFlyoutOpenTimer:Cancel() end
                 outputFlyoutOpenTimer = C_Timer.NewTimer(0.12, function()
                     outputFlyoutOpenTimer = nil
-                    PopulateOutputFlyout(entry.bucket, RailGroupLabel(entry))
+                    local label = entry.label == "P/R" and "Party/Raid" or entry.label
+                    local description = entry.tooltip
+                    if not IsRailBucketAvailable(entry.bucket) then
+                        local reason
+                        if entry.bucket == "GUILD" then reason = "Not currently in a guild"
+                        elseif entry.bucket == "RAID" then reason = "Not currently in a party or raid"
+                        else reason = "No online Soundbook friends detected" end
+                        description = reason
+                    end
+                    PopulateOutputFlyout(entry.bucket, RailGroupLabel(entry), description)
                     outputFlyout:ClearAllPoints()
                     outputFlyout:SetPoint("TOPLEFT", self, "TOPRIGHT", 4, 0)
                     outputFlyout:Show()
-                    -- The source tooltip must not compete with the flyout it
-                    -- just opened beside it (explicit report: both visible
-                    -- at once, overlapping) - hide it the moment the flyout
-                    -- takes over; OnLeave's own GameTooltip:Hide() still
-                    -- covers leaving before this timer ever fires.
-                    if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
                 end)
             end
         end)
         btn:SetScript("OnLeave", function(self)
             GameTooltip:Hide()
-            self:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+            RefreshOutputRail()
             if outputFlyoutOpenTimer then outputFlyoutOpenTimer:Cancel(); outputFlyoutOpenTimer = nil end
             if entry.bucket then ScheduleFlyoutClose() end
         end)
@@ -1992,11 +2049,6 @@ local function BuildMainFrame()
     closeBtn:SetPoint("RIGHT", 0, 0)
     closeBtn:SetScript("OnClick", function() main:Hide() end)
 
-    -- Settings and Quick Audio moved into the window's own bottom-left
-    -- corner (explicit request) - below the Output Rail's own button
-    -- stack, which doesn't reach all the way down. Raid Admin/Lock stay in
-    -- the top toolbar (not part of that request); Raid Admin is now the
-    -- toolbar's own leftmost item instead of following Settings.
     local function ToggleSettings()
         isSettingsOpen = not isSettingsOpen
         if isSettingsOpen then
@@ -2005,33 +2057,6 @@ local function BuildMainFrame()
         end
         SB:RefreshMainWindow()
     end
-
-    local settingsBtn = SB.Theme.CreateMiniControlButton(main, 22)
-    settingsBtn:SetPoint("BOTTOMLEFT", 8, 8)
-    local settingsIcon = settingsBtn:CreateTexture(nil, "ARTWORK")
-    settingsIcon:SetPoint("TOPLEFT", 2, -2)
-    settingsIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    settingsIcon:SetTexture(SB.SETTINGS_ICON)
-    settingsIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    settingsBtn:SetScript("OnClick", ToggleSettings)
-    SB.Theme.AttachTooltip(settingsBtn, "Settings")
-    main.settingsBtn = settingsBtn
-
-    -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
-    -- (mute incoming / lock / muted players / open Soundbook / Announcer
-    -- size), so there is exactly one such menu in the whole addon rather
-    -- than two diverging copies.
-    local audioBtn = SB.Theme.CreateMiniControlButton(main, 22)
-    audioBtn:SetPoint("LEFT", settingsBtn, "RIGHT", 4, 0)
-    local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
-    audioIcon:SetPoint("TOPLEFT", 2, -2)
-    audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    audioIcon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
-    audioIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    audioBtn:SetScript("OnClick", function(self)
-        if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
-    end)
-    SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
 
     local adminBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
     adminBtn:SetPoint("LEFT", 0, 0)
@@ -2045,8 +2070,27 @@ local function BuildMainFrame()
     adminBtn:Hide()
     adminToolbarBtn = adminBtn
 
+    -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
+    -- (mute incoming / lock / muted players / open Soundbook / Announcer
+    -- size), so there is exactly one such menu in the whole addon rather
+    -- than two diverging copies. Explicit request: top-left, next to the
+    -- search field (not bottom-left, where Settings alone now lives).
+    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
+    audioBtn:SetPoint("LEFT", adminBtn, "RIGHT", 4, 0)
+    local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
+    audioIcon:SetPoint("TOPLEFT", 2, -2)
+    audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    audioIcon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
+    audioIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    audioBtn:SetScript("OnClick", function(self)
+        if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
+    end)
+    SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
+
+    -- Explicit request: Lock moved to the right, between the search field
+    -- and the close button (was on the left, after Raid Admin).
     lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 22)
-    lockToolbarBtn:SetPoint("LEFT", adminBtn, "RIGHT", 4, 0)
+    lockToolbarBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
     lockToolbarBtn:SetScript("OnClick", function()
         SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
         RefreshLockVisual()
@@ -2054,8 +2098,8 @@ local function BuildMainFrame()
     SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
 
     searchBox = SB.Theme.CreateInputBox(toolbar, 100, 22)
-    searchBox:SetPoint("LEFT", lockToolbarBtn, "RIGHT", 8, 0)
-    searchBox:SetPoint("RIGHT", closeBtn, "LEFT", -8, 0)
+    searchBox:SetPoint("LEFT", audioBtn, "RIGHT", 8, 0)
+    searchBox:SetPoint("RIGHT", lockToolbarBtn, "LEFT", -8, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     searchBox:SetScript("OnEscapePressed", function(self) self:SetText(""); self:ClearFocus() end)
@@ -2084,6 +2128,22 @@ local function BuildMainFrame()
     outputRail:SetPoint("TOPLEFT", tagFilterBar, "BOTTOMLEFT", 0, -8)
     outputRail:SetPoint("BOTTOM", main, "BOTTOM", 0, 10)
     main.outputRail = outputRail
+
+    -- Settings - explicit request: bottom-left, sized to match the Output
+    -- Rail's own buttons (36x34) rather than the small 22px toolbar glyphs,
+    -- and bottom-aligned with that same rail so it reads as belonging to
+    -- the same column, at the very bottom of it.
+    local settingsBtn = SB.Theme.CreateMiniControlButton(main, 36)
+    settingsBtn:SetHeight(34)
+    settingsBtn:SetPoint("BOTTOM", outputRail, "BOTTOM", 0, 0)
+    local settingsIcon = settingsBtn:CreateTexture(nil, "ARTWORK")
+    settingsIcon:SetPoint("TOPLEFT", 4, -4)
+    settingsIcon:SetPoint("BOTTOMRIGHT", -4, 4)
+    settingsIcon:SetTexture(SB.SETTINGS_ICON)
+    settingsIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    settingsBtn:SetScript("OnClick", ToggleSettings)
+    SB.Theme.AttachTooltip(settingsBtn, "Settings")
+    main.settingsBtn = settingsBtn
 
     local libraryScroll = SB.Theme.CreateScrollFrame(main)
     libraryScroll.scroll:SetPoint("TOPLEFT", outputRail, "TOPRIGHT", 8, 0)

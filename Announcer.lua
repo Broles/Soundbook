@@ -590,7 +590,19 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     quickMenu.lockBtn.label:SetText(SB.db.ui.layoutLocked and "Unlock Interface" or "Lock Interface")
 
     quickMenu:ClearAllPoints()
-    quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
+    -- A snapshot of anchor's CURRENT position (GetLeft/GetBottom, already
+    -- in UIParent's own coordinate space), not a live SetPoint(anchor)
+    -- binding - explicit report: dragging this menu's own Announcer Size
+    -- slider rescales the icon live, and a live anchor to the icon would
+    -- drag this whole menu along with every tick, jittering under the
+    -- player's cursor mid-drag. A snapshot stays put regardless of what
+    -- the icon's scale does afterwards.
+    local left, bottom = anchor:GetLeft(), anchor:GetBottom()
+    if left and bottom then
+        quickMenu:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, bottom - 4)
+    else
+        quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
+    end
     quickMenu.catcher:Show()
     quickMenu:Show()
 end
