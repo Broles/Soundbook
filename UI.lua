@@ -1746,6 +1746,12 @@ local function BuildOutputRail(parent)
                     outputFlyout:ClearAllPoints()
                     outputFlyout:SetPoint("TOPLEFT", self, "TOPRIGHT", 4, 0)
                     outputFlyout:Show()
+                    -- The source tooltip must not compete with the flyout it
+                    -- just opened beside it (explicit report: both visible
+                    -- at once, overlapping) - hide it the moment the flyout
+                    -- takes over; OnLeave's own GameTooltip:Hide() still
+                    -- covers leaving before this timer ever fires.
+                    if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
                 end)
             end
         end)

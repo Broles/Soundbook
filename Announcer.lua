@@ -45,9 +45,13 @@ local function SoundName(soundID)
 end
 
 local function SoundIcon(soundID)
-    local info = SB.registry and SB.registry[soundID]
-    local saved = soundID and SB.GetSoundSaved and SB:GetSoundSaved(soundID)
-    return (saved and saved.icon) or (info and info.icon) or SB.DEFAULT_ICON
+    -- Was its own duplicate lookup reading info.icon, a field that doesn't
+    -- exist on registry entries (SoundRegistry.lua's own SB:GetSoundIcon
+    -- reads info.defaultIcon) - every sound without a player-set custom
+    -- icon silently fell through to the question-mark fallback. Delegating
+    -- to the one canonical resolver fixes that and keeps both in sync
+    -- going forward.
+    return (soundID and SB.GetSoundIcon and SB:GetSoundIcon(soundID)) or SB.DEFAULT_ICON
 end
 
 local function FormatTime(seconds)
