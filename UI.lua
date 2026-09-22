@@ -1258,7 +1258,18 @@ end
 RefreshLibrary = function()
     if isSettingsOpen or isAdminOpen then return end
     local scroll = main.libraryScroll
-    local contentWidth = scroll.scroll:GetWidth() or (ENTRY_W * 2)
+    -- Defensive floor: the scroll frame's width comes from a multi-hop
+    -- anchor chain (main -> toolbar -> tagFilterBar -> outputRail ->
+    -- libraryScroll.scroll) rather than a single hop off `main` directly
+    -- like the pre-3.0 book used. That chain does resolve synchronously in
+    -- practice, but GetWidth() returning 0/nil on the very first layout
+    -- pass (before anything has actually been shown once) would otherwise
+    -- produce zero-width, invisible cards while the section headers (whose
+    -- width comes from a separate RIGHT-relative anchor, not entryW) still
+    -- render fine - exactly the "headers visible, no sound cards" failure
+    -- mode this guards against.
+    local contentWidth = scroll.scroll:GetWidth() or 0
+    if contentWidth < ENTRY_W then contentWidth = ENTRY_W * 2 end
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
     local entryW = math.floor(contentWidth / columns)
     local iconExtent = 24
@@ -2065,6 +2076,14 @@ function SB:ShowMainWindow()
     InvalidateSortedListCache()
     main:Show()
     SB:RefreshMainWindow()
+    -- Safety net: re-run one tick later too, in case the Library's multi-
+    -- hop anchor chain (main -> toolbar -> tagFilterBar -> outputRail ->
+    -- libraryScroll.scroll - see RefreshLibrary's own comment) hadn't
+    -- fully resolved widths yet on this first synchronous pass. Cheap
+    -- (one extra layout pass) and always safe to repeat.
+    C_Timer.After(0, function()
+        if main and main:IsShown() then SB:RefreshMainWindow() end
+    end)
 end
 
 -- Onboarding destination: always open the actual starter sounds, never a
