@@ -9,7 +9,7 @@ _G.Soundbook = SB -- convenience global, e.g. for /run Soundbook:PlaySound(...)
 -- Constants
 ------------------------------------------------------------------------
 SB.ADDON_NAME       = ADDON_NAME
-SB.DB_VERSION       = 26
+SB.DB_VERSION       = 27
 -- Read straight from the .toc's own "## Version:" line (single source of
 -- truth, see Soundbook.toc) rather than a separately hand-typed constant
 -- that could drift out of sync with a real release - used by "/sb doctor"
@@ -704,6 +704,27 @@ local function GetDefaultDB()
             -- does. Empty = no filter, normal per-tab browsing.
             tagFilters = {},
             minimap = { hide = false, angle = 215 },
+            -- Soundbook 3.0 - the Announcer HUD (Announcer.lua) that
+            -- replaces the old Mini Soundbook/Favourites window. A separate
+            -- table from the legacy favPos/favShown/... fields above (never
+            -- deleted - see MigrateDB's v26->v27 block, which seeds these
+            -- FROM the old fields once, for anyone upgrading).
+            announcer = {
+                pos = { point = "TOPRIGHT", relPoint = "TOPRIGHT", x = -60, y = -80 },
+                shown = true,
+                locked = false,
+                alphaIdle = 100,
+                alphaHover = 100,
+            },
+            -- Global layout lock (3.0 shell) - separate concept from the
+            -- Announcer's own `locked` above (that one only ever existed as
+            -- the old Mini window's lock); this one is meant to eventually
+            -- also cover the 3.0 Main shell once it exists.
+            layoutLocked = false,
+            -- [categoryKey] = true/false, keyed by the STABLE category
+            -- identifier (SB.CATEGORIES entries / "favourites" / private
+            -- tab name), never a display name - see 3.0 spec section 85.
+            categoryCollapsed = {},
         },
     }
 end
@@ -1203,6 +1224,32 @@ local function MigrateDB(db)
         end
     end
 
+    if fromVersion < 27 then
+        -- v26 -> v27: Soundbook 3.0 - the Announcer HUD replaces the old
+        -- Mini Soundbook/Favourites window as the always-on HUD element.
+        -- Seed the new `ui.announcer` table from the old fav* fields ONCE
+        -- here, so an upgrading player's existing position/visibility/lock/
+        -- opacity choices carry over instead of resetting to defaults - the
+        -- 3.0 spec is explicit that this must happen exactly once, and that
+        -- the new value is authoritative from then on (not re-copied on
+        -- every future login). The old fav* fields themselves are left
+        -- fully intact (never deleted) - Favorites.lua's actual favourite
+        -- DATA (db.favourites, favKeybinds) was never touched by any of
+        -- this, only the old HUD WINDOW's own position/appearance fields.
+        if db.ui then
+            local old = db.ui
+            db.ui.announcer = db.ui.announcer or {}
+            local ann = db.ui.announcer
+            if type(old.favPos) == "table" then
+                ann.pos = { point = old.favPos.point, relPoint = old.favPos.relPoint, x = old.favPos.x, y = old.favPos.y }
+            end
+            if old.favShown ~= nil then ann.shown = old.favShown end
+            if old.favLocked ~= nil then ann.locked = old.favLocked end
+            if old.favAlphaIdle ~= nil then ann.alphaIdle = old.favAlphaIdle end
+            if old.favAlphaHover ~= nil then ann.alphaHover = old.favAlphaHover end
+        end
+    end
+
     db.dbVersion = SB.DB_VERSION
 end
 
@@ -1260,14 +1307,16 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
             SB.db.settings.introSeen = false
             -- "Safer first start" (Soundbook 1.9.1, explicit request):
             -- nothing gets sent to Friends/Guild/Party/Raid until the
-            -- player deliberately picks a target, and the Mini Soundbook
+            -- player deliberately picks a target, and the Announcer HUD
             -- doesn't pop up unasked before they've even seen the addon.
             -- ONLY for a genuinely fresh install - GetDefaultDB()'s own
-            -- defaults (defaultOutputTarget="ALL", favShown=true) are still
-            -- exactly what ApplyDefaults backfills for an upgrade, since an
-            -- existing player's current setup must never be silently reset.
+            -- defaults (defaultOutputTarget="ALL", announcer.shown=true) are
+            -- still exactly what ApplyDefaults backfills for an upgrade,
+            -- since an existing player's current setup must never be
+            -- silently reset.
             SB.db.settings.defaultOutputTarget = "SELF"
             SB.db.ui.favShown = false
+            SB.db.ui.announcer.shown = false
         end
         dbIsReady = true
         SB:RefreshMainFont()
@@ -1478,7 +1527,7 @@ local function HandleSlash(msg)
     elseif cmd == "help" then
         SB:Print("Commands:")
         SB:Print("  /sb - toggle the main Soundbook window")
-        SB:Print("  /sb fav - toggle the Mini Soundbook")
+        SB:Print("  /sb fav - toggle the Announcer")
         SB:Print("  /sb history - show the last 10 received sounds")
         SB:Print("  /sb analytics - open the anonymous usage analytics window")
         SB:Print("  /sb analytics on|off - enable/disable collecting and sharing your usage data")
@@ -1599,7 +1648,8 @@ local function HandleSlash(msg)
         SB.db.ui.favWidth = defaults.ui.favWidth
         SB.db.ui.favHeight = defaults.ui.favHeight
         SB.db.ui.favScale = defaults.ui.favScale
-        SB:Print("Window positions and Mini Soundbook size reset. /reload to see it take effect everywhere.")
+        SB.db.ui.announcer.pos = defaults.ui.announcer.pos
+        SB:Print("Window positions and Announcer position reset. /reload to see it take effect everywhere.")
     else
         SB:Print("Unknown command. /sb help for the full list.")
     end

@@ -792,22 +792,21 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     end)
     notifyReceiptsCheck:SetChecked(SB.db.settings.notifyFriendReceipts)
 
-    -- FAVOURITES WINDOW - every setting for the Mini Soundbook / Favourites
-    -- window lives together here, instead of being split between a
+    -- ANNOUNCER - every setting for the Announcer HUD (Announcer.lua,
+    -- Soundbook 3.0's replacement for the old Mini Soundbook/Favourites
+    -- window) lives together here, instead of being split between a
     -- "General" checkbox and an "Interface" section further down.
     local favHeader = Section(content, "Interface", notifyReceiptsCheck, -16)
 
-    local showFavCheck = Checkbox(content, "Show Favourites Window", favHeader, 0, -8, function(checked)
-        if checked then SB:ShowFavWindow() else SB:HideFavWindow() end
+    local showFavCheck = Checkbox(content, "Show Announcer", favHeader, 0, -8, function(checked)
+        if checked then SB:ShowAnnouncer() else SB:HideAnnouncer() end
     end)
-    showFavCheck:SetChecked(SB.db.ui.favShown)
+    showFavCheck:SetChecked(SB.db.ui.announcer.shown)
 
-    -- No Scale slider here - the Favourite window is now resized directly
-    -- by dragging its own bottom-right grip.
-    local lockCheck = Checkbox(content, "Lock Favourite Window", showFavCheck, 0, -2, function(checked)
-        SB:SetFavWindowLocked(checked)
+    local lockCheck = Checkbox(content, "Lock Interface", showFavCheck, 0, -2, function(checked)
+        SB:SetAnnouncerLocked(checked)
     end)
-    lockCheck:SetChecked(SB.db.ui.favLocked)
+    lockCheck:SetChecked(SB.db.ui.announcer.locked)
 
     -- Opacity, idle vs. hovering (both 0-100%).
     local alphaIdleLabel = content:CreateFontString(nil, "OVERLAY")
@@ -816,13 +815,13 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     alphaIdleLabel:SetText("Alpha - Idle")
 
     local alphaIdleSlider = SB.Theme.CreateSlider(content, 0, 100, 1, CONTENT_W - 120, function(value)
-        SB.db.ui.favAlphaIdle = math.floor(value + 0.5)
-        SB:RefreshFavAlpha()
+        SB.db.ui.announcer.alphaIdle = math.floor(value + 0.5)
+        SB:RefreshAnnouncerAlpha()
     end)
     alphaIdleSlider:SetPoint("TOPLEFT", alphaIdleLabel, "BOTTOMLEFT", 0, -10)
-    alphaIdleSlider:SetValue(SB.db.ui.favAlphaIdle)
+    alphaIdleSlider:SetValue(SB.db.ui.announcer.alphaIdle)
     alphaIdleSlider:Refresh()
-    Help(alphaIdleSlider, "Alpha - Idle", "Set Mini Soundbook opacity while the mouse is away.")
+    Help(alphaIdleSlider, "Alpha - Idle", "Set the Announcer's opacity while the mouse is away and no sound is playing.")
 
     local alphaHoverLabel = content:CreateFontString(nil, "OVERLAY")
     alphaHoverLabel:SetFontObject(SB.Fonts.HighlightSmall)
@@ -830,45 +829,31 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     alphaHoverLabel:SetText("Alpha - Hover")
 
     local alphaHoverSlider = SB.Theme.CreateSlider(content, 0, 100, 1, CONTENT_W - 120, function(value)
-        SB.db.ui.favAlphaHover = math.floor(value + 0.5)
-        SB:RefreshFavAlpha()
+        SB.db.ui.announcer.alphaHover = math.floor(value + 0.5)
+        SB:RefreshAnnouncerAlpha()
     end)
     alphaHoverSlider:SetPoint("TOPLEFT", alphaHoverLabel, "BOTTOMLEFT", 0, -10)
-    alphaHoverSlider:SetValue(SB.db.ui.favAlphaHover)
+    alphaHoverSlider:SetValue(SB.db.ui.announcer.alphaHover)
     alphaHoverSlider:Refresh()
-    Help(alphaHoverSlider, "Alpha - Hover", "Set Mini Soundbook opacity while the mouse is over it.")
+    Help(alphaHoverSlider, "Alpha - Hover", "Set the Announcer's opacity while the mouse is over it.")
 
-    -- How long the live "Now Playing" state stays before it becomes the
-    -- permanent Last Sound record. WoW cannot detect a custom file's real
-    -- duration, so this remains a fixed user-set interval.
-    local announceLabel = content:CreateFontString(nil, "OVERLAY")
-    announceLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    announceLabel:SetPoint("TOPLEFT", alphaHoverSlider, "BOTTOMLEFT", 0, -14)
-    announceLabel:SetText("Announcement Duration (sent + received sounds)")
+    -- Announcement Duration no longer drives the Announcer (which now
+    -- follows the sound's real playback duration/progress instead - see
+    -- Announcer.lua) - the setting itself is kept in SavedVariables
+    -- untouched (3.0 spec section 50), just no longer exposed here.
 
-    local announceSlider = SB.Theme.CreateSlider(content, 0, 5, 0.5, CONTENT_W - 120, function(value)
-        SB.db.settings.announceDuration = value
-    end, function(value)
-        return value <= 0 and "Last only" or string.format("%.1fs", value)
-    end)
-    announceSlider:SetPoint("TOPLEFT", announceLabel, "BOTTOMLEFT", 0, -10)
-    announceSlider:SetValue(SB.db.settings.announceDuration)
-    announceSlider:Refresh()
-    Help(announceSlider, "Announcement Duration",
-        "Choose how long Now Playing is shown before it becomes Last Sound.")
-
-    local miniFontBtn = BuildFontDropdown(content, "Mini Soundbook Font", announceSlider, -14,
+    local miniFontBtn = BuildFontDropdown(content, "Announcer Font", alphaHoverSlider, -14,
         function() return SB.db.settings.miniFont end,
         function(path)
             SB.db.settings.miniFont = path
-            SB:RefreshFavFont()
+            SB:RefreshAnnouncerFont()
         end)
 
-    local miniFontScaleSlider = BuildFontScaleSlider(content, "Mini Soundbook Text Size", miniFontBtn, -14,
+    local miniFontScaleSlider = BuildFontScaleSlider(content, "Announcer Text Size", miniFontBtn, -14,
         function() return SB.db.settings.miniFontScale end,
         function(mult)
             SB.db.settings.miniFontScale = mult
-            SB:RefreshFavFont()
+            SB:RefreshAnnouncerFont()
         end)
 
     -- Default Output Channel used to live here - moved out to the main

@@ -26,10 +26,10 @@ IconPicker.lua
 EditWindow.lua
 Intro.lua
 NewSoundsWindow.lua
-FavouritesWindow.lua
 SendMenu.lua
 MutePlayers.lua
 MinimapButton.lua
+Announcer.lua
 Settings.lua
 AdminPanel.lua
 AnalyticsUI.lua

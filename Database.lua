@@ -259,6 +259,21 @@ local function SanitizeDatabase(db, defaults)
     ui.minimap = type(ui.minimap) == "table" and ui.minimap or {}
     ui.minimap.hide = BooleanOr(ui.minimap.hide, defaults.ui.minimap.hide)
     ui.minimap.angle = ClampNumber(ui.minimap.angle, defaults.ui.minimap.angle, 0, 360)
+
+    ui.announcer = type(ui.announcer) == "table" and ui.announcer or {}
+    ui.announcer.pos = SanitizePosition(ui.announcer.pos, defaults.ui.announcer.pos)
+    ui.announcer.shown = BooleanOr(ui.announcer.shown, defaults.ui.announcer.shown)
+    ui.announcer.locked = BooleanOr(ui.announcer.locked, defaults.ui.announcer.locked)
+    ui.announcer.alphaIdle = ClampNumber(ui.announcer.alphaIdle, defaults.ui.announcer.alphaIdle, 10, 100)
+    ui.announcer.alphaHover = ClampNumber(ui.announcer.alphaHover, defaults.ui.announcer.alphaHover, 10, 100)
+    ui.layoutLocked = BooleanOr(ui.layoutLocked, defaults.ui.layoutLocked)
+
+    ui.categoryCollapsed = type(ui.categoryCollapsed) == "table" and ui.categoryCollapsed or {}
+    for key, value in pairs(ui.categoryCollapsed) do
+        if (type(key) ~= "string" and type(key) ~= "number") or value ~= true then
+            ui.categoryCollapsed[key] = nil
+        end
+    end
 end
 
 local function ValidateDatabase(db)

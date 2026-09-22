@@ -38,6 +38,28 @@ Theme.METRICS      = {
     header = 44, sectionGap = 16, controlHeight = 22,
 }
 
+-- Soundbook 3.0 design tokens - additive only, the tokens above stay exactly
+-- as they are since the pre-3.0 UI (Settings, Edit Sound, etc.) still reads
+-- them directly during the staged rollout (see the 3.0 Discovery Report's
+-- Implementation Order: old surfaces are only retired once their 3.0
+-- replacement has full parity). A restrained Arcane palette - roughly 80%
+-- functional UI / 20% Arcane identity, per the 3.0 spec - so new surfaces
+-- (Announcer, later the Main shell) pull from one shared place instead of
+-- each hand-picking colours again.
+Theme.V3 = {
+    DEEP_NAVY      = { 0.027, 0.067, 0.122 },
+    RAISED_NAVY    = { 0.043, 0.106, 0.176 },
+    CARD_BG        = { 0.039, 0.086, 0.141 },
+    HOVER_RAISED   = { 0.063, 0.169, 0.267 },
+    TEXT_PRIMARY   = { 0.91, 0.94, 1.00 },
+    TEXT_SECONDARY = { 0.56, 0.65, 0.75 },
+    ARCANE_BLUE    = { 0.35, 0.50, 1.00 },
+    ARCANE_CYAN    = { 0.30, 0.69, 0.92 },
+    VIOLET         = { 0.72, 0.55, 0.95 },
+    -- 4/6/8/12/16/24 spacing scale (3.0 spec section 65).
+    SPACE = { 4, 6, 8, 12, 16, 24 },
+}
+
 local WHITE = "Interface\\Buttons\\WHITE8X8"
 local ARCANE_BG = "Interface\\AddOns\\Soundbook\\Assets\\ArcaneBackground"
 local ARCANE_HEADER = "Interface\\AddOns\\Soundbook\\Assets\\ArcaneHeader"
