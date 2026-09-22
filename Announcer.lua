@@ -85,7 +85,7 @@ local function BuildIcon()
     local tex = icon:CreateTexture(nil, "ARTWORK")
     tex:SetPoint("TOPLEFT", 3, -3)
     tex:SetPoint("BOTTOMRIGHT", -3, 3)
-    tex:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
+    tex:SetTexture(SB.APP_ICON)
     tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     icon.texture = tex
 
@@ -235,7 +235,13 @@ local function BuildBanner()
     banner:SetScript("OnEnter", function(self)
         if not self.soundbookSoundID then return end
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Right-click to mute this sound", 1, 0.85, 0.4, 1, true)
+        -- Deliberately the minimal 4-arg form (text, r, g, b) only - this
+        -- addon spans Classic Era through Retail (see Soundbook.toc's
+        -- multi-Interface line) and adding alpha/wrapText here previously
+        -- still threw "bad argument #5" on at least one of those clients,
+        -- meaning that argument's real position/type isn't consistent
+        -- across all of them. Every client accepts this base form.
+        GameTooltip:SetText("Right-click to mute this sound", 1, 0.85, 0.4)
         GameTooltip:Show()
     end)
     banner:SetScript("OnLeave", function() GameTooltip:Hide() end)

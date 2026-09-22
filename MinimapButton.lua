@@ -39,7 +39,7 @@ local function BuildButton()
     local icon = button:CreateTexture(nil, "BACKGROUND")
     icon:SetSize(18, 18)
     icon:SetPoint("CENTER", 0, 1)
-    icon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
+    icon:SetTexture(SB.APP_ICON)
     button.icon = icon
 
     local border = button:CreateTexture(nil, "OVERLAY")

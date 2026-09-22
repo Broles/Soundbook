@@ -65,6 +65,9 @@ SB.PROTOCOL_VERSION = "V1"
 -- than replacing this table's contents.
 SB.SUPPORTED_PROTOCOL_VERSIONS = { V1 = true }
 SB.DEFAULT_ICON     = "Interface\\Icons\\INV_Misc_QuestionMark"
+-- The addon's own icon - minimap button and the Announcer's idle app icon
+-- (file ID 133736, Interface/ICONS/INV_Misc_Book_04.blp).
+SB.APP_ICON         = 133736
 SB.SOUND_DIR        = "Sounds"        -- relative folder containing the physical category directories
 SB.VALID_CHANNELS   = { Master = true, SFX = true, Music = true, Ambience = true, Dialog = true }
 
