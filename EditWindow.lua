@@ -1,19 +1,13 @@
 -- EditWindow.lua
 -- Right-click on any sound opens this ONE popup for everything about that
--- sound: pick an icon from an embedded grid, set its display name, toggle
--- favourite/muted, and grab its macro command - all in the same window,
--- laid out like Blizzard's own macro-creation window (icon grid up top,
--- name field next to the selected icon, command text below).
+-- sound: an icon preview + "Change Icon" (opens IconPicker.lua's own
+-- popup), display name, favourite/muted/alternate, per-sound Default
+-- Output, and its macro command - a compact modal, not a big embedded
+-- icon grid (3.0 spec section 42).
 
 local ADDON_NAME, SB = ...
 
 local WINDOW_W = 390
--- Grid area is WINDOW_W minus the 20px left inset (gridLabel's own x) and
--- 20px right margin (grid's own "RIGHT", -20 anchor) = 280, minus the thin
--- scroll thumb's 10px reserve (see IconPicker.lua's CreateIconGrid) = 270
--- usable px. 9 columns * (27 + 3) = 270 - fills that exactly without
--- widening the window itself.
-local GRID_COLUMNS, GRID_VISIBLE_ROWS, GRID_ICON_SIZE, GRID_ICON_PAD = 10, 4, 29, 3
 
 -- Macro Command and Macro Output side by side, same row (explicit request -
 -- Ctrl+C copying never worked reliably enough to earn its own dedicated
@@ -27,7 +21,26 @@ local MACRO_COL_W = math.floor((WINDOW_W - 56 - MACRO_COL_GAP) / 2)
 local edit
 local currentSoundID
 local draft
+local originalDraft
+local dirty = false
+local closingConfirmed = false
+local confirmFrame
 local modalBlocker
+
+-- Compares the live draft against the snapshot taken when this sound was
+-- opened (OpenEditWindow) - explicit vs. a blunt "any handler fired" flag,
+-- so clicking into the name field and back out without typing anything
+-- doesn't wrongly trigger the unsaved-changes prompt (3.0 spec section 46).
+local function RecomputeDirty()
+    if not originalDraft or not draft then dirty = false; return end
+    dirty = draft.icon ~= originalDraft.icon
+        or draft.name ~= originalDraft.name
+        or draft.favourite ~= originalDraft.favourite
+        or draft.muted ~= originalDraft.muted
+        or draft.useAlternate ~= originalDraft.useAlternate
+        or draft.outputOverride ~= originalDraft.outputOverride
+        or draft.macroTarget ~= originalDraft.macroTarget
+end
 
 -- Explicit request: the Macro Output dropdown ONLY (not Default Output
 -- above it, not the Soundbook/Mini Soundbook dropdowns elsewhere) shows a
@@ -45,6 +58,49 @@ local function MacroOutputOptions()
     return opts
 end
 
+-- Unsaved-changes confirmation (3.0 spec section 46) - "Discard unsaved
+-- changes? [Keep Editing] [Discard]", shown instead of silently closing.
+local function BuildConfirmDialog()
+    if confirmFrame then return confirmFrame end
+    local f = SB.CreateFrame("Frame", nil, UIParent)
+    f:SetSize(280, 104)
+    f:SetPoint("CENTER")
+    f:SetFrameStrata("FULLSCREEN_DIALOG")
+    SB.Theme.Panel(f)
+    f:Hide()
+
+    local text = f:CreateFontString(nil, "OVERLAY")
+    text:SetFontObject(SB.Fonts.Highlight)
+    text:SetPoint("TOP", 0, -26)
+    text:SetText("Discard unsaved changes?")
+    text:SetTextColor(unpack(SB.Theme.TEXT))
+
+    local keepBtn = SB.Theme.CreateSecondaryButton(f, "Keep Editing", 118, 26)
+    keepBtn:SetPoint("BOTTOMLEFT", 14, 16)
+    keepBtn:SetScript("OnClick", function() f:Hide() end)
+
+    -- onClick is (re)assigned fresh by ShowDiscardConfirm below each time -
+    -- "discard" means something different depending on why this was
+    -- raised (closing the window vs. switching to editing a different
+    -- sound while this one has unsaved changes).
+    f.discardBtn = SB.Theme.CreatePrimaryButton(f, "Discard", 118, 26)
+    f.discardBtn:SetPoint("BOTTOMRIGHT", -14, 16)
+
+    confirmFrame = f
+    return f
+end
+
+-- `onDiscard` runs if the player confirms discarding the current draft.
+local function ShowDiscardConfirm(onDiscard)
+    local f = BuildConfirmDialog()
+    f.discardBtn:SetScript("OnClick", function()
+        f:Hide()
+        dirty = false
+        onDiscard()
+    end)
+    f:Show()
+end
+
 local function BuildFrame()
     if edit then return edit end
 
@@ -59,7 +115,11 @@ local function BuildFrame()
     modalBlocker:Hide()
 
     edit = SB.CreateFrame("Frame", "SoundbookEditWindow", UIParent)
-    edit:SetSize(WINDOW_W, 512) -- content-driven modal with a small safe inset below
+    -- 3.0 spec section 42: the icon grid is no longer permanently embedded
+    -- here (a "Change Icon" button opens IconPicker.lua's own popup
+    -- instead) - this window is correspondingly much more compact than the
+    -- pre-3.0 512px version.
+    edit:SetSize(WINDOW_W, 372) -- content-driven modal with a small safe inset below
                                  -- (trimmed from 565 - that value was sized
                                  -- back when Macro Output still sat on its
                                  -- own row BELOW Macro Command; once the two
@@ -101,33 +161,25 @@ local function BuildFrame()
     closeBtn:SetPoint("TOPRIGHT", -8, -8)
     closeBtn:SetScript("OnClick", function() edit:Hide() end)
 
-    -- Icon grid, embedded directly in this window (not a separate popup) -
-    -- click any icon to assign it to the sound immediately.
-    local gridLabel = edit:CreateFontString(nil, "OVERLAY")
-    gridLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    gridLabel:SetPoint("TOPLEFT", 24, -62)
-    gridLabel:SetText("Choose an Icon")
-    gridLabel:SetTextColor(0.60, 0.80, 1.0)
-
-    local grid = SB.CreateIconGrid(edit, {
-        columns = GRID_COLUMNS, visibleRows = GRID_VISIBLE_ROWS,
-        iconSize = GRID_ICON_SIZE, iconPad = GRID_ICON_PAD,
-        onSelect = function(path)
-            if not currentSoundID then return end
-            draft.icon = path
-            edit.iconPreview:SetTexture(path)
-            if edit.grid and edit.grid.SetSelectedIcon then edit.grid:SetSelectedIcon(path) end
-        end,
-    })
-    grid:SetPoint("TOPLEFT", gridLabel, "BOTTOMLEFT", 0, -6)
-    grid:SetPoint("RIGHT", -24, 0)
-    edit.grid = grid
-
-    -- Selected icon preview + Name field, directly below the grid.
+    -- Icon preview + "Change Icon" (3.0 spec section 42) - opens
+    -- IconPicker.lua's own virtualized popup instead of permanently
+    -- dedicating a big part of this window to an embedded grid.
     local iconSlot = SB.Theme.CreateIconSlot(edit, 46)
-    iconSlot:SetPoint("TOPLEFT", grid, "BOTTOMLEFT", 4, -10)
+    iconSlot:SetPoint("TOPLEFT", 24, -62)
     edit.iconPreview = iconSlot.texture
     edit.iconSlot = iconSlot
+
+    local changeIconBtn = SB.Theme.CreateSecondaryButton(edit, "Change Icon", 92, 20)
+    changeIconBtn:SetPoint("TOP", iconSlot, "BOTTOM", 0, -6)
+    changeIconBtn:SetScript("OnClick", function()
+        if not currentSoundID then return end
+        SB.OpenIconPicker(function(path)
+            draft.icon = path
+            edit.iconPreview:SetTexture(path)
+            RecomputeDirty()
+        end, draft.icon)
+    end)
+    edit.changeIconBtn = changeIconBtn
 
     local nameLabel = edit:CreateFontString(nil, "OVERLAY")
     nameLabel:SetFontObject(SB.Fonts.HighlightSmall)
@@ -142,6 +194,7 @@ local function BuildFrame()
     nameBox:SetScript("OnEditFocusLost", function(self)
         if not currentSoundID then return end
         draft.name = self:GetText()
+        RecomputeDirty()
     end)
     edit.nameBox = nameBox
 
@@ -152,13 +205,15 @@ local function BuildFrame()
     favCheck = SB.Theme.CreateCheckbox(edit, "Favourite", function(checked)
         if not currentSoundID then return end
         draft.favourite = checked and true or false
+        RecomputeDirty()
     end)
-    favCheck:SetPoint("TOPLEFT", iconSlot, "BOTTOMLEFT", 0, -18)
+    favCheck:SetPoint("TOPLEFT", changeIconBtn, "BOTTOMLEFT", 0, -14)
     edit.favCheck = favCheck
 
     local muteCheck = SB.Theme.CreateCheckbox(edit, "Muted", function(checked)
         if not currentSoundID then return end
         draft.muted = checked and true or false
+        RecomputeDirty()
     end)
     muteCheck:SetPoint("LEFT", favCheck, "RIGHT", 90, 0)
     edit.muteCheck = muteCheck
@@ -179,6 +234,7 @@ local function BuildFrame()
         -- immediately, before Save is even clicked, same as every other
         -- checkbox here already behaves purely on `draft` until Save.
         edit.iconSlot:SetAlternate(draft.useAlternate)
+        RecomputeDirty()
     end)
     altCheck:SetPoint("LEFT", muteCheck, "RIGHT", 90, 0)
     edit.altCheck = altCheck
@@ -214,6 +270,7 @@ local function BuildFrame()
             and SB.OutputOverrideColorForTarget(draft.outputOverride)
         edit.iconSlot:SetOutputTint(color)
         edit.iconSlot:SetVisualState("normal", draft.favourite, draft.muted, color)
+        RecomputeDirty()
     end)
     edit.defaultOutputDD = defaultOutputDD
     SB.Theme.AttachTooltip(defaultOutputDD.button, "Default Output",
@@ -279,6 +336,7 @@ local function BuildFrame()
         if not currentSoundID then return end
         draft.macroTarget = (value ~= "ALL") and value or nil
         edit.macroBox:SetText(SB:GetMacroString(currentSoundID, draft.macroTarget))
+        RecomputeDirty()
     end)
     edit.outputDD = outputDD
 
@@ -338,12 +396,13 @@ local function BuildFrame()
     saveButton:SetPoint("TOPRIGHT", macroHint, "BOTTOM", -4, -16)
     saveButton:SetScript("OnClick", function()
         if not currentSoundID or not draft then return end
+        -- 3.0 spec section 43: a full Favourite list must not block saving
+        -- everything else this window controls - only the Favourite change
+        -- itself is reverted (with clear inline feedback), the rest of the
+        -- draft (name/icon/mute/output/macro) always saves regardless.
+        local favouriteApplied = true
         if draft.favourite and not SB:IsFavourite(currentSoundID) then
-            local ok = SB:AddFavourite(currentSoundID)
-            if not ok then
-                SB:Print("Favourite slots are full (maximum " .. SB.MAX_FAVOURITES .. ").")
-                return
-            end
+            favouriteApplied = SB:AddFavourite(currentSoundID)
         elseif not draft.favourite and SB:IsFavourite(currentSoundID) then
             SB:RemoveFavourite(currentSoundID)
         end
@@ -356,6 +415,17 @@ local function BuildFrame()
         saved.outputOverride = draft.outputOverride
         SB:SetSoundDisplayName(currentSoundID, draft.name)
         SB:Fire("SOUND_DISPLAY_CHANGED", currentSoundID)
+        dirty = false
+        -- A Save while the "discard unsaved changes?" prompt happened to
+        -- be up (e.g. it was raised by switching sounds, then the player
+        -- saved instead) resolves it - nothing left to discard.
+        if confirmFrame then confirmFrame:Hide() end
+        if not favouriteApplied then
+            SB:Print(string.format("All %d Favourite slots are currently occupied - everything else was saved.", SB.MAX_FAVOURITES))
+            draft.favourite = false
+            favCheck:SetChecked(false)
+            return -- stay open so the player sees why Favourite reverted
+        end
         edit:Hide()
     end)
     edit.saveButton = saveButton
@@ -379,19 +449,32 @@ local function BuildFrame()
     formTop:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.42)
 
     edit:SetScript("OnShow", function() modalBlocker:Show() end)
+    -- Catches EVERY close path uniformly (X button, Cancel, Escape - via
+    -- UISpecialFrames, which calls :Hide() directly - and a click on the
+    -- modal blocker below) - a single choke point instead of duplicating
+    -- the dirty-check in each one. If there are unsaved changes, the
+    -- window is immediately re-shown (same-frame, before anything renders
+    -- hidden) and the confirmation dialog takes over from there; Discard
+    -- sets closingConfirmed so this same handler lets the next Hide()
+    -- through.
     edit:SetScript("OnHide", function()
         modalBlocker:Hide()
         GameTooltip:Hide()
+        if dirty and not closingConfirmed then
+            edit:Show()
+            ShowDiscardConfirm(function()
+                closingConfirmed = true
+                edit:Hide()
+            end)
+            return
+        end
+        closingConfirmed = false
     end)
 
     return edit
 end
 
-function SB.OpenEditWindow(soundID)
-    local info = SB.registry[soundID]
-    if not info then return end
-
-    BuildFrame()
+local function PopulateEditWindow(soundID)
     currentSoundID = soundID
     local saved = SB:GetSoundSaved(soundID)
 
@@ -409,6 +492,13 @@ function SB.OpenEditWindow(soundID)
         useAlternate = hasAlternate and saved.useAlternate and true or false,
         outputOverride = saved.outputOverride,
     }
+    originalDraft = {
+        icon = draft.icon, name = draft.name, favourite = draft.favourite,
+        muted = draft.muted, useAlternate = draft.useAlternate,
+        outputOverride = draft.outputOverride, macroTarget = draft.macroTarget,
+    }
+    dirty = false
+    closingConfirmed = false
 
     edit.iconPreview:SetTexture(draft.icon)
     edit.iconSlot:SetAlternate(draft.useAlternate)
@@ -436,10 +526,23 @@ function SB.OpenEditWindow(soundID)
     edit.defaultOutputDD:SetRowFont(SB.OutputTargetRowFont)
     edit.defaultOutputDD:SetValue(draft.outputOverride or "ALL")
 
-    edit.grid:Populate()
-    if edit.grid.SetSelectedIcon then edit.grid:SetSelectedIcon(draft.icon) end
-
     edit:Show()
+end
+
+-- Right-clicking a DIFFERENT sound while this one still has unsaved
+-- changes must not silently discard them either (3.0 spec section 46) -
+-- same confirmation as closing the window, just switching to the new
+-- sound on Discard instead of hiding.
+function SB.OpenEditWindow(soundID)
+    local info = SB.registry[soundID]
+    if not info then return end
+    BuildFrame()
+
+    if edit:IsShown() and dirty and currentSoundID ~= soundID then
+        ShowDiscardConfirm(function() PopulateEditWindow(soundID) end)
+        return
+    end
+    PopulateEditWindow(soundID)
 end
 
 function SB.IsEditWindowShownFor(soundID)

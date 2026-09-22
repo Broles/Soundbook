@@ -387,7 +387,7 @@ local function BuildCategoryRow(parent, anchorTo, category)
             SB.db.categories[category].icon = path
             tex:SetTexture(path)
             SB:Fire("CATEGORY_CHANGED", category)
-        end)
+        end, SB.db.categories[category].icon)
     end)
     Help(iconBtn, CategoryLabel(category, "Icon"), "Choose the icon shown on this category tab.")
 

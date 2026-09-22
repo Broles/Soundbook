@@ -243,6 +243,12 @@ local function BuildPopup()
     popup:SetSize(leftMargin + columns * (iconSize + iconPad) + 10 + rightMargin,
         visibleRows * (iconSize + iconPad) + 86)
     popup:SetFrameStrata("DIALOG")
+    -- Generously high - this picker can be opened FROM another DIALOG-
+    -- strata window (Edit Sound's "Change Icon" button, 3.0 spec section
+    -- 42), which itself sits above its own modal click-blocker via an
+    -- explicit frame level. A picker that opens BEHIND the window that
+    -- opened it would be unusable, so this always wins ties within DIALOG.
+    popup:SetFrameLevel(300)
     SB.Theme.Panel(popup)
     popup:SetMovable(true)
     popup:EnableMouse(true)
@@ -273,10 +279,13 @@ local function BuildPopup()
 end
 
 -- callback(iconPath) is invoked with the chosen icon (a full
--- "Interface\Icons\X" string, or a numeric file ID).
-function SB.OpenIconPicker(callback)
+-- "Interface\Icons\X" string, or a numeric file ID). `currentPath`
+-- (optional) pre-highlights the sound/category's existing icon in the
+-- grid, same as the old embedded grid used to via SetSelectedIcon.
+function SB.OpenIconPicker(callback, currentPath)
     BuildPopup()
     activeCallback = callback
     popup.grid:Populate()
+    popup.grid:SetSelectedIcon(currentPath)
     popup:Show()
 end
