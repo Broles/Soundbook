@@ -263,7 +263,10 @@ local function SanitizeDatabase(db, defaults)
     ui.announcer = type(ui.announcer) == "table" and ui.announcer or {}
     ui.announcer.pos = SanitizePosition(ui.announcer.pos, defaults.ui.announcer.pos)
     ui.announcer.shown = BooleanOr(ui.announcer.shown, defaults.ui.announcer.shown)
-    ui.announcer.locked = BooleanOr(ui.announcer.locked, defaults.ui.announcer.locked)
+    -- ui.announcer.locked was folded into the single shared ui.layoutLocked
+    -- below (3.0 spec section 16 - one lock covers Main shell + Announcer
+    -- movement) - no longer read anywhere, left unsanitized/inert rather
+    -- than deleted outright.
     ui.announcer.alphaIdle = ClampNumber(ui.announcer.alphaIdle, defaults.ui.announcer.alphaIdle, 10, 100)
     ui.announcer.alphaHover = ClampNumber(ui.announcer.alphaHover, defaults.ui.announcer.alphaHover, 10, 100)
     ui.layoutLocked = BooleanOr(ui.layoutLocked, defaults.ui.layoutLocked)

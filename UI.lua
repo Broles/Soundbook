@@ -1,27 +1,22 @@
 -- UI.lua
--- The main Soundbook window: a WoW-Classic-styled book with page-flip
--- navigation, a search field, and spellbook-like tabs along the right
--- edge (Favourites, and the three user-nameable categories).
+-- Soundbook 3.0 Main shell: a compact toolbar (Settings/Lock/Search/Audio/
+-- Close), a vertical Output Rail, and one continuously scrolling Sound
+-- Library (Favourites first, then a collapsible section per category) -
+-- replacing the old paged, right-side-tabbed book. Settings and Raid Admin
+-- remain internal panels swapped into the same content area.
 
 local ADDON_NAME, SB = ...
 
--- 2.5.0 adaptive library grid. The minimum footprint remains the familiar
--- 2x10 view (and therefore always fits all 20 Favourite positions), while
--- larger windows gain rows and eventually a third column instead of merely
--- stretching the old cells into large empty bands.
-local DEFAULT_PAGE_SIZE = 20
-local DEFAULT_COLUMNS = 2
-local MIN_ROWS = 10
-local MAX_ROWS = 16
-local TARGET_ROW_HEIGHT = 34
-local THREE_COLUMN_WIDTH = 600
 local ENTRY_W     = 190
-local ENTRY_H     = 28
+local ROW_H       = 32
 local ICON_SIZE   = 22
+local THREE_COLUMN_WIDTH = 600
+local SECTION_HEADER_H = 24
+local SECTION_GAP = 10
 
 -- The "private" tab only actually appears once SB:HasPrivateSounds() is
 -- true (Soundbook_Private or similar installed with at least one sound
--- registered) - see BuildTabs. Favourites uses the string key
+-- registered) - see BuildSectionList. Favourites uses the string key
 -- "favourites" (not a number) specifically so it can never collide with a
 -- real category identifier - "Legacy"/"German Memes"/1/2 (SB.CATEGORIES,
 -- Core.lua). Category 1/2 (hideIfEmpty) only ever appear once something
@@ -29,7 +24,13 @@ local ICON_SIZE   = 22
 -- via SB.RegisterSounds. Soundbook itself never ships content in them,
 -- only in "Legacy"/"German Memes" (used to be the single "Default"
 -- category - see Core.lua's MigrateDB v17->v18 block) - see
--- SB:HasCategorySounds, BuildTabs below.
+-- SB:HasCategorySounds below.
+--
+-- Kept named "TABS" (a naming carryover from the pre-3.0 right-side-tab
+-- UI) - these are Library SECTIONS now, not clickable tabs, but every
+-- other name here (TabDisplayInfo, GetTabSoundList, ...) still describes
+-- exactly what it did before; renaming them added risk without changing
+-- behaviour, so it was deliberately left alone.
 local TABS = {
     { key = "favourites", isFavourites = true },
     { key = "private", isPrivate = true },
@@ -41,25 +42,24 @@ local TABS = {
 
 local main
 local entryButtons = {}
-local tabButtons = {}
+local sectionHeaders = {}
 local searchBox
 local searchPlaceholder
-local outputChannelDD
+local outputRailButtons = {}
 local emptyHint
-local pageLabel
-local keybindingsShortcutBtn
 local settingsPanel
 local isSettingsOpen = false
 local adminPanel
 local isAdminOpen = false
-local adminTabBtn
+local adminToolbarBtn
+local lockToolbarBtn
 local selectedSoundID
 local playingSoundID
 local playingStateTimer
 local mainDragGhostFrame, mainDragGhostIcon, mainDragGhostOrnament
 local mainDragSourceSlot, mainDragSoundID
-local RefreshGrid
-local gridColumns, gridRows, gridPageSize = DEFAULT_COLUMNS, MIN_ROWS, DEFAULT_PAGE_SIZE
+local RefreshLibrary
+local usedEntries, usedHeaders
 
 ------------------------------------------------------------------------
 -- Helpers
@@ -76,39 +76,15 @@ local function TabDisplayInfo(tab)
     return info.name, info.icon
 end
 
---- Explicit request: "besser sehen auf welcher Kategorie ich mich gerade
---- aufhalte" - the display name of whichever category tab is currently
---- selected (SB.db.ui.currentTab), or nil if that key doesn't match a
---- known tab (shouldn't normally happen). Used by RefreshMainWindow to
---- put the category name right in the window's own header title.
-local function GetCurrentTabName()
-    local key = SB.db.ui.currentTab
-    for _, tab in ipairs(TABS) do
-        if tab.key == key then
-            return (TabDisplayInfo(tab))
-        end
-    end
-    return nil
-end
-
-local function GetCurrentPage()
-    local key = tostring(SB.db.ui.currentTab)
-    return SB.db.ui.currentPage[key] or 1
-end
-
-local function SetCurrentPage(page)
-    local key = tostring(SB.db.ui.currentTab)
-    SB.db.ui.currentPage[key] = page
-end
-
--- Popularity/New ordering is computed once per tab per "window open
+-- Popularity/New ordering is computed once per section per "window open
 -- session" and then held fixed - explicit request: re-sorting live while
 -- the player is actually looking at the book (e.g. because clicking a
 -- sound just bumped its own play count) is disorienting, icons must not
 -- visibly reshuffle under the mouse. Cleared only when the window
 -- transitions from closed to open (SB:ShowMainWindow) or the Sound Order
--- setting itself changes (Settings.lua) - never by an ordinary RefreshGrid
--- call (favourite toggled, a sound played, Analytics synced, ...).
+-- setting itself changes (Settings.lua) - never by an ordinary
+-- RefreshLibrary call (favourite toggled, a sound played, Analytics
+-- synced, ...).
 local sortedListCache = {}
 
 local function GetTabSoundList(tabKey)
@@ -142,8 +118,8 @@ end
 --- like a second, independent search - see GetFilteredSoundList below,
 --- defined once GetTag itself is (needs it to actually filter). Combined
 --- with IsSearching() into IsFiltering(), used everywhere a flat,
---- cross-category result list should replace the current tab's own
---- normal paged view - same treatment a text search already gets.
+--- cross-category result list should replace the current section list -
+--- same treatment a text search already gets.
 local function HasActiveTagFilters()
     return next(SB.db.ui.tagFilters) ~= nil
 end
@@ -153,20 +129,13 @@ local function IsFiltering()
 end
 
 -- Explicit request (reversed back from an earlier "keep filtering active
--- across a tab click" version): clicking a category tab, Favourites,
--- Settings, or Admin now clears BOTH the search box and any active tag
--- filter pills, exactly like landing on that destination's own plain
--- unfiltered view - not left running in the background. Shared by every
--- one of those click handlers so they can never drift out of sync with
--- each other.
+-- across a tab click" version): clicking Settings or Admin now clears
+-- BOTH the search box and any active tag filter pills, exactly like
+-- landing on that destination's own plain unfiltered view - not left
+-- running in the background.
 local function ClearFiltering()
     if searchBox then searchBox:SetText("") end
     if SB.db and SB.db.ui and SB.db.ui.tagFilters then wipe(SB.db.ui.tagFilters) end
-end
-
-local function ListLength(tabKey, list)
-    if tabKey == "favourites" then return SB.MAX_FAVOURITES end
-    return #list
 end
 
 ------------------------------------------------------------------------
@@ -605,10 +574,10 @@ end
 
 --- The cross-category flat list used whenever IsFiltering() is true -
 --- text search and active tag filters both narrow this SAME list (AND'ed
---- together when both are active), completely ignoring SB.db.ui.currentTab,
---- same as a text search alone already did. An active tag filter is an OR
---- across whichever pills are toggled on (New/Trending/Popular/Loved) -
---- explicit request.
+--- together when both are active), completely ignoring category
+--- boundaries, same as a text search alone already did. An active tag
+--- filter is an OR across whichever pills are toggled on
+--- (New/Trending/Popular/Loved) - explicit request.
 local function GetFilteredSoundList()
     local query = searchBox and searchBox:GetText()
     local hasQuery = query and query ~= ""
@@ -676,13 +645,14 @@ local function PointInside(frame, x, y)
 end
 
 local function StartMainFavouriteDrag(btn)
-    if IsFiltering() or SB.db.ui.currentTab ~= "favourites" or not btn.favouriteSlot then return end
+    if IsFiltering() or not btn.favouriteSlot then return end
     mainDragSourceSlot = btn.favouriteSlot
     mainDragSoundID = btn.soundID
     if btn.favouriteHover then btn.favouriteHover:Hide() end
-    -- Reveal the otherwise invisible empty rows as grey icon targets for
-    -- the duration of this drag, matching Mini Soundbook behaviour.
-    RefreshGrid()
+    -- Reveal the otherwise invisible empty slots as grey icon drop targets
+    -- for the duration of this drag, matching the old Mini Soundbook's own
+    -- behaviour.
+    RefreshLibrary()
 
     if not mainDragGhostFrame then
         mainDragGhostFrame = SB.CreateFrame("Frame", nil, UIParent)
@@ -740,16 +710,24 @@ local function StopMainFavouriteDrag()
         mainDragGhostFrame:Hide()
     end
     mainDragSourceSlot, mainDragSoundID = nil, nil
-    RefreshGrid()
+    RefreshLibrary()
 end
 
 ------------------------------------------------------------------------
--- Sound entry buttons
+-- Sound entry buttons - unchanged from the pre-3.0 book (same card look,
+-- same tooltip/click/hover behaviour), just parented into the new
+-- scrolling Library content instead of a fixed page grid. Positioning is
+-- entirely the new layout code's job (see LayoutEntries below).
 ------------------------------------------------------------------------
 
 local function CreateEntryButton(index)
-    local btn = CreateFrame("Button", "SoundbookEntry" .. index, main)
-    btn:SetSize(ENTRY_W, ENTRY_H)
+    -- Parented to the scroll frame's own content (not `main` directly) so
+    -- WoW's ScrollFrame clipping actually applies - a frame merely
+    -- POSITIONED via anchors to overlap the scroll area while parented
+    -- elsewhere would render outside the visible viewport instead of being
+    -- clipped by it.
+    local btn = CreateFrame("Button", "SoundbookEntry" .. index, main.libraryScroll.content)
+    btn:SetSize(ENTRY_W, ROW_H)
 
     local rowBg = btn:CreateTexture(nil, "BACKGROUND")
     rowBg:SetPoint("TOPLEFT", 1, -1)
@@ -804,10 +782,10 @@ local function CreateEntryButton(index)
     name:SetWordWrap(false)
     btn.nameText = name
 
-    -- "Hotkey: CTRL+A" - explicit request: Favourites tab only, white,
-    -- two font sizes smaller than the name above it, and only shown at all
-    -- when THIS slot actually has a real Blizzard keybinding assigned (see
-    -- RefreshGrid and Keybindings.lua's SB:GetFavouriteHotkeyLabel).
+    -- "Hotkey: CTRL+A" - explicit request: Favourites only, white, two font
+    -- sizes smaller than the name above it, and only shown at all when THIS
+    -- slot actually has a real Blizzard keybinding assigned (see
+    -- PopulateEntryButton and Keybindings.lua's SB:GetFavouriteHotkeyLabel).
     local hotkeyText = btn:CreateFontString(nil, "OVERLAY")
     hotkeyText:SetFontObject(SB.Fonts.DisableSmall)
     hotkeyText:SetPoint("RIGHT", -8, 0)
@@ -819,8 +797,7 @@ local function CreateEntryButton(index)
     btn.hotkeyText = hotkeyText
 
     -- "Tag" pill - New/Trending/Popular/Loved (see GetTag below), inline
-    -- right after the name, same row, so the existing per-row layout/
-    -- pagination never changes. At most one tag per sound. Genuinely
+    -- right after the name, same row. At most one tag per sound. Genuinely
     -- rounded (explicit request, "schön rund") - built from a small
     -- semicircular cap texture (Assets/TagCap.tga) on each side plus a
     -- flat middle that stretches to fit the label, rather than a plain
@@ -868,8 +845,8 @@ local function CreateEntryButton(index)
     local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
     highlight:SetAllPoints()
     highlight:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.12)
-    -- Kept around so RefreshGrid can recolour it per-row (blue/accent for a
-    -- normal sound, gold for a favourite) - see the explicit request there.
+    -- Kept around so PopulateEntryButton can recolour it per-row (blue/
+    -- accent for a normal sound, gold for a favourite) - explicit request.
     btn.highlight = highlight
 
     btn:RegisterForClicks("LeftButtonUp", "RightButtonUp")
@@ -887,11 +864,10 @@ local function CreateEntryButton(index)
             end
         elseif button == "RightButton" then
             if IsShiftKeyDown() then
-                -- Same "send to a specific channel/person" popup the Mini
-                -- Soundbook's plain right-click already opens - explicit
-                -- request: plain right-click stays Edit Sound here (that's
-                -- the established, kept-as-is main-window behaviour), so
-                -- the send menu needs its own modifier to stay reachable.
+                -- One-off "send to a specific channel/person" popup -
+                -- explicit request: plain right-click stays Edit Sound
+                -- (established behaviour), so the send menu needs its own
+                -- modifier to stay reachable.
                 SB.OpenSendMenu(self.soundID)
             else
                 SB.ToggleEditWindow(self.soundID)
@@ -904,8 +880,8 @@ local function CreateEntryButton(index)
         if not self.soundID then return end
         -- The flat accent-tinted background above now covers the whole
         -- row, so whatever resting colour the name text has (gold/accent/
-        -- grey - see RefreshGrid's btn.restColor) needs to give way to
-        -- something that stays readable against an accent-coloured
+        -- grey - see PopulateEntryButton's btn.restColor) needs to give
+        -- way to something that stays readable against an accent-coloured
         -- background specifically - plain white, same choice SendMenu.lua's
         -- own hover rows already made for the identical reason.
         self.nameText:SetTextColor(0.72, 0.86, 1.0)
@@ -924,9 +900,9 @@ local function CreateEntryButton(index)
         GameTooltip:AddLine("Shift + Right Click: Send to...", 0.9, 0.9, 0.9)
         -- Tag explanation (explicit request) - ONLY for a sound that
         -- actually carries this tag right now (self.currentTagKey, set by
-        -- RefreshGrid alongside the pill itself), coloured the same as the
-        -- pill's own text so "why does this say Loved?" is answered right
-        -- here instead of sending someone to the Analytics window.
+        -- PopulateEntryButton alongside the pill itself), coloured the same
+        -- as the pill's own text so "why does this say Loved?" is answered
+        -- right here instead of sending someone to the Analytics window.
         if self.currentTagKey then
             local style = TAG_STYLE[self.currentTagKey]
             if style and style.desc then
@@ -955,740 +931,517 @@ local function CreateEntryButton(index)
     return btn
 end
 
-local function EnsureEntryButtons()
-    local contentWidth = main.content:GetWidth() or (ENTRY_W * DEFAULT_COLUMNS)
-    local contentHeight = main.content:GetHeight() or (ENTRY_H * MIN_ROWS)
-    local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
-    local rows = math.floor(contentHeight / TARGET_ROW_HEIGHT)
-    rows = math.max(MIN_ROWS, math.min(MAX_ROWS, rows))
-    local pageSize = columns * rows
-
-    if pageSize ~= gridPageSize then
-        -- Keep the first currently visible result in view as capacity
-        -- changes; otherwise widening the frame can appear to jump several
-        -- sounds forward or backward.
-        local oldPage = IsFiltering() and (main.searchPage or 1) or GetCurrentPage()
-        local firstVisible = math.max(1, (oldPage - 1) * gridPageSize + 1)
-        local newPage = math.floor((firstVisible - 1) / pageSize) + 1
-        if IsFiltering() then main.searchPage = newPage else SetCurrentPage(newPage) end
+local function GetOrCreateEntry(index)
+    if not entryButtons[index] then
+        entryButtons[index] = CreateEntryButton(index)
     end
-    gridColumns, gridRows, gridPageSize = columns, rows, pageSize
-    main.gridColumns, main.gridRows, main.gridPageSize = columns, rows, pageSize
+    return entryButtons[index]
+end
 
-    local entryW = contentWidth / columns
-    local entryH = contentHeight / rows
-    local iconExtent = math.max(24, math.min(34, entryH - 6))
-    local hotkeyWidth = math.max(70, math.min(104, entryW * 0.28))
-    for i = 1, pageSize do
-        if not entryButtons[i] then
-            entryButtons[i] = CreateEntryButton(i)
+------------------------------------------------------------------------
+-- Populates one already-positioned/sized entry button. `favouriteSlot` is
+-- the real 1..MAX_FAVOURITES position (only meaningful inside the
+-- Favourites section); `isFavouritesBlock` gates the hotkey-vs-tag column
+-- and the drag-and-drop wiring the exact same way `SB.db.ui.currentTab ==
+-- "favourites"` used to in the old paged book.
+------------------------------------------------------------------------
+
+local function PopulateEntryButton(btn, soundID, favouriteSlot, isFavouritesBlock)
+    if soundID and SB.registry[soundID] then
+        local saved = SB:GetSoundSaved(soundID)
+        btn.soundID = soundID
+        btn.icon:SetTexture(SB:GetSoundIcon(soundID))
+        btn.icon:Show()
+        -- "Alternative Sound" purple wash (Theme.lua's CreateIconSlot) -
+        -- explicit request, shown "always, everywhere" for a sound with a
+        -- personal alternate recording enabled.
+        btn.slot:SetAlternate(saved.useAlternate)
+        -- Per-sound "Default Output" override (explicit request) - same
+        -- always-visible treatment as the Alternative Sound wash above,
+        -- just a different colour source (SB.CHANNEL_COLOR via the
+        -- sound's own saved.outputOverride, Communication.lua).
+        local outputColor = SB.SoundOutputOverrideColor and SB.SoundOutputOverrideColor(soundID)
+        btn.slot:SetOutputTint(outputColor)
+        btn.rowBg:Show()
+        btn.separator:Show()
+        btn.nameText:SetText(SB:GetSoundDisplayName(soundID))
+        -- Resting colour follows information hierarchy: readable off-white
+        -- by default, grey when muted, warm gold while actually playing.
+        -- remembered so OnLeave can restore exactly this once the hover
+        -- highlight's forced white lets go - see CreateEntryButton.
+        local restColor
+        local isPlaying = playingSoundID == soundID
+        local isSelected = selectedSoundID == soundID
+        if isPlaying then
+            restColor = { 1.0, 0.84, 0.48 }
+            btn.rowBg:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.12)
+        elseif saved.muted then
+            restColor = SB.Theme.TEXT_DIM
+            btn.rowBg:SetVertexColor(0.02, 0.04, 0.07, btn.baseRowAlpha)
+        elseif outputColor then
+            -- Per-sound "Default Output" override (explicit request) -
+            -- same channel colour as the icon border/wash above. Wins
+            -- over a plain favourite gold, same precedence as the
+            -- border's own (Theme.lua's SetVisualState), but still
+            -- loses to muted/playing.
+            restColor = { outputColor.r, outputColor.g, outputColor.b }
+            btn.rowBg:SetVertexColor(0.015, 0.055, 0.12, btn.baseRowAlpha)
+        elseif saved.favourite then
+            restColor = SB.Theme.GOLD
+            btn.rowBg:SetVertexColor(0.015, 0.055, 0.12, btn.baseRowAlpha)
+        elseif isSelected then
+            restColor = SB.Theme.TEXT
+            btn.rowBg:SetVertexColor(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.11)
+        else
+            restColor = SB.Theme.TEXT
+            btn.rowBg:SetVertexColor(0.015, 0.055, 0.12, btn.baseRowAlpha)
         end
-        local btn = entryButtons[i]
-        local col = (i - 1) % columns
-        local row = math.floor((i - 1) / columns)
+        btn.restColor = restColor
+        if not btn:IsMouseOver() then
+            btn.nameText:SetTextColor(unpack(restColor))
+        end
+        -- Explicit request: the hover highlight itself is gold for a
+        -- favourite (matching its gold resting name colour/border above),
+        -- blue/accent otherwise - so hovering makes favourite status
+        -- visible at a glance, not just the name colour. Reset live every
+        -- refresh (including right after Shift+Left-Click toggles a
+        -- favourite), so the new colour shows immediately, no reload/
+        -- re-hover needed.
+        if btn.highlight then
+            if saved.favourite then
+                btn.highlight:SetColorTexture(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.16)
+            else
+                btn.highlight:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.12)
+            end
+        end
+        btn.slot:SetVisualState(isPlaying and "playing" or (isSelected and "selected" or "normal"),
+            saved.favourite and true or false, saved.muted and true or false, outputColor)
+
+        -- Hotkey label - Favourites section only, never during search.
+        -- Explicit request: an unbound position shows nothing at all - no
+        -- "[-]" placeholder - only an actually-assigned keybind gets the
+        -- "[X]" label.
+        local hotkey = (not IsFiltering()) and isFavouritesBlock and favouriteSlot
+            and SB.GetFavouriteHotkeyLabel and SB:GetFavouriteHotkeyLabel(favouriteSlot)
+        btn.favouriteSlot = (isFavouritesBlock and not IsFiltering()) and favouriteSlot or nil
+        btn.isFavouriteView = (isFavouritesBlock and not IsFiltering()) and true or false
+        if btn.isFavouriteView and hotkey then
+            btn.nameText:ClearAllPoints()
+            btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
+            btn.nameText:SetPoint("RIGHT", btn.hotkeyText, "LEFT", -8, 0)
+            btn.hotkeyText:SetText("[" .. hotkey .. "]")
+            btn.hotkeyText:Show()
+            if btn.tag then btn.tag:Hide() end
+            btn.currentTagKey = nil
+        else
+            btn.hotkeyText:Hide()
+            -- Tags never show on Favourites at all - explicit fix: that
+            -- column is reserved for hotkey labels there (shown only on
+            -- SOME rows, whichever slots have a real keybind), so a tag
+            -- appearing on the other rows read as randomly conflicting
+            -- with the hotkey column instead of looking like a deliberate
+            -- second thing. A Favourite is also already a sound the
+            -- player deliberately chose - a "Popular"/"Loved" hint adds
+            -- little there anyway.
+            local tagKey = (not btn.isFavouriteView) and btn.tag and GetTag(soundID)
+            btn.currentTagKey = tagKey or nil
+            if tagKey then
+                local style = TAG_STYLE[tagKey]
+                btn.tag.text:SetText(style.label)
+                btn.tag.text:SetTextColor(unpack(style.text))
+                btn.tag.leftCap:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
+                btn.tag.rightCap:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
+                btn.tag.middle:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
+                btn.tag:SetWidth(btn.TAG_CAP_W * 2 + btn.tag.text:GetStringWidth() + 8)
+                btn.tag:ClearAllPoints()
+                btn.tag:SetPoint("RIGHT", -8, 0)
+                btn.tag:Show()
+                btn.nameText:ClearAllPoints()
+                btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
+                btn.nameText:SetPoint("RIGHT", btn.tag, "LEFT", -6, 0)
+            else
+                if btn.tag then btn.tag:Hide() end
+                btn.nameText:ClearAllPoints()
+                btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
+                btn.nameText:SetPoint("RIGHT", -8, 0)
+            end
+        end
+
+        btn:Show()
+    else
+        btn.soundID = nil
+        btn.slot:SetAlternate(false)
+        btn.slot:SetOutputTint(nil)
+        local isFavouriteDropTarget = isFavouritesBlock and mainDragSourceSlot
+            and favouriteSlot and favouriteSlot <= SB.MAX_FAVOURITES
+        btn.favouriteSlot = isFavouriteDropTarget and favouriteSlot or nil
+        btn.isFavouriteView = false
+        if btn.favouriteHover then btn.favouriteHover:Hide() end
+        btn.hotkeyText:Hide()
+        if btn.tag then btn.tag:Hide() end
+        btn.currentTagKey = nil
+        if isFavouriteDropTarget then
+            btn.icon:Hide()
+            btn.nameText:SetText("")
+            btn.rowBg:Hide()
+            btn.separator:Hide()
+            btn.slot:SetBackdropColor(0, 0, 0, 0)
+            btn.slot:SetBackdropBorderColor(0.48, 0.52, 0.58, 0.85)
+            btn:Show()
+        else
+            btn:Hide()
+        end
+    end
+end
+
+------------------------------------------------------------------------
+-- Section headers - a collapsible row for each category ("▼ Legacy   24"),
+-- plus a non-collapsible one for Favourites (with a "Keybinds" shortcut
+-- instead of a caret - 3.0 spec section 29/section 52).
+------------------------------------------------------------------------
+
+local function CreateSectionHeaderRow(index)
+    -- Same clipping reasoning as CreateEntryButton above.
+    local hdr = SB.CreateFrame("Button", "SoundbookSection" .. index, main.libraryScroll.content)
+    hdr:SetHeight(SECTION_HEADER_H)
+
+    local caret = hdr:CreateFontString(nil, "OVERLAY")
+    caret:SetFontObject(SB.Fonts.HighlightSmall)
+    caret:SetPoint("LEFT", 2, 0)
+    caret:SetWidth(14)
+    caret:SetTextColor(unpack(SB.Theme.GOLD))
+    hdr.caret = caret
+
+    local icon = hdr:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(16, 16)
+    icon:SetPoint("LEFT", caret, "RIGHT", 2, 0)
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    hdr.icon = icon
+
+    local title = hdr:CreateFontString(nil, "OVERLAY")
+    title:SetFontObject(SB.Fonts.Highlight)
+    title:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    title:SetTextColor(unpack(SB.Theme.TEXT))
+    hdr.title = title
+
+    local count = hdr:CreateFontString(nil, "OVERLAY")
+    count:SetFontObject(SB.Fonts.DisableSmall)
+    count:SetPoint("RIGHT", -6, 0)
+    count:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    hdr.count = count
+
+    -- Favourites-only shortcut, replacing count in that one row.
+    local keybindsBtn = SB.Theme.CreateFlatButton(hdr, "Keybinds", 90, 18)
+    keybindsBtn:SetPoint("RIGHT", -4, 0)
+    keybindsBtn:SetScript("OnClick", function() SB:OpenSettingsAtKeybindings() end)
+    keybindsBtn:Hide()
+    hdr.keybindsBtn = keybindsBtn
+
+    local line = hdr:CreateTexture(nil, "ARTWORK")
+    line:SetPoint("BOTTOMLEFT", 2, 0)
+    line:SetPoint("BOTTOMRIGHT", -2, 0)
+    line:SetHeight(1)
+    line:SetTexture("Interface\\Buttons\\WHITE8X8")
+    line:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.3)
+
+    hdr:SetScript("OnClick", function(self)
+        if not self.sectionKey or self.sectionKey == "favourites" then return end
+        local key = tostring(self.sectionKey)
+        SB.db.ui.categoryCollapsed[key] = (not SB.db.ui.categoryCollapsed[key]) or nil
+        RefreshLibrary()
+    end)
+
+    return hdr
+end
+
+local function GetOrCreateHeader(index)
+    if not sectionHeaders[index] then
+        sectionHeaders[index] = CreateSectionHeaderRow(index)
+    end
+    return sectionHeaders[index]
+end
+
+local function ConfigureHeader(hdr, sectionKey, title, icon, collapsed, count, isFavourites)
+    hdr.sectionKey = sectionKey
+    hdr.title:SetText(title)
+    if icon then
+        hdr.icon:SetTexture(icon)
+        hdr.icon:Show()
+    else
+        hdr.icon:Hide()
+    end
+    if isFavourites then
+        hdr.caret:SetText("")
+        hdr.count:Hide()
+        hdr.keybindsBtn:Show()
+    else
+        -- Plain ASCII, not a Unicode triangle glyph - matches
+        -- Theme.CreateDropdown's own "v" arrow precedent elsewhere in this
+        -- addon; WoW's bundled fonts (FRIZQT__.TTF etc.) don't reliably
+        -- cover Unicode geometric shapes.
+        hdr.caret:SetText(collapsed and ">" or "v")
+        hdr.count:SetText(tostring(count or 0))
+        hdr.count:Show()
+        hdr.keybindsBtn:Hide()
+    end
+    hdr:Show()
+end
+
+------------------------------------------------------------------------
+-- Library layout - one continuous scroll, Favourites first (never
+-- collapsible), then a collapsible section per visible category. While
+-- filtering (search text and/or an active tag pill), every section
+-- collapses into one flat cross-category result list instead (3.0 spec
+-- section 32) - collapsed state itself is left untouched so it's restored
+-- exactly once filtering ends.
+------------------------------------------------------------------------
+
+local function BuildSectionList()
+    if IsFiltering() then
+        return { { type = "filtered" } }
+    end
+    local list = { { type = "favourites" } }
+    for _, tab in ipairs(TABS) do
+        if not tab.isFavourites then
+            local visible = (not tab.isPrivate or SB:HasPrivateSounds())
+                and (not tab.hideIfEmpty or SB:HasCategorySounds(tab.key))
+            if visible then
+                table.insert(list, { type = "category", tab = tab })
+            end
+        end
+    end
+    return list
+end
+
+-- Lays out `ids` (a possibly-sparse array, holes allowed for empty
+-- Favourite drop targets) starting at vertical offset `y`, returns the new
+-- y after this block. `favouriteSlotFor(idx)` is only used for the
+-- Favourites block (returns the real 1..20 slot for entry `idx`).
+local function LayoutEntries(ids, n, y, columns, entryW, iconExtent, hotkeyWidth, isFavouritesBlock, favouriteSlotFor)
+    if n == 0 then return y end
+    local rows = math.ceil(n / columns)
+    for idx = 1, n do
+        local soundID = ids[idx]
+        usedEntries = usedEntries + 1
+        local btn = GetOrCreateEntry(usedEntries)
+        local col = (idx - 1) % columns
+        local row = math.floor((idx - 1) / columns)
         btn:ClearAllPoints()
-        btn:SetSize(entryW, entryH)
-        btn:SetPoint("TOPLEFT", main.content, "TOPLEFT", col * entryW, -row * entryH)
+        btn:SetSize(entryW, ROW_H)
+        btn:SetPoint("TOPLEFT", main.libraryScroll.content, "TOPLEFT", col * entryW, -(y + row * ROW_H))
         btn.slot:SetSize(iconExtent, iconExtent)
         btn.favouriteHover:SetSize(iconExtent * 1.30, iconExtent * 1.30)
         btn.favouriteHoverOrnament:SetSize(iconExtent * 1.30 * 1.50, iconExtent * 1.30 * 1.50)
         btn.hotkeyText:SetWidth(hotkeyWidth)
+        local slot = favouriteSlotFor and favouriteSlotFor(idx) or nil
+        PopulateEntryButton(btn, soundID, slot, isFavouritesBlock)
     end
-    for i = pageSize + 1, #entryButtons do entryButtons[i]:Hide() end
-    -- Explicit bugfix: this only used to hide slots PAST the new pageSize -
-    -- fine normally, since RefreshGrid (which shows/hides/populates
-    -- slots 1..pageSize) always runs right after. But RefreshGrid
-    -- deliberately no-ops while Settings/Admin is open ("if isSettingsOpen
-    -- then return end"), so resizing the window while either is open used
-    -- to leave freshly created or resized slots sitting SHOWN (a brand new
-    -- button defaults to visible, and an existing one simply keeps
-    -- whatever show/hide state it already had) with no icon/name ever set
-    -- on them - empty bordered squares bleeding through the settings
-    -- panel's own (deliberately narrow, centered) margins. Settings/Admin
-    -- never show the grid at all, so every slot belongs hidden regardless
-    -- of pageSize while either is open.
-    if isSettingsOpen or isAdminOpen then
-        for i = 1, pageSize do entryButtons[i]:Hide() end
-    end
+    return y + rows * ROW_H
 end
 
-function SB:GetMainGridLayout()
-    return gridColumns, gridRows, gridPageSize
-end
+local favEmptyHint
 
-------------------------------------------------------------------------
--- Refresh / paging
-------------------------------------------------------------------------
-
-RefreshGrid = function()
-    if isSettingsOpen then return end
-    EnsureEntryButtons()
-    local pageSize = gridPageSize
-
-    -- Explicit request: "besser sehen auf welcher Kategorie ich mich
-    -- gerade aufhalte" - the window's own header now names the active tab
-    -- directly (explicit request: just "Legacy", no "Soundbook -" prefix).
-    -- Refreshed here (not just RefreshMainWindow) since RefreshGrid is what
-    -- actually runs on every relevant change - tab switch, search text,
-    -- tag filter pill, not just opening the window. Falls back to plain
-    -- "Soundbook" while filtering (search text and/or an active tag pill) -
-    -- the grid isn't actually scoped to that one category anymore then,
-    -- it's the cross-category flat result list, so naming just the tab
-    -- would be misleading.
-    if main.headerBar and main.headerBar.title and not isAdminOpen then
-        local catName = (not IsFiltering()) and GetCurrentTabName()
-        main.headerBar.title:SetText(catName or "Soundbook")
-    end
-
-    local list, page, totalPages
-
-    if IsFiltering() then
-        list = GetFilteredSoundList()
-        page = 1
-        totalPages = math.max(1, math.ceil(#list / pageSize))
-        if main.searchPage and main.searchPage <= totalPages then
-            page = main.searchPage
+local function BuildFavouritesEntries()
+    local favourites = SB:GetFavourites() -- sparse, indices 1..MAX_FAVOURITES
+    local dragging = mainDragSourceSlot ~= nil
+    local ids, slots = {}, {}
+    for slotIndex = 1, SB.MAX_FAVOURITES do
+        local soundID = favourites[slotIndex]
+        if soundID or dragging then
+            table.insert(ids, soundID)
+            table.insert(slots, slotIndex)
         end
-    else
-        list = GetTabSoundList(SB.db.ui.currentTab)
-        totalPages = math.max(1, math.ceil(ListLength(SB.db.ui.currentTab, list) / pageSize))
-        page = math.min(GetCurrentPage(), totalPages)
-        SetCurrentPage(page)
     end
+    return ids, slots
+end
 
-    local startIdx = (page - 1) * pageSize
+RefreshLibrary = function()
+    if isSettingsOpen or isAdminOpen then return end
+    local scroll = main.libraryScroll
+    local contentWidth = scroll.scroll:GetWidth() or (ENTRY_W * 2)
+    local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
+    local entryW = math.floor(contentWidth / columns)
+    local iconExtent = 24
+    local hotkeyWidth = math.max(70, math.min(104, entryW * 0.28))
 
-    for i = 1, pageSize do
-        local btn = entryButtons[i]
-        local soundID = list[startIdx + i]
-        if soundID and SB.registry[soundID] then
-            local saved = SB:GetSoundSaved(soundID)
-            btn.soundID = soundID
-            btn.icon:SetTexture(SB:GetSoundIcon(soundID))
-            btn.icon:Show()
-            -- "Alternative Sound" purple wash (Theme.lua's CreateIconSlot) -
-            -- explicit request, shown "always, everywhere" for a sound
-            -- with a personal alternate recording enabled.
-            btn.slot:SetAlternate(saved.useAlternate)
-            -- Per-sound "Default Output" override (explicit request) - same
-            -- always-visible treatment as the Alternative Sound wash above,
-            -- just a different colour source (SB.CHANNEL_COLOR via the
-            -- sound's own saved.outputOverride, Communication.lua).
-            local outputColor = SB.SoundOutputOverrideColor and SB.SoundOutputOverrideColor(soundID)
-            btn.slot:SetOutputTint(outputColor)
-            btn.rowBg:Show()
-            btn.separator:Show()
-            btn.nameText:SetText(SB:GetSoundDisplayName(soundID))
-            -- Resting colour follows information hierarchy: readable off-white
-            -- by default, grey when muted, warm gold while actually playing.
-            -- remembered so OnLeave can restore exactly this once the hover
-            -- highlight's forced white lets go - see CreateEntryButton.
-            local restColor
-            local isPlaying = playingSoundID == soundID
-            local isSelected = selectedSoundID == soundID
-            if isPlaying then
-                restColor = { 1.0, 0.84, 0.48 }
-                btn.rowBg:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.12)
-            elseif saved.muted then
-                restColor = SB.Theme.TEXT_DIM
-                btn.rowBg:SetVertexColor(0.02, 0.04, 0.07, btn.baseRowAlpha)
-            elseif outputColor then
-                -- Per-sound "Default Output" override (explicit request) -
-                -- same channel colour as the icon border/wash above. Wins
-                -- over a plain favourite gold, same precedence as the
-                -- border's own (Theme.lua's SetVisualState), but still
-                -- loses to muted/playing.
-                restColor = { outputColor.r, outputColor.g, outputColor.b }
-                btn.rowBg:SetVertexColor(0.015, 0.055, 0.12, btn.baseRowAlpha)
-            elseif saved.favourite then
-                restColor = SB.Theme.GOLD
-                btn.rowBg:SetVertexColor(0.015, 0.055, 0.12, btn.baseRowAlpha)
-            elseif isSelected then
-                restColor = SB.Theme.TEXT
-                btn.rowBg:SetVertexColor(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.11)
+    usedEntries, usedHeaders = 0, 0
+    local y = 0
+    local sections = BuildSectionList()
+    local totalShown = 0
+    local anyRealSection = false
+
+    for _, block in ipairs(sections) do
+        if block.type == "filtered" then
+            local ids = GetFilteredSoundList()
+            totalShown = totalShown + #ids
+            y = LayoutEntries(ids, #ids, y, columns, entryW, iconExtent, hotkeyWidth, false, nil)
+        elseif block.type == "favourites" then
+            anyRealSection = true
+            usedHeaders = usedHeaders + 1
+            local hdr = GetOrCreateHeader(usedHeaders)
+            hdr:ClearAllPoints()
+            hdr:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 0, -y)
+            hdr:SetPoint("RIGHT", scroll.content, "RIGHT", 0, 0)
+            ConfigureHeader(hdr, "favourites", "Favourites", SB.FAVOURITES_ICON, false, nil, true)
+            y = y + SECTION_HEADER_H
+            local ids, slots = BuildFavouritesEntries()
+            totalShown = totalShown + SB:GetFavouriteCount()
+            if #ids == 0 then
+                -- Nothing occupied and no drag in progress (BuildFavouritesEntries
+                -- would otherwise include all 20 slots as drop targets) -
+                -- a small inline hint instead of an empty-looking gap, kept
+                -- local to this section rather than covering the whole
+                -- Library (other sections are still fully visible below it).
+                favEmptyHint:ClearAllPoints()
+                favEmptyHint:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 4, -y)
+                favEmptyHint:SetPoint("RIGHT", scroll.content, "RIGHT", -4, 0)
+                favEmptyHint:Show()
+                y = y + 20
             else
-                restColor = SB.Theme.TEXT
-                btn.rowBg:SetVertexColor(0.015, 0.055, 0.12, btn.baseRowAlpha)
+                favEmptyHint:Hide()
+                y = LayoutEntries(ids, #ids, y, columns, entryW, iconExtent, hotkeyWidth, true, function(idx) return slots[idx] end)
             end
-            btn.restColor = restColor
-            if not btn:IsMouseOver() then
-                btn.nameText:SetTextColor(unpack(restColor))
-            end
-            -- Explicit request: the hover highlight itself is gold for a
-            -- favourite (matching its gold resting name colour/border
-            -- above), blue/accent otherwise - so hovering makes favourite
-            -- status visible at a glance, not just the name colour. Reset
-            -- live every refresh (including right after Shift+Left-Click
-            -- toggles a favourite - RefreshMainWindow already re-runs this),
-            -- so the new colour shows immediately, no reload/re-hover needed.
-            if btn.highlight then
-                if saved.favourite then
-                    btn.highlight:SetColorTexture(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.16)
-                else
-                    btn.highlight:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.12)
-                end
-            end
-            btn.slot:SetVisualState(isPlaying and "playing" or (isSelected and "selected" or "normal"),
-                saved.favourite and true or false, saved.muted and true or false, outputColor)
-
-            -- Hotkey label - Favourites tab only. The visible list is
-            -- compact, so look up the sound's real stored slot instead of
-            -- mistaking its display row for its keybind position. Never
-            -- show it during search. Explicit request: an unbound position
-            -- shows nothing at all - no "[-]" placeholder - only an
-            -- actually-assigned keybind gets the "[X]" label.
-            local favouriteSlot = (not IsFiltering()) and SB.db.ui.currentTab == "favourites"
-                and SB.GetFavouriteSlot and SB:GetFavouriteSlot(soundID)
-            local hotkey = (not IsFiltering()) and SB.db.ui.currentTab == "favourites"
-                and favouriteSlot and SB.GetFavouriteHotkeyLabel
-                and SB:GetFavouriteHotkeyLabel(favouriteSlot)
-            btn.favouriteSlot = favouriteSlot
-            btn.isFavouriteView = favouriteSlot and true or false
-            if btn.isFavouriteView and hotkey then
-                btn.nameText:ClearAllPoints()
-                btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
-                btn.nameText:SetPoint("RIGHT", btn.hotkeyText, "LEFT", -8, 0)
-                btn.hotkeyText:SetText("[" .. hotkey .. "]")
-                btn.hotkeyText:Show()
-                if btn.tag then btn.tag:Hide() end
-                btn.currentTagKey = nil
-            else
-                btn.hotkeyText:Hide()
-                -- Tags never show on the Favourites tab at all - explicit
-                -- fix: that column is reserved for hotkey labels there
-                -- (shown only on SOME rows, whichever slots have a real
-                -- keybind), so a tag appearing on the other rows read as
-                -- randomly conflicting with the hotkey column instead of
-                -- looking like a deliberate second thing. A Favourite is
-                -- also already a sound the player deliberately chose - a
-                -- "Popular"/"Loved" hint adds little there anyway.
-                local tagKey = (not btn.isFavouriteView) and btn.tag and GetTag(soundID)
-                btn.currentTagKey = tagKey or nil
-                if tagKey then
-                    local style = TAG_STYLE[tagKey]
-                    btn.tag.text:SetText(style.label)
-                    btn.tag.text:SetTextColor(unpack(style.text))
-                    btn.tag.leftCap:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
-                    btn.tag.rightCap:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
-                    btn.tag.middle:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
-                    btn.tag:SetWidth(btn.TAG_CAP_W * 2 + btn.tag.text:GetStringWidth() + 8)
-                    btn.tag:ClearAllPoints()
-                    btn.tag:SetPoint("RIGHT", -8, 0)
-                    btn.tag:Show()
-                    btn.nameText:ClearAllPoints()
-                    btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
-                    btn.nameText:SetPoint("RIGHT", btn.tag, "LEFT", -6, 0)
-                else
-                    if btn.tag then btn.tag:Hide() end
-                    btn.nameText:ClearAllPoints()
-                    btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
-                    btn.nameText:SetPoint("RIGHT", -8, 0)
-                end
-            end
-
-            btn:Show()
+            y = y + SECTION_GAP
         else
-            btn.soundID = nil
-            btn.slot:SetAlternate(false)
-            btn.slot:SetOutputTint(nil)
-            local isFavouriteDropTarget = mainDragSourceSlot
-                and (not IsFiltering()) and SB.db.ui.currentTab == "favourites"
-                and (startIdx + i) <= SB.MAX_FAVOURITES
-            btn.favouriteSlot = isFavouriteDropTarget and (startIdx + i) or nil
-            btn.isFavouriteView = false
-            if btn.favouriteHover then btn.favouriteHover:Hide() end
-            btn.hotkeyText:Hide()
-            if btn.tag then btn.tag:Hide() end
-            btn.currentTagKey = nil
-            if isFavouriteDropTarget then
-                btn.icon:Hide()
-                btn.nameText:SetText("")
-                btn.rowBg:Hide()
-                btn.separator:Hide()
-                btn.slot:SetBackdropColor(0, 0, 0, 0)
-                btn.slot:SetBackdropBorderColor(0.48, 0.52, 0.58, 0.85)
-                btn:Show()
-            else
-                btn:Hide()
+            anyRealSection = true
+            local tab = block.tab
+            local key = tab.key
+            local name, icon = TabDisplayInfo(tab)
+            local collapsed = SB.db.ui.categoryCollapsed[tostring(key)] and true or false
+            local list = GetTabSoundList(key)
+            local n = #list
+            totalShown = totalShown + n
+
+            usedHeaders = usedHeaders + 1
+            local hdr = GetOrCreateHeader(usedHeaders)
+            hdr:ClearAllPoints()
+            hdr:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 0, -y)
+            hdr:SetPoint("RIGHT", scroll.content, "RIGHT", 0, 0)
+            ConfigureHeader(hdr, key, name, icon, collapsed, n, false)
+            y = y + SECTION_HEADER_H
+
+            if not collapsed then
+                y = LayoutEntries(list, n, y, columns, entryW, iconExtent, hotkeyWidth, false, nil)
+                y = y + SECTION_GAP
             end
         end
     end
+
+    for i = usedEntries + 1, #entryButtons do entryButtons[i]:Hide() end
+    for i = usedHeaders + 1, #sectionHeaders do sectionHeaders[i]:Hide() end
+
+    scroll.content:SetHeight(math.max(1, y))
+    scroll.UpdateThumb()
 
     -- Empty-state hint - explicit requirement: a clear (if brief) message
-    -- for both an empty category AND an empty Favourites list, never a
-    -- PERMANENT fixture (only shown while actually empty, outside of
-    -- search - a genuinely empty category/Favourites still says "no
-    -- results" via the page label while searching, which is enough there).
-    -- Use the authoritative favourite count for the empty state; favourite
-    -- slots are fixed positions and may intentionally contain gaps.
-    local tabKey = SB.db.ui.currentTab
+    -- when there is genuinely nothing to show at all, never a permanent
+    -- fixture. An empty Favourites section gets its own small inline hint
+    -- instead (see favEmptyHint above) since other sections are still
+    -- visible below it - this one only covers "search/filter matched
+    -- nothing" and the (practically unreachable) "no sections exist at
+    -- all" case.
     if IsFiltering() then
-        emptyHint:Hide()
-    elseif tabKey == "favourites" then
-        if SB:GetFavouriteCount() == 0 then
-            emptyHint:SetText("No Favourites yet.\n\nShift+Left-Click any sound to add it here.")
+        if totalShown == 0 then
+            emptyHint:SetText("No matches.")
             emptyHint:Show()
         else
             emptyHint:Hide()
         end
-    elseif tabKey ~= "private" and #list == 0 then
-        -- Only ever points at Soundbook_MySounds - never at editing
-        -- Soundbook's own Sounds.lua/Sounds\CategoryN directly, since
-        -- CurseForge/WowUp updates replace Soundbook's entire folder and
-        -- would silently delete anything added that way.
-        -- Only ever reachable for the numeric categories in practice -
-        -- Legacy/German Memes always ship with content, never empty - but
-        -- kept general (quoted for a string key) rather than assuming
-        -- numeric, same reasoning as Settings.lua's own category-name
-        -- fallback.
-        local luaKey = (type(tabKey) == "string") and ("[\"" .. tabKey .. "\"]") or ("[" .. tostring(tabKey) .. "]")
-        emptyHint:SetText(string.format(
-            "No sounds in this category yet.\n\nAdd sounds using the Soundbook_MySounds companion addon (see README) - it's the only way that's safe across Soundbook updates:\n\n1. Copy the .mp3/.ogg/.wav into Soundbook_MySounds\\Sounds\\Category1\\ (or Category2)\n2. Add its file name to Soundbook_MySounds\\Sounds.lua, under %s\n3. Fully restart the WoW client (not /reload)",
-            luaKey))
+    elseif not anyRealSection then
+        emptyHint:SetText("Nothing to show yet.")
         emptyHint:Show()
     else
         emptyHint:Hide()
     end
 
-    if IsFiltering() then
-        -- Distinguishes a text search from a tag-only filter (and calls
-        -- out when both are combined) rather than always saying "Search
-        -- results" for something that might be a pure tag pick.
-        local label = IsSearching()
-            and (HasActiveTagFilters() and "Search + tag results" or "Search results")
-            or "Tag filter results"
-        pageLabel:SetText(string.format("%s (%d) - Page %d / %d", label, #list, page, totalPages))
-        main.searchPage = page
-    else
-        pageLabel:SetText(string.format("Page %d / %d", page, totalPages))
-    end
-
-    -- Favourites has at most SB.MAX_FAVOURITES slots, which fits within
-    -- the grid's minimum capacity. It can never have a second page, so showing a dead
-    -- "Page 1 / 1" control there only adds noise. A global search/tag
-    -- filter may still exceed one page even when started from this tab, so
-    -- keep pagination visible while filtering.
-    main.pageBar:SetShown(IsFiltering() or SB.db.ui.currentTab ~= "favourites")
-    if keybindingsShortcutBtn then
-        keybindingsShortcutBtn:SetShown((not IsFiltering()) and SB.db.ui.currentTab == "favourites")
-    end
-
-    -- Tag filter bar itself - explicit request (reversed from an earlier
-    -- "never on Favourites" version): now shown on every tab, Favourites
-    -- included, so a filter can be started from there too. Clicking a
-    -- pill while on Favourites already correctly switches away from that
-    -- tab's own fixed-slot/hotkey view into the normal cross-category
-    -- filtered list (IsFiltering() already gates the hotkey/drag-specific
-    -- rendering everywhere it applies - see favouriteSlot's own "(not
-    -- IsFiltering()) and currentTab == 'favourites'" checks) - the ONLY
-    -- thing that was actually missing was the bar itself being visible
-    -- here to click at all. Plain (non-filtered) Favourites browsing is
-    -- completely unaffected - no tag pills show on its own rows, exactly
-    -- as before, since IsFiltering() is false then.
-    if main.tagFilterBar then
-        main.tagFilterBar:Show()
-    end
     if main.tagFilterUpdaters then
         for _, updateFn in ipairs(main.tagFilterUpdaters) do updateFn() end
     end
-
-    if page > 1 then main.prevBtn:Enable(); main.prevBtn:SetAlpha(1)
-    else main.prevBtn:Disable(); main.prevBtn:SetAlpha(0.35) end
-    if page < totalPages then main.nextBtn:Enable(); main.nextBtn:SetAlpha(1)
-    else main.nextBtn:Disable(); main.nextBtn:SetAlpha(0.35) end
-end
-
-local function ChangePage(delta)
-    if IsFiltering() then
-        main.searchPage = (main.searchPage or 1) + delta
-        if main.searchPage < 1 then main.searchPage = 1 end
-    else
-        local page = GetCurrentPage() + delta
-        if page < 1 then page = 1 end
-        SetCurrentPage(page)
-    end
-    RefreshGrid()
 end
 
 ------------------------------------------------------------------------
--- Tabs
+-- Output Rail - ALL / G / P-R / F / NO (3.0 spec section 20). Sets the
+-- global Default Output Channel (Communication.lua's
+-- SB.db.settings.defaultOutputTarget) directly; per-recipient flyouts are
+-- a later 3.0 stage.
 ------------------------------------------------------------------------
 
--- Explicit request: "besser sehen auf welcher Kategorie ich mich gerade
--- aufhalte" - the active tab needed to stand out more clearly than just a
--- border/fill colour change in a vertical stack of otherwise-similar
--- icons. Adds a stronger glow (btn.innerGlow, from Theme.CreateIconSlot -
--- deliberately brighter than SetVisualState's own resting-favourite glow
--- elsewhere, since this is a persistent "you are here" marker, not a
--- transient state) and nudges the button a few px toward the book itself
--- (btn.anchorPoint/anchorRelPoint/anchorY, captured once at creation by
--- BuildTabs/BuildSettingsTabButton/BuildAdminTabButton) so the active tab
--- visually reads as "merged" with the open page, not just differently
--- coloured.
-local function SetTabActive(btn, active)
-    btn:SetBackdropBorderColor(unpack(active and SB.Theme.ACCENT or SB.Theme.BORDER_DIM))
-    btn:SetBackdropColor(active and SB.Theme.BG_RAISED[1] or 0, active and SB.Theme.BG_RAISED[2] or 0, active and SB.Theme.BG_RAISED[3] or 0, active and 1 or 0)
-    if btn.innerGlow then
-        btn.innerGlow:SetVertexColor(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], active and 0.40 or 0)
-    end
-    if btn.anchorPoint then
-        btn:ClearAllPoints()
-        btn:SetPoint(btn.anchorPoint, main, btn.anchorRelPoint, active and -4 or 2, btn.anchorY)
-    end
-end
+local OUTPUT_RAIL_ENTRIES = {
+    { label = "ALL", value = "ALL", tooltip = "All currently enabled broadcast channels." },
+    { label = "G", value = "GUILD", tooltip = "Guild only." },
+    { label = "P/R", value = "RAID", tooltip = "Party or Raid, whichever you're currently in." },
+    { label = "F", value = "FRIENDS", tooltip = "Friends only." },
+    { label = "NO", value = "SELF", tooltip = "Local playback only - nothing is sent." },
+}
 
-local function RefreshTabs()
-    for _, btn in ipairs(tabButtons) do
-        local isActive = (not isSettingsOpen) and (not isAdminOpen) and btn.tabKey == SB.db.ui.currentTab
-        SetTabActive(btn, isActive)
-    end
-    if main.settingsTabBtn then
-        SetTabActive(main.settingsTabBtn, isSettingsOpen)
-    end
-    if adminTabBtn then
-        SetTabActive(adminTabBtn, isAdminOpen)
-    end
-end
-
--- Shared visual construction for every tab-like button along the right
--- edge of the book (Favourites/Category tabs AND the Settings button use
--- the exact same look, so Settings reads as "one more tab", not a
--- different kind of control). Flat square slot, dim border normally,
--- accent-coloured border + a raised fill when it's the active tab.
-local function CreateTabButtonFrame()
-    local btn = SB.Theme.CreateIconSlot(main, 40, nil, "Button")
-
-    local highlight = btn:CreateTexture(nil, "HIGHLIGHT")
-    highlight:SetAllPoints()
-    highlight:SetColorTexture(1, 1, 1, 0.08)
-    btn.highlight = highlight
-
-    btn.icon = btn.texture -- CreateIconSlot already insets (and crops) a texture
-
-    return btn
-end
-
-local function CreateTabButton(tab)
-    local btn = CreateTabButtonFrame()
-    btn.tabKey = tab.key
-    btn.tab = tab
-
-    btn:SetScript("OnClick", function(self)
-        isSettingsOpen = false
-        isAdminOpen = false
-        selectedSoundID = nil
-        SB.db.ui.currentTab = self.tabKey
-        ClearFiltering()
-        SB:RefreshMainWindow()
-    end)
-
-    btn:SetScript("OnEnter", function(self)
-        local name = TabDisplayInfo(tab)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText(name, 1, 1, 1)
-        GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    return btn
-end
-
--- Skips the "private" tab entirely (not just hides it) when
--- SB:HasPrivateSounds() is false, so nobody without Soundbook_Private (or
--- an empty one) ever sees a tab for it - and every tab after it shifts up
--- to fill the gap rather than leaving a blank slot. Same treatment for any
--- hideIfEmpty tab (Category 1/2) via SB:HasCategorySounds.
-local function BuildTabs()
-    local index = 0
-    for _, tab in ipairs(TABS) do
-        local visible = (not tab.isPrivate or SB:HasPrivateSounds())
-            and (not tab.hideIfEmpty or SB:HasCategorySounds(tab.key))
-        if visible then
-            index = index + 1
-            local btn = CreateTabButton(tab)
-            -- Just enough of a gap that the tab's own 1px border doesn't sit
-            -- flush on top of the book's border, without floating far away.
-            local y = -50 - (index - 1) * 46
-            btn:SetPoint("TOPLEFT", main, "TOPRIGHT", 2, y)
-            btn.anchorPoint, btn.anchorRelPoint, btn.anchorY = "TOPLEFT", "TOPRIGHT", y
-            tabButtons[index] = btn
+local function RefreshOutputRail()
+    local current = SB.db.settings.defaultOutputTarget or "ALL"
+    for _, btn in ipairs(outputRailButtons) do
+        local selected = btn.railValue == current
+            or (btn.railValue == "RAID" and current == "PARTY")
+        if selected then
+            btn:SetBackdropBorderColor(unpack(SB.Theme.ACCENT))
+            btn.label:SetTextColor(0.82, 0.90, 1.0)
+        else
+            btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+            btn.label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
         end
-    end
-    main.visibleCategoryTabs = index
-end
-
-local function RefreshTabIcons()
-    for _, btn in ipairs(tabButtons) do
-        local _, icon = TabDisplayInfo(btn.tab)
-        btn.icon:SetTexture(icon)
-    end
-end
-
-------------------------------------------------------------------------
--- Settings toggle - Settings is visually its own tab (same size/border as
--- Favourites/Category tabs) and continues the same compact right-side dock.
-------------------------------------------------------------------------
-
-local function ToggleSettings()
-    isSettingsOpen = not isSettingsOpen
-    -- Closes Admin if it was open - the mutual-exclusion used to live in
-    -- RefreshMainWindow instead (always forcing isSettingsOpen back off
-    -- whenever isAdminOpen was still true), which meant clicking Settings
-    -- while Admin was open had no visible effect at all - whichever one was
-    -- just clicked must win, not whichever was already open.
-    if isSettingsOpen then
-        isAdminOpen = false
-        ClearFiltering()
-    end
-    SB:RefreshMainWindow()
-end
-
-function SB:OpenSettingsAtKeybindings()
-    isSettingsOpen = true
-    isAdminOpen = false
-    ClearFiltering()
-    SB:RefreshMainWindow()
-    if SB.FocusFavouriteKeybindings then
-        C_Timer.After(0, SB.FocusFavouriteKeybindings)
-    end
-end
-
-local function BuildSettingsTabButton()
-    local btn = CreateTabButtonFrame()
-    btn.icon:SetTexture(SB.SETTINGS_ICON)
-    -- Explicit, repeated request: pinned to the actual BOTTOM edge of the
-    -- book ("unten am Soundbook anheften nicht oben") - anchored straight
-    -- to main's own BOTTOMRIGHT corner, NOT computed from the category-tab
-    -- count from the top (that earlier attempt only "happened" to land
-    -- near the bottom for a specific tab count/window height, not always).
-    btn:SetPoint("BOTTOMLEFT", main, "BOTTOMRIGHT", 2, 8)
-    btn.anchorPoint, btn.anchorRelPoint, btn.anchorY = "BOTTOMLEFT", "BOTTOMRIGHT", 8
-
-    btn:SetScript("OnClick", ToggleSettings)
-    btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Settings", 1, 1, 1)
-        GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    main.settingsTabBtn = btn
-    return btn
-end
-
-------------------------------------------------------------------------
--- Raid Admin toggle - same look/position family as Settings, but sits
--- directly ABOVE it (explicit request: "Oberhalb der Settings (Zahnrad)"),
--- and only exists at all for the current Raid Leader/Assist or Party
--- Leader - see AdminPanel.lua for the panel itself.
-------------------------------------------------------------------------
-
-local function ToggleAdmin()
-    isAdminOpen = not isAdminOpen
-    if isAdminOpen then
-        isSettingsOpen = false
-        ClearFiltering()
-    end
-    SB:RefreshMainWindow()
-end
-
-local function BuildAdminTabButton()
-    local btn = CreateTabButtonFrame()
-    btn.icon:SetTexture(SB.ADMIN_ICON)
-    -- Directly above the Settings button (same 46px row spacing every
-    -- other tab in this dock uses), anchored from main's BOTTOM the same
-    -- way Settings now is - stays glued to Settings regardless of
-    -- category-tab count or window height, instead of floating relative
-    -- to the top.
-    btn:SetPoint("BOTTOMLEFT", main, "BOTTOMRIGHT", 2, 8 + 46)
-    btn.anchorPoint, btn.anchorRelPoint, btn.anchorY = "BOTTOMLEFT", "BOTTOMRIGHT", 8 + 46
-
-    btn:SetScript("OnClick", ToggleAdmin)
-    btn:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Raid Admin", 1, 1, 1)
-        GameTooltip:AddLine("Temporarily mute sending/receiving for the raid or party.", 0.8, 0.8, 0.8, true)
-        GameTooltip:Show()
-    end)
-    btn:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    adminTabBtn = btn
-    return btn
-end
-
--- Shows/hides the Admin button itself the moment the player's own role
--- changes (promoted/demoted, joins/leaves a group) - re-checked on every
--- roster update rather than only at window-build time, since a Raid Lead
--- can hand off lead mid-raid.
-function SB:RefreshAdminTabVisibility()
-    if not adminTabBtn then return end
-    local adminVisible = SB:IsRaidAdmin()
-    -- Settings no longer moves here - it's permanently pinned to main's
-    -- own bottom edge (see BuildSettingsTabButton), so Admin showing/
-    -- hiding never needs to shift it up or down anymore. This block used
-    -- to re-anchor Settings back to the old top-down, tab-count-based
-    -- position every time this ran (on init AND on every roster update) -
-    -- silently undoing the bottom-pin fix the moment a roster event fired.
-    if adminVisible then
-        adminTabBtn:Show()
-    else
-        adminTabBtn:Hide()
-        -- The panel itself must not stay open/reachable for someone who
-        -- just lost the role that unlocked it.
-        if isAdminOpen then
-            isAdminOpen = false
-            SB:RefreshMainWindow()
+        if btn.railValue == "RAID" then
+            btn.label:SetText(IsInRaid() and "R" or (IsInGroup() and "P" or "P/R"))
         end
     end
 end
 
-------------------------------------------------------------------------
--- Frame construction
-------------------------------------------------------------------------
+local function BuildOutputRail(parent)
+    local rail = SB.CreateFrame("Frame", nil, parent)
+    rail:SetWidth(40)
+    for i, entry in ipairs(OUTPUT_RAIL_ENTRIES) do
+        local btn = SB.CreateFrame("Button", nil, rail)
+        btn:SetSize(36, 34)
+        btn:SetPoint("TOP", rail, "TOP", 0, -(i - 1) * 38)
+        btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+        btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+        btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+        btn.railValue = entry.value
 
-local function SavePosition()
-    local point, _, relPoint, x, y = main:GetPoint(1)
-    SB.db.ui.mainPos = { point = point, relPoint = relPoint, x = x, y = y }
-end
+        local label = btn:CreateFontString(nil, "OVERLAY")
+        label:SetFontObject(SB.Fonts.HighlightSmall)
+        label:SetPoint("CENTER")
+        label:SetText(entry.label)
+        btn.label = label
 
-local function SaveSize()
-    SB.db.ui.mainWidth = main:GetWidth()
-    SB.db.ui.mainHeight = main:GetHeight()
-end
+        btn:SetScript("OnClick", function()
+            SB.db.settings.defaultOutputTarget = entry.value
+            RefreshOutputRail()
+        end)
+        btn:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetText(entry.label == "P/R" and "Party/Raid" or entry.label, 1, 1, 1)
+            GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
+            GameTooltip:Show()
+            self:SetBackdropColor(0.04, 0.10, 0.20, 0.92)
+        end)
+        btn:SetScript("OnLeave", function(self)
+            GameTooltip:Hide()
+            self:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+        end)
 
-local function RestorePosition()
-    local pos = SB.db.ui.mainPos or { point = "CENTER", relPoint = "CENTER", x = 0, y = 0 }
-    main:ClearAllPoints()
-    main:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
-end
-
-local function BuildMainFrame()
-    main = SB.CreateFrame("Frame", "SoundbookMainFrame", UIParent)
-    -- Explicit request: default size (used only when nothing's saved yet)
-    -- matches the window's own minimum resizable bounds - 560x560 - not a
-    -- larger fixed starting size.
-    local initialW = math.max(560, math.min(720, tonumber(SB.db.ui.mainWidth) or 560))
-    local initialH = math.max(560, math.min(760, tonumber(SB.db.ui.mainHeight) or 560))
-    main:SetSize(initialW, initialH)
-    main:SetFrameStrata("HIGH")
-    main:SetClampedToScreen(true)
-    main:SetMovable(true)
-    main:SetResizable(true)
-    if main.SetResizeBounds then
-        main:SetResizeBounds(560, 560, 720, 760)
-    elseif main.SetMinResize then
-        main:SetMinResize(560, 560)
-        main:SetMaxResize(720, 760)
+        outputRailButtons[i] = btn
     end
-    main:EnableMouse(true)
-    main:RegisterForDrag("LeftButton")
-    main:SetScript("OnDragStart", main.StartMoving)
-    main:SetScript("OnDragStop", function()
-        main:StopMovingOrSizing()
-        SavePosition()
-    end)
-    SB.Theme.Panel(main)
-    main:Hide()
+    return rail
+end
 
-    tinsert(UISpecialFrames, "SoundbookMainFrame")
+------------------------------------------------------------------------
+-- Tag filter pills - unchanged content/logic from the pre-3.0 book, just
+-- built inside the new toolbar area.
+------------------------------------------------------------------------
 
-    local headerBar = SB.Theme.CreateHeader(main, "Soundbook", 56)
-    main.headerBar = headerBar
-
-    local closeBtn = SB.Theme.CreateCloseGlyph(main, 20)
-    closeBtn:SetPoint("TOPRIGHT", -8, -8)
-    closeBtn:SetScript("OnClick", function() main:Hide() end)
-
-    -- Search box - no separate "Search" label (the placeholder text inside
-    -- already says that); sized and aligned to match the grid's right
-    -- grid exactly (same left/right edges as the icons/names below it;
-    -- columns are chosen by EnsureEntryButtons) instead of
-    -- floating disconnected in the top-right corner.
-    searchBox = SB.Theme.CreateInputBox(main, ENTRY_W, 22)
-    searchBox:SetPoint("TOPLEFT", main, "TOP", 0, -78)
-    -- -44, matching content's own BOTTOMRIGHT inset below (was -40 - a 4px
-    -- mismatch that made the search box stick out past the container's
-    -- right edge instead of lining up with it exactly, per this block's
-    -- own comment above).
-    searchBox:SetPoint("RIGHT", main, "RIGHT", -44, 0)
-    searchBox:SetMaxLetters(50)
-    searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
-    searchBox:SetScript("OnEscapePressed", function(self) self:SetText(""); self:ClearFocus() end)
-    searchBox:SetScript("OnTextChanged", function(self)
-        searchPlaceholder:SetShown(self:GetText() == "")
-        main.searchPage = 1
-        RefreshGrid()
-    end)
-    main.searchBox = searchBox
-
-    searchPlaceholder = searchBox:CreateFontString(nil, "OVERLAY")
-    searchPlaceholder:SetFontObject(SB.Fonts.DisableSmall)
-    searchPlaceholder:SetPoint("LEFT", 4, 0)
-    searchPlaceholder:SetText("Search...")
-
-    -- Default Output Channel - moved here from Settings (explicit request):
-    -- omnipresent above the sound grid, left of the search box, on every
-    -- sound-listing tab (categories/Stammtisch/Favourites) - NOT
-    -- shown over Settings/Admin (see RefreshMainWindow below, same
-    -- show/hide as the search box). Left column of the same row the search
-    -- box occupies on the right (20 = grid's own left inset, ENTRY_W =
-    -- exactly one grid column wide, so it lines up with the icons below it
-    -- same as the search box already does on its side).
-    -- Explicit request: dropdown list ~50% taller (12 visible rows, was 8)
-    -- so the broadcast target list needs less scrolling.
-    outputChannelDD = SB.Theme.CreateDropdown(main, ENTRY_W, 22, 12)
-    outputChannelDD.button:SetPoint("TOPLEFT", main, "TOPLEFT", 24, -78)
-    outputChannelDD.button:SetPoint("RIGHT", main, "TOP", -6, 0)
-    outputChannelDD:SetOptions(SB.ComputeOutputTargetOptions())
-    outputChannelDD:SetOptionsProvider(SB.ComputeOutputTargetOptions)
-    outputChannelDD:SetRowFont(SB.OutputTargetRowFont)
-    outputChannelDD:SetValue(SB.db.settings.defaultOutputTarget)
-    outputChannelDD:SetOnChange(function(value)
-        SB.db.settings.defaultOutputTarget = value
-    end)
-    main.outputChannelDD = outputChannelDD
-
-    -- Explicit request: a tooltip explaining what this dropdown actually
-    -- does - it's easy to mistake for a generic filter at a glance.
-    outputChannelDD.button:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_BOTTOMLEFT")
-        GameTooltip:SetText("Default Output Channel", 1, 1, 1)
-        GameTooltip:AddLine("Where a sound goes when you click it - Self plays only for you, everything else also sends to that channel/person.", 0.8, 0.8, 0.8, true)
-        GameTooltip:AddLine(" ")
-        GameTooltip:AddLine("A macro's own \"::Target\" suffix overrides this for that one sound.", 0.6, 0.8, 1, true)
-        GameTooltip:Show()
-    end)
-    outputChannelDD.button:SetScript("OnLeave", function() GameTooltip:Hide() end)
-
-    -- Tag filter pills (explicit request) - New/Trending/Popular/Loved,
-    -- same colours the per-sound pill already uses (TAG_STYLE). Clicking
-    -- one toggles it on/off; any number can be active at once, OR'ed
-    -- together (GetFilteredSoundList) - "ich kann auch mehrere Tags
-    -- anklicken gleichzeitig". Active tag filters search across EVERY
-    -- category, ignoring the current tab, same as a text search already
-    -- does (IsFiltering()/GetFilteredSoundList above) - hidden on the
-    -- Favourites tab (see RefreshGrid), same reasoning as the per-sound
-    -- pill never showing there either.
-    --
-    -- Explicit request: centered over the actual sound-icon grid below
-    -- (content's own full width, 24 to -44), not just the left-half row
-    -- outputChannelDD sits in - same horizontal span as content/searchBox.
-    local tagFilterBar = SB.CreateFrame("Frame", nil, main)
-    tagFilterBar:SetPoint("TOPLEFT", main, "TOPLEFT", 24, -106)
-    tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -44, 0)
+local function BuildTagFilterBar(parent)
+    local tagFilterBar = SB.CreateFrame("Frame", nil, parent)
     tagFilterBar:SetHeight(20)
     main.tagFilterBar = tagFilterBar
-    -- Every pill's own UpdatePillVisual, so RefreshGrid can keep them all
-    -- in sync even when SB.db.ui.tagFilters changes some other way than a
-    -- click on the pill itself (e.g. SB:ShowDefaultSounds wiping it).
     main.tagFilterUpdaters = {}
 
-    -- Explicit request: pills are centered within the bar (not left-
-    -- aligned) - each pill's width depends on its own label text, so the
-    -- total row width is only known once every pill exists. Built first at
-    -- an arbitrary LEFT anchor, then all repositioned together by
-    -- RecenterFilterPills below, which also re-runs on OnSizeChanged so
-    -- resizing the main window keeps them centered.
     local FILTER_PILL_H, FILTER_PILL_CAP_W, FILTER_PILL_GAP = 20, 8, 6
     local filterPills = {}
     for _, tagKey in ipairs(TAG_FILTER_ORDER) do
@@ -1721,10 +1474,6 @@ local function BuildMainFrame()
 
         pill:SetWidth(FILTER_PILL_CAP_W * 2 + text:GetStringWidth() + 10)
 
-        -- Explicit request: the pill only shows at all while at least one
-        -- sound currently carries this tag (GetVisibleTagSet) - "ich
-        -- brauch nicht Trending sehen oben als Pille wenn es keine Sounds
-        -- dafür gibt", same for New once nothing's within its 48h window.
         local function UpdatePillVisual()
             pill:SetShown(GetVisibleTagSet()[tagKey] and true or false)
             local active = SB.db.ui.tagFilters[tagKey] and true or false
@@ -1744,16 +1493,9 @@ local function BuildMainFrame()
                 SB.db.ui.tagFilters[tagKey] = true
             end
             UpdatePillVisual()
-            -- Same "start over at page 1" treatment a fresh text search
-            -- already gets (both share the same global list/page counter).
-            main.searchPage = 1
-            RefreshGrid()
+            RefreshLibrary()
         end)
 
-        -- Explicit request: just the tag's own description, no "click to
-        -- filter..." call-to-action - and coloured like the pill itself
-        -- (title + body both in style.text), not Theme.AttachTooltip's
-        -- fixed gold/grey scheme.
         pill:SetScript("OnEnter", function(self)
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
             GameTooltip:SetText(style.label, style.text[1], style.text[2], style.text[3])
@@ -1763,11 +1505,6 @@ local function BuildMainFrame()
         pill:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    -- Centers the whole pill row within tagFilterBar - see filterPills'
-    -- own comment above. Re-anchors every VISIBLE pill (a hidden one -
-    -- SetShown(false) by UpdatePillVisual above, when its tag currently
-    -- has no matching sound - is skipped entirely, so it leaves no gap in
-    -- the row) left-to-right starting from the computed offset.
     local function RecenterFilterPills()
         local totalW, visibleCount = 0, 0
         for _, pill in ipairs(filterPills) do
@@ -1788,68 +1525,236 @@ local function BuildMainFrame()
         end
     end
     RecenterFilterPills()
-    -- Keeps the row centered if the main window (and therefore this bar)
-    -- gets resized - it's user-resizable (main:SetResizable, 560-720px).
     tagFilterBar:SetScript("OnSizeChanged", RecenterFilterPills)
-    -- Also re-centers every time RefreshGrid runs all tagFilterUpdaters
-    -- (see there) - after every pill's own UpdatePillVisual has already
-    -- run and potentially shown/hidden it, this closes the gap left by
-    -- any pill that just disappeared (or makes room for one that
-    -- reappeared).
     table.insert(main.tagFilterUpdaters, RecenterFilterPills)
 
-    -- Content area for sound entries
+    return tagFilterBar
+end
+
+------------------------------------------------------------------------
+-- Raid Admin toolbar button - only visible to the current Raid Leader/
+-- Assist or Party Leader (AdminPanel.lua). Replaces the old right-side
+-- Admin tab.
+------------------------------------------------------------------------
+
+local function ToggleAdmin()
+    isAdminOpen = not isAdminOpen
+    if isAdminOpen then
+        isSettingsOpen = false
+        ClearFiltering()
+    end
+    SB:RefreshMainWindow()
+end
+
+function SB:RefreshAdminTabVisibility()
+    if not adminToolbarBtn then return end
+    local adminVisible = SB:IsRaidAdmin()
+    if adminVisible then
+        adminToolbarBtn:Show()
+    else
+        adminToolbarBtn:Hide()
+        if isAdminOpen then
+            isAdminOpen = false
+            SB:RefreshMainWindow()
+        end
+    end
+end
+
+------------------------------------------------------------------------
+-- Frame construction
+------------------------------------------------------------------------
+
+local function SavePosition()
+    local point, _, relPoint, x, y = main:GetPoint(1)
+    SB.db.ui.mainPos = { point = point, relPoint = relPoint, x = x, y = y }
+end
+
+local function SaveSize()
+    SB.db.ui.mainWidth = main:GetWidth()
+    SB.db.ui.mainHeight = main:GetHeight()
+end
+
+local function RestorePosition()
+    local pos = SB.db.ui.mainPos or { point = "CENTER", relPoint = "CENTER", x = 0, y = 0 }
+    main:ClearAllPoints()
+    main:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
+end
+
+local function RefreshLockVisual()
+    if not lockToolbarBtn then return end
+    lockToolbarBtn:SetLocked(SB.db.ui.layoutLocked and true or false)
+end
+
+local function BuildMainFrame()
+    main = SB.CreateFrame("Frame", "SoundbookMainFrame", UIParent)
+    -- Explicit request: default size (used only when nothing's saved yet)
+    -- matches the window's own minimum resizable bounds - 560x560 - not a
+    -- larger fixed starting size.
+    local initialW = math.max(560, math.min(720, tonumber(SB.db.ui.mainWidth) or 560))
+    local initialH = math.max(560, math.min(760, tonumber(SB.db.ui.mainHeight) or 560))
+    main:SetSize(initialW, initialH)
+    main:SetFrameStrata("HIGH")
+    main:SetClampedToScreen(true)
+    main:SetMovable(true)
+    main:SetResizable(true)
+    if main.SetResizeBounds then
+        main:SetResizeBounds(560, 560, 720, 760)
+    elseif main.SetMinResize then
+        main:SetMinResize(560, 560)
+        main:SetMaxResize(720, 760)
+    end
+    main:EnableMouse(true)
+    main:RegisterForDrag("LeftButton")
+    main:SetScript("OnDragStart", function()
+        if SB.db.ui.layoutLocked then return end
+        main:StartMoving()
+    end)
+    main:SetScript("OnDragStop", function()
+        main:StopMovingOrSizing()
+        SavePosition()
+    end)
+    SB.Theme.Panel(main)
+    main:Hide()
+
+    tinsert(UISpecialFrames, "SoundbookMainFrame")
+
+    ------------------------------------------------------------------
+    -- Toolbar: Settings / Raid Admin / Lock / Search / Close (3.0 spec
+    -- section 16) - replaces the old tall crest header + right-side tab
+    -- dock. A slim gold-bordered strip instead of a large ornamental
+    -- banner (spec section 2's own "avoid" list).
+    ------------------------------------------------------------------
+    local toolbar = SB.CreateFrame("Frame", nil, main)
+    toolbar:SetPoint("TOPLEFT", 8, -8)
+    toolbar:SetPoint("TOPRIGHT", -8, -8)
+    toolbar:SetHeight(30)
+    main.toolbar = toolbar
+
+    local toolbarLine = toolbar:CreateTexture(nil, "ARTWORK")
+    toolbarLine:SetPoint("BOTTOMLEFT", 0, -2)
+    toolbarLine:SetPoint("BOTTOMRIGHT", 0, -2)
+    toolbarLine:SetHeight(1)
+    toolbarLine:SetTexture("Interface\\Buttons\\WHITE8X8")
+    toolbarLine:SetVertexColor(unpack(SB.Theme.GOLD))
+
+    local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, 22)
+    closeBtn:SetPoint("RIGHT", 0, 0)
+    closeBtn:SetScript("OnClick", function() main:Hide() end)
+
+    local settingsBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
+    settingsBtn:SetPoint("LEFT", 0, 0)
+    local settingsIcon = settingsBtn:CreateTexture(nil, "ARTWORK")
+    settingsIcon:SetPoint("TOPLEFT", 2, -2)
+    settingsIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    settingsIcon:SetTexture(SB.SETTINGS_ICON)
+    settingsIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    local function ToggleSettings()
+        isSettingsOpen = not isSettingsOpen
+        if isSettingsOpen then
+            isAdminOpen = false
+            ClearFiltering()
+        end
+        SB:RefreshMainWindow()
+    end
+    settingsBtn:SetScript("OnClick", ToggleSettings)
+    SB.Theme.AttachTooltip(settingsBtn, "Settings")
+    main.settingsBtn = settingsBtn
+
+    local adminBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
+    adminBtn:SetPoint("LEFT", settingsBtn, "RIGHT", 4, 0)
+    local adminIcon = adminBtn:CreateTexture(nil, "ARTWORK")
+    adminIcon:SetPoint("TOPLEFT", 2, -2)
+    adminIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    adminIcon:SetTexture(SB.ADMIN_ICON)
+    adminIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    adminBtn:SetScript("OnClick", ToggleAdmin)
+    SB.Theme.AttachTooltip(adminBtn, "Raid Admin", "Temporarily mute sending/receiving for the raid or party.")
+    adminBtn:Hide()
+    adminToolbarBtn = adminBtn
+
+    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 22)
+    lockToolbarBtn:SetPoint("LEFT", adminBtn, "RIGHT", 4, 0)
+    lockToolbarBtn:SetScript("OnClick", function()
+        SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
+        RefreshLockVisual()
+    end)
+    SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
+
+    -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
+    -- (mute incoming / lock / muted players / open Soundbook), so there is
+    -- exactly one such menu in the whole addon rather than two diverging
+    -- copies.
+    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
+    audioBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
+    local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
+    audioIcon:SetPoint("TOPLEFT", 2, -2)
+    audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    audioIcon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
+    audioIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    audioBtn:SetScript("OnClick", function(self)
+        if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
+    end)
+    SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
+
+    searchBox = SB.Theme.CreateInputBox(toolbar, 100, 22)
+    searchBox:SetPoint("LEFT", lockToolbarBtn, "RIGHT", 8, 0)
+    searchBox:SetPoint("RIGHT", audioBtn, "LEFT", -8, 0)
+    searchBox:SetMaxLetters(50)
+    searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    searchBox:SetScript("OnEscapePressed", function(self) self:SetText(""); self:ClearFocus() end)
+    searchBox:SetScript("OnTextChanged", function(self)
+        searchPlaceholder:SetShown(self:GetText() == "")
+        RefreshLibrary()
+    end)
+    main.searchBox = searchBox
+
+    searchPlaceholder = searchBox:CreateFontString(nil, "OVERLAY")
+    searchPlaceholder:SetFontObject(SB.Fonts.DisableSmall)
+    searchPlaceholder:SetPoint("LEFT", 4, 0)
+    searchPlaceholder:SetText("Find a sound...")
+
+    ------------------------------------------------------------------
+    -- Tag filter row, directly under the toolbar.
+    ------------------------------------------------------------------
+    local tagFilterBar = BuildTagFilterBar(main)
+    tagFilterBar:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -6)
+    tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -8, 0)
+
+    ------------------------------------------------------------------
+    -- Output Rail (left) + scrolling Library content (right).
+    ------------------------------------------------------------------
+    local outputRail = BuildOutputRail(main)
+    outputRail:SetPoint("TOPLEFT", tagFilterBar, "BOTTOMLEFT", 0, -8)
+    outputRail:SetPoint("BOTTOM", main, "BOTTOM", 0, 10)
+    main.outputRail = outputRail
+
+    local libraryScroll = SB.Theme.CreateScrollFrame(main)
+    libraryScroll.scroll:SetPoint("TOPLEFT", outputRail, "TOPRIGHT", 8, 0)
+    libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -10, 10)
+    main.libraryScroll = libraryScroll
+
+    -- Settings/Admin panels render into the same content region as the
+    -- Library, swapped in over it (unchanged from the pre-3.0 book).
     local content = SB.CreateFrame("Frame", nil, main)
-    content:SetPoint("TOPLEFT", 24, -132)
-    content:SetPoint("BOTTOMRIGHT", -44, 66)
-    content:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-    content:SetBackdropColor(0.006, 0.022, 0.052, 0.72)
-    content:SetBackdropBorderColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.52)
+    content:SetAllPoints(libraryScroll.scroll)
     main.content = content
 
-    -- Shown instead of the (then-empty) grid when a category has no sound
-    -- files yet - see RefreshGrid.
-    emptyHint = content:CreateFontString(nil, "OVERLAY")
+    emptyHint = libraryScroll.scroll:CreateFontString(nil, "OVERLAY")
     emptyHint:SetFontObject(SB.Fonts.HighlightSmall)
-    emptyHint:SetPoint("CENTER", content, "CENTER", 0, 0)
-    emptyHint:SetWidth(math.max(220, (content:GetWidth() or (ENTRY_W * DEFAULT_COLUMNS)) - 40))
+    emptyHint:SetPoint("CENTER", libraryScroll.scroll, "CENTER", 0, 0)
+    emptyHint:SetWidth(260)
     emptyHint:SetJustifyH("CENTER")
     emptyHint:SetWordWrap(true)
     emptyHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     emptyHint:SetSpacing(3)
     emptyHint:Hide()
 
-    -- Page bar - anchored with a deliberate gap below the sound grid so the
-    -- pagination controls never crowd the last row of icons.
-    local pageBar = CreateFrame("Frame", nil, main)
-    pageBar:SetPoint("BOTTOM", main, "BOTTOM", 0, 24)
-    pageBar:SetSize(340, 24)
-    main.pageBar = pageBar
-
-    pageLabel = pageBar:CreateFontString(nil, "OVERLAY")
-    pageLabel:SetFontObject(SB.Fonts.Normal)
-    pageLabel:SetPoint("LEFT", 38, 0)
-    pageLabel:SetPoint("RIGHT", -38, 0)
-    pageLabel:SetJustifyH("CENTER")
-    pageLabel:SetWordWrap(false)
-
-    local prevBtn = SB.Theme.CreateFlatButton(pageBar, "<", 28, 22)
-    prevBtn:SetPoint("LEFT", pageBar, "LEFT", 2, 0)
-    prevBtn:SetScript("OnClick", function() ChangePage(-1) end)
-    main.prevBtn = prevBtn
-
-    local nextBtn = SB.Theme.CreateFlatButton(pageBar, ">", 28, 22)
-    nextBtn:SetPoint("RIGHT", pageBar, "RIGHT", -2, 0)
-    nextBtn:SetScript("OnClick", function() ChangePage(1) end)
-    main.nextBtn = nextBtn
-
-    keybindingsShortcutBtn = SB.Theme.CreateFlatButton(main, "Keybindings", 150, 22, "primary")
-    keybindingsShortcutBtn:SetPoint("BOTTOM", main, "BOTTOM", 0, 25)
-    keybindingsShortcutBtn:SetScript("OnClick", function() SB:OpenSettingsAtKeybindings() end)
-    SB.Theme.AttachTooltip(keybindingsShortcutBtn, "Favourite Keybindings",
-        "Open Settings at the key assignments for favourite positions 1-20.")
-    keybindingsShortcutBtn:Hide()
-    main.keybindingsShortcutBtn = keybindingsShortcutBtn
+    favEmptyHint = libraryScroll.content:CreateFontString(nil, "OVERLAY")
+    favEmptyHint:SetFontObject(SB.Fonts.DisableSmall)
+    favEmptyHint:SetJustifyH("LEFT")
+    favEmptyHint:SetText("No Favourites yet - Shift+Left-Click any sound to add it here.")
+    favEmptyHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    favEmptyHint:Hide()
 
     local resizeGrip = SB.CreateFrame("Button", nil, main)
     resizeGrip:SetSize(22, 22)
@@ -1857,7 +1762,10 @@ local function BuildMainFrame()
     resizeGrip:SetNormalTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Up")
     resizeGrip:SetHighlightTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Highlight")
     resizeGrip:SetPushedTexture("Interface\\ChatFrame\\UI-ChatIM-SizeGrabber-Down")
-    resizeGrip:SetScript("OnMouseDown", function() main:StartSizing("BOTTOMRIGHT") end)
+    resizeGrip:SetScript("OnMouseDown", function()
+        if SB.db.ui.layoutLocked then return end
+        main:StartSizing("BOTTOMRIGHT")
+    end)
     resizeGrip:SetScript("OnMouseUp", function()
         main:StopMovingOrSizing()
         SaveSize()
@@ -1865,56 +1773,32 @@ local function BuildMainFrame()
             main.layoutRefreshTimer:Cancel()
             main.layoutRefreshTimer = nil
         end
-        EnsureEntryButtons()
-        RefreshGrid()
+        RefreshLibrary()
         if settingsPanel and settingsPanel:IsShown() and SB.FitSettingsPanelHeight then SB:FitSettingsPanelHeight() end
     end)
     main.resizeGrip = resizeGrip
     main:SetScript("OnSizeChanged", function()
         if not main.content then return end
-        EnsureEntryButtons()
-        emptyHint:SetWidth(math.max(220, (main.content:GetWidth() or 260) - 40))
         if main.layoutRefreshTimer then main.layoutRefreshTimer:Cancel() end
         main.layoutRefreshTimer = C_Timer.NewTimer(0.05, function()
             main.layoutRefreshTimer = nil
-            RefreshGrid()
-            -- Explicit request: Settings should resize live during the
-            -- drag, same as the sound grid above, not just once on mouse-
-            -- up - this used to only run from the resize grip's OnMouseUp.
+            RefreshLibrary()
             if settingsPanel and settingsPanel:IsShown() and SB.FitSettingsPanelHeight then
                 SB:FitSettingsPanelHeight()
             end
         end)
     end)
 
-    -- Guards against a saved "private" tab from an earlier session where
-    -- Soundbook_Private was installed but no longer is - falls back to
-    -- Favourites instead of landing on a tab that no longer exists.
-    if SB.db.ui.currentTab == "private" and not SB:HasPrivateSounds() then
-        SB.db.ui.currentTab = "favourites"
-    end
-    -- Same guard for a saved Category 1/2 tab that's since gone empty again
-    -- (e.g. Soundbook_MySounds was removed) - land on Favourites instead of
-    -- a hidden tab.
-    if (SB.db.ui.currentTab == 1 or SB.db.ui.currentTab == 2) and not SB:HasCategorySounds(SB.db.ui.currentTab) then
-        SB.db.ui.currentTab = "favourites"
-    end
-
-    local sideDock = SB.CreateFrame("Frame", nil, main)
-    sideDock:SetPoint("TOPLEFT", main, "TOPRIGHT", 0, -44)
-    sideDock:SetSize(46, 260)
-    sideDock:EnableMouse(false)
-    main.sideDock = sideDock
-
-    BuildTabs()
-    BuildSettingsTabButton()
-    BuildAdminTabButton()
+    -- Guards against a saved "collapsed" state key from an earlier session
+    -- for a category that's since gone away (Soundbook_Private removed,
+    -- etc.) - harmless (BuildSectionList simply never lists it), left as-is.
 
     settingsPanel = SB.BuildSettingsPanel(main, content)
     settingsPanel:Hide()
     adminPanel = SB.BuildAdminPanel(main, content)
     adminPanel:Hide()
     SB:RefreshAdminTabVisibility()
+    RefreshLockVisual()
 
     RestorePosition()
     return main
@@ -1925,32 +1809,12 @@ end
 ------------------------------------------------------------------------
 
 -- The single place that decides what's visible for the current
--- isSettingsOpen/isAdminOpen state - called from every path that can change
--- either (opening/closing Settings or Admin, clicking any other tab, first
--- show), so search/grid visibility can never drift out of sync again.
--- Settings and Admin are mutually exclusive - each toggle (ToggleSettings/
--- ToggleAdmin above, and every category tab's own OnClick) already closes
--- the other one itself, at the moment it's clicked - NOT decided here, on
--- purpose: doing it here instead used to always force isSettingsOpen back
--- off whenever isAdminOpen was still true (regardless of which one the
--- player had actually just clicked), which made clicking Settings while
--- Admin was open silently do nothing.
+-- isSettingsOpen/isAdminOpen state - called from every path that can
+-- change either, so Library/Settings/Admin visibility can never drift out
+-- of sync. Settings and Admin are mutually exclusive - each toggle already
+-- closes the other one itself, at the moment it's clicked.
 function SB:RefreshMainWindow()
     if not main then return end
-    if main.headerBar and main.headerBar.title then
-        if isSettingsOpen then
-            main.headerBar.title:SetText("Soundbook Settings")
-        elseif isAdminOpen then
-            main.headerBar.title:SetText("Raid Administration")
-        else
-            -- Refined further, per actual tab/filter state, by RefreshGrid
-            -- below (it runs on every relevant change - tab switch, search
-            -- text, tag filter pill - this is just a safe starting value).
-            main.headerBar.title:SetText("Soundbook")
-        end
-    end
-    RefreshTabIcons()
-    RefreshTabs()
     if isSettingsOpen or isAdminOpen then
         if isSettingsOpen then
             settingsPanel:Show()
@@ -1964,26 +1828,21 @@ function SB:RefreshMainWindow()
         else
             adminPanel:Hide()
         end
-        main.pageBar:Hide()
-        if keybindingsShortcutBtn then keybindingsShortcutBtn:Hide() end
         emptyHint:Hide()
-        -- Search filters the sound grid, which isn't shown while Settings/
-        -- Admin is open - the search box wouldn't do anything here. Default
-        -- Output Channel is about sending SOUNDS too, same reasoning -
-        -- explicit request: only shown where sounds actually are, never
-        -- over Settings or the Admin panel.
-        searchBox:Hide()
-        outputChannelDD.button:Hide()
-        if main.tagFilterBar then main.tagFilterBar:Hide() end
-        for _, btn in ipairs(entryButtons) do btn:Hide() end
+        main.libraryScroll.scroll:Hide()
+        main.outputRail:Hide()
+        main.tagFilterBar:Hide()
+        for i = 1, #entryButtons do entryButtons[i]:Hide() end
+        for i = 1, #sectionHeaders do sectionHeaders[i]:Hide() end
     else
         settingsPanel:Hide()
         adminPanel:Hide()
-        main.pageBar:Show()
-        searchBox:Show()
-        outputChannelDD.button:Show()
-        RefreshGrid() -- also shows/hides tagFilterBar per-tab, see there
+        main.libraryScroll.scroll:Show()
+        main.outputRail:Show()
+        main.tagFilterBar:Show()
+        RefreshLibrary()
     end
+    RefreshOutputRail()
 end
 
 function SB:ShowMainWindow()
@@ -1994,20 +1853,20 @@ function SB:ShowMainWindow()
 end
 
 -- Onboarding destination: always open the actual starter sounds, never a
--- previously remembered tab, Settings panel, search result, tag filter, or
--- later page.
+-- previously remembered Settings panel, search result, or tag filter.
 function SB:ShowDefaultSounds()
     if not main then BuildMainFrame() end
     isSettingsOpen = false
     isAdminOpen = false
-    SB.db.ui.currentTab = "Legacy"
-    SB.db.ui.currentPage[tostring("Legacy")] = 1
-    main.searchPage = 1
     if searchBox then searchBox:SetText("") end
     wipe(SB.db.ui.tagFilters)
+    SB.db.ui.categoryCollapsed["Legacy"] = nil
     InvalidateSortedListCache()
     main:Show()
     SB:RefreshMainWindow()
+    -- Land at the very top (Favourites, then Legacy) rather than wherever
+    -- the Library happened to be scrolled to last.
+    if main.libraryScroll then main.libraryScroll.scroll:SetVerticalScroll(0) end
 end
 
 function SB:HideMainWindow()
@@ -2022,14 +1881,33 @@ function SB:ToggleMainWindow()
     end
 end
 
+-- Explicit compatibility entry point - Settings.lua's Favourite Keybinds
+-- section lives inside the same Settings panel as before; this just opens
+-- straight to it instead of leaving the player to find it manually.
+function SB:OpenSettingsAtKeybindings()
+    isSettingsOpen = true
+    isAdminOpen = false
+    ClearFiltering()
+    SB:RefreshMainWindow()
+    if SB.FocusFavouriteKeybindings then
+        C_Timer.After(0, SB.FocusFavouriteKeybindings)
+    end
+end
+
+function SB:GetMainGridLayout()
+    local contentWidth = main and main.libraryScroll and main.libraryScroll.scroll:GetWidth() or (ENTRY_W * 2)
+    local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
+    return columns, nil, nil
+end
+
 SB:On("TOGGLE_MAIN_UI", function() SB:ToggleMainWindow() end)
 
 SB:On("FAVOURITES_CHANGED", function()
-    if main and main:IsShown() then RefreshGrid() end
+    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
 end)
 
 SB:On("SOUND_DISPLAY_CHANGED", function()
-    if main and main:IsShown() then RefreshGrid() end
+    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
 end)
 
 local function SetPlayingState(soundID)
@@ -2038,13 +1916,13 @@ local function SetPlayingState(soundID)
         playingStateTimer = nil
     end
     playingSoundID = soundID
-    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshGrid() end
+    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
     local duration = tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
     if soundID and duration > 0 then
         playingStateTimer = C_Timer.NewTimer(duration, function()
             playingStateTimer = nil
             playingSoundID = nil
-            if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshGrid() end
+            if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
         end)
     end
 end
@@ -2058,15 +1936,16 @@ SB:On("PLAYBACK_STOPPED", function()
 end)
 
 SB:On("CATEGORY_CHANGED", function()
-    if main and main:IsShown() then RefreshTabIcons() end
+    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
 end)
 
--- Keeps the Admin tab's own visibility in sync with the player's current
--- role - a Raid Lead can hand off lead, an Assist can be demoted, or the
--- player can simply leave the group entirely, all mid-session.
+-- Keeps the Admin button's own visibility in sync with the player's
+-- current role - a Raid Lead can hand off lead, an Assist can be demoted,
+-- or the player can simply leave the group entirely, all mid-session.
 local adminVisibilityFrame = CreateFrame("Frame")
 adminVisibilityFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 adminVisibilityFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 adminVisibilityFrame:SetScript("OnEvent", function()
     SB:RefreshAdminTabVisibility()
+    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshOutputRail() end
 end)

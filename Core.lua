@@ -712,7 +712,6 @@ local function GetDefaultDB()
             announcer = {
                 pos = { point = "TOPRIGHT", relPoint = "TOPRIGHT", x = -60, y = -80 },
                 shown = true,
-                locked = false,
                 alphaIdle = 100,
                 alphaHover = 100,
             },
@@ -1244,9 +1243,12 @@ local function MigrateDB(db)
                 ann.pos = { point = old.favPos.point, relPoint = old.favPos.relPoint, x = old.favPos.x, y = old.favPos.y }
             end
             if old.favShown ~= nil then ann.shown = old.favShown end
-            if old.favLocked ~= nil then ann.locked = old.favLocked end
             if old.favAlphaIdle ~= nil then ann.alphaIdle = old.favAlphaIdle end
             if old.favAlphaHover ~= nil then ann.alphaHover = old.favAlphaHover end
+            -- The old Mini window's own lock now feeds the single shared
+            -- ui.layoutLocked (3.0 spec section 16 - one lock covers the
+            -- Main shell and the Announcer's movement together).
+            if old.favLocked ~= nil then db.ui.layoutLocked = old.favLocked end
         end
     end
 
@@ -1622,8 +1624,8 @@ local function HandleSlash(msg)
             SB:Print(string.format("Analytics: %s (%s)", analytics.enabled and "ON" or "OFF", activity))
         end
         if SB.GetMainGridLayout then
-            local columns, rows, capacity = SB:GetMainGridLayout()
-            SB:Print(string.format("Library grid: %dx%d (%d sounds per page)", columns, rows, capacity))
+            local columns = SB:GetMainGridLayout()
+            SB:Print(string.format("Library grid: %d columns (continuous scroll)", columns))
         end
         if SB.databaseStatus and SB.databaseStatus.commit == false then
             SB:Print("Database: compatibility/recovery mode (original SavedVariables not modified)")

@@ -108,7 +108,7 @@ local function BuildIcon()
     raidDot:Hide()
 
     icon:SetScript("OnDragStart", function(self)
-        if SB.db.ui.announcer.locked then return end
+        if SB.db.ui.layoutLocked then return end
         self:StartMoving()
     end)
     icon:SetScript("OnDragStop", function(self)
@@ -282,8 +282,11 @@ local function RenderPrimary()
     banner.nameText:SetText(SoundName(entry.soundID))
     banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
 
+    -- Plain ASCII separator, not a Unicode middle dot - WoW's bundled
+    -- fonts don't reliably cover every codepoint (same reasoning as the
+    -- Library's section-header carets in UI.lua).
     local color = SB.GetChannelColor(entry.channelLabel or "Self")
-    banner.subText:SetText(string.format("%s |cff%s\194\183 %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
+    banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
 
     local extra = #activeDisplays - 1
     banner.overlapBadge:SetText(extra > 0 and ("+" .. extra) or "")
@@ -507,7 +510,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             if SB:IsReceiveMuted() then SB:StopReceiveMute() else SB:StartReceiveMute(nil, nil) end
         end)
         quickMenu.lockBtn = AddRow("Lock Interface", function()
-            SB:SetAnnouncerLocked(not SB.db.ui.announcer.locked)
+            SB:SetAnnouncerLocked(not SB.db.ui.layoutLocked)
         end)
         AddRow("Muted Players...", function()
             if SB.OpenMutePlayersMenu then SB.OpenMutePlayersMenu() end
@@ -524,7 +527,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     end
 
     quickMenu.muteBtn.label:SetText(SB:IsReceiveMuted() and "Unmute Incoming" or "Mute Incoming")
-    quickMenu.lockBtn.label:SetText(SB.db.ui.announcer.locked and "Unlock Interface" or "Lock Interface")
+    quickMenu.lockBtn.label:SetText(SB.db.ui.layoutLocked and "Unlock Interface" or "Lock Interface")
 
     quickMenu:ClearAllPoints()
     quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
@@ -570,7 +573,7 @@ function SB:ToggleAnnouncer()
 end
 
 function SB:SetAnnouncerLocked(locked)
-    SB.db.ui.announcer.locked = locked and true or false
+    SB.db.ui.layoutLocked = locked and true or false
 end
 
 -- Applies the current idle alpha immediately (e.g. right after a Settings

@@ -806,7 +806,7 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     local lockCheck = Checkbox(content, "Lock Interface", showFavCheck, 0, -2, function(checked)
         SB:SetAnnouncerLocked(checked)
     end)
-    lockCheck:SetChecked(SB.db.ui.announcer.locked)
+    lockCheck:SetChecked(SB.db.ui.layoutLocked)
 
     -- Opacity, idle vs. hovering (both 0-100%).
     local alphaIdleLabel = content:CreateFontString(nil, "OVERLAY")
