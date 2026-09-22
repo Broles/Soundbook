@@ -1970,6 +1970,18 @@ local function BuildMainFrame()
     local libraryScroll = SB.Theme.CreateScrollFrame(main)
     libraryScroll.scroll:SetPoint("TOPLEFT", outputRail, "TOPRIGHT", 8, 0)
     libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -10, 10)
+    -- Theme.CreateScrollFrame never sets its own content child's width -
+    -- every other caller in this addon does that itself (see
+    -- AdminPanel.lua/AnalyticsUI.lua/Settings.lua). This one was missing
+    -- it: content had no declared width at all (only ever got a height,
+    -- from RefreshLibrary's own SetHeight), which is almost certainly why
+    -- the Library rendered nothing - cards/headers were genuinely created
+    -- and positioned (confirmed via /sb doctor - "149 cards / 5 sections")
+    -- but never actually visible. TOPLEFT+RIGHT (both implicitly relative
+    -- to `scroll`, content's own parent) keeps content's width in sync
+    -- with the scroll area automatically, including on resize.
+    libraryScroll.content:SetPoint("TOPLEFT", 0, 0)
+    libraryScroll.content:SetPoint("RIGHT", 0, 0)
     main.libraryScroll = libraryScroll
 
     -- Settings/Admin panels render into the same content region as the
