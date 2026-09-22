@@ -1257,6 +1257,13 @@ end
 
 local function RefreshLibraryImpl()
     if isSettingsOpen or isAdminOpen then return end
+    SB:Debug("RefreshLibrary: isFiltering=%s searching=%s tagFilterCount=%s scrollW=%s scrollH=%s contentH=%s vscroll=%s",
+        tostring(IsFiltering()), tostring(IsSearching()),
+        tostring(next(SB.db.ui.tagFilters) and "yes" or "no"),
+        tostring(main.libraryScroll and main.libraryScroll.scroll:GetWidth()),
+        tostring(main.libraryScroll and main.libraryScroll.scroll:GetHeight()),
+        tostring(main.libraryScroll and main.libraryScroll.content:GetHeight()),
+        tostring(main.libraryScroll and main.libraryScroll.scroll:GetVerticalScroll()))
     local scroll = main.libraryScroll
     -- Defensive floor: the scroll frame's width comes from a multi-hop
     -- anchor chain (main -> toolbar -> tagFilterBar -> outputRail ->
@@ -1342,6 +1349,18 @@ local function RefreshLibraryImpl()
     for i = usedHeaders + 1, #sectionHeaders do sectionHeaders[i]:Hide() end
 
     scroll.content:SetHeight(math.max(1, y))
+    -- Re-clamp the current scroll offset against the freshly computed
+    -- content height. WoW's ScrollFrame never does this on its own when
+    -- the scrollchild shrinks (e.g. collapsing a section) - a viewport
+    -- left scrolled past the new, shorter content shows nothing but blank
+    -- space below the last real row, which looks identical to "the
+    -- Library is empty."
+    local viewportH = scroll.scroll:GetHeight() or 0
+    local maxScroll = math.max(0, y - viewportH)
+    local currentScroll = scroll.scroll:GetVerticalScroll() or 0
+    if currentScroll > maxScroll then
+        scroll.scroll:SetVerticalScroll(maxScroll)
+    end
     scroll.UpdateThumb()
 
     -- Empty-state hint - explicit requirement: a clear (if brief) message
@@ -1368,6 +1387,8 @@ local function RefreshLibraryImpl()
     if main.tagFilterUpdaters then
         for _, updateFn in ipairs(main.tagFilterUpdaters) do updateFn() end
     end
+    SB:Debug("RefreshLibrary done: usedEntries=%d usedHeaders=%d totalShown=%d y=%d anyRealSection=%s",
+        usedEntries, usedHeaders, totalShown, y, tostring(anyRealSection))
 end
 
 -- WoW hides Lua errors from players by default (Interface Options ->
