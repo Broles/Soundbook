@@ -1277,6 +1277,14 @@ local function RefreshLibraryImpl()
     -- mode this guards against.
     local contentWidth = scroll.scroll:GetWidth() or 0
     if contentWidth < ENTRY_W then contentWidth = ENTRY_W * 2 end
+    -- A ScrollFrame's scroll child must be sized via SetWidth, not a second
+    -- (RIGHT-edge) anchor point - once SetVerticalScroll is ever called with
+    -- a non-zero offset, the engine repositions the child through its own
+    -- anchor internally, and a second manual anchor on the same frame turns
+    -- its rect unresolvable (GetLeft/GetTop go nil, dependent widths like
+    -- the section headers' collapse to 0). This is exactly what made the
+    -- Library go fully blank on the very first scroll/collapse action.
+    scroll.content:SetWidth(contentWidth)
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
     local entryW = math.floor(contentWidth / columns)
     local iconExtent = 24
@@ -2024,17 +2032,14 @@ local function BuildMainFrame()
     libraryScroll.scroll:SetPoint("TOPLEFT", outputRail, "TOPRIGHT", 8, 0)
     libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -10, 10)
     -- Theme.CreateScrollFrame never sets its own content child's width -
-    -- every other caller in this addon does that itself (see
-    -- AdminPanel.lua/AnalyticsUI.lua/Settings.lua). This one was missing
-    -- it: content had no declared width at all (only ever got a height,
-    -- from RefreshLibrary's own SetHeight), which is almost certainly why
-    -- the Library rendered nothing - cards/headers were genuinely created
-    -- and positioned (confirmed via /sb doctor - "149 cards / 5 sections")
-    -- but never actually visible. TOPLEFT+RIGHT (both implicitly relative
-    -- to `scroll`, content's own parent) keeps content's width in sync
-    -- with the scroll area automatically, including on resize.
+    -- every other caller in this addon does that itself. A ScrollFrame's
+    -- scroll child must get that width via SetWidth (done in
+    -- RefreshLibrary, which recomputes it every layout pass), never via a
+    -- second RIGHT-edge anchor point - see the comment above
+    -- scroll.content:SetWidth in RefreshLibrary for why a second anchor
+    -- breaks as soon as the frame is actually scrolled.
     libraryScroll.content:SetPoint("TOPLEFT", 0, 0)
-    libraryScroll.content:SetPoint("RIGHT", 0, 0)
+    libraryScroll.content:SetWidth(1)
     main.libraryScroll = libraryScroll
 
     -- Settings/Admin panels render into the same content region as the
