@@ -1992,13 +1992,11 @@ local function BuildMainFrame()
     closeBtn:SetPoint("RIGHT", 0, 0)
     closeBtn:SetScript("OnClick", function() main:Hide() end)
 
-    local settingsBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
-    settingsBtn:SetPoint("LEFT", 0, 0)
-    local settingsIcon = settingsBtn:CreateTexture(nil, "ARTWORK")
-    settingsIcon:SetPoint("TOPLEFT", 2, -2)
-    settingsIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    settingsIcon:SetTexture(SB.SETTINGS_ICON)
-    settingsIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    -- Settings and Quick Audio moved into the window's own bottom-left
+    -- corner (explicit request) - below the Output Rail's own button
+    -- stack, which doesn't reach all the way down. Raid Admin/Lock stay in
+    -- the top toolbar (not part of that request); Raid Admin is now the
+    -- toolbar's own leftmost item instead of following Settings.
     local function ToggleSettings()
         isSettingsOpen = not isSettingsOpen
         if isSettingsOpen then
@@ -2007,12 +2005,36 @@ local function BuildMainFrame()
         end
         SB:RefreshMainWindow()
     end
+
+    local settingsBtn = SB.Theme.CreateMiniControlButton(main, 22)
+    settingsBtn:SetPoint("BOTTOMLEFT", 8, 8)
+    local settingsIcon = settingsBtn:CreateTexture(nil, "ARTWORK")
+    settingsIcon:SetPoint("TOPLEFT", 2, -2)
+    settingsIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    settingsIcon:SetTexture(SB.SETTINGS_ICON)
+    settingsIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     settingsBtn:SetScript("OnClick", ToggleSettings)
     SB.Theme.AttachTooltip(settingsBtn, "Settings")
     main.settingsBtn = settingsBtn
 
+    -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
+    -- (mute incoming / lock / muted players / open Soundbook / Announcer
+    -- size), so there is exactly one such menu in the whole addon rather
+    -- than two diverging copies.
+    local audioBtn = SB.Theme.CreateMiniControlButton(main, 22)
+    audioBtn:SetPoint("LEFT", settingsBtn, "RIGHT", 4, 0)
+    local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
+    audioIcon:SetPoint("TOPLEFT", 2, -2)
+    audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
+    audioIcon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
+    audioIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    audioBtn:SetScript("OnClick", function(self)
+        if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
+    end)
+    SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
+
     local adminBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
-    adminBtn:SetPoint("LEFT", settingsBtn, "RIGHT", 4, 0)
+    adminBtn:SetPoint("LEFT", 0, 0)
     local adminIcon = adminBtn:CreateTexture(nil, "ARTWORK")
     adminIcon:SetPoint("TOPLEFT", 2, -2)
     adminIcon:SetPoint("BOTTOMRIGHT", -2, 2)
@@ -2031,25 +2053,9 @@ local function BuildMainFrame()
     end)
     SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
 
-    -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
-    -- (mute incoming / lock / muted players / open Soundbook), so there is
-    -- exactly one such menu in the whole addon rather than two diverging
-    -- copies.
-    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 22)
-    audioBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
-    local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
-    audioIcon:SetPoint("TOPLEFT", 2, -2)
-    audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    audioIcon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
-    audioIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    audioBtn:SetScript("OnClick", function(self)
-        if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
-    end)
-    SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
-
     searchBox = SB.Theme.CreateInputBox(toolbar, 100, 22)
     searchBox:SetPoint("LEFT", lockToolbarBtn, "RIGHT", 8, 0)
-    searchBox:SetPoint("RIGHT", audioBtn, "LEFT", -8, 0)
+    searchBox:SetPoint("RIGHT", closeBtn, "LEFT", -8, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     searchBox:SetScript("OnEscapePressed", function(self) self:SetText(""); self:ClearFocus() end)

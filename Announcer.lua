@@ -157,7 +157,11 @@ end
 -- The active banner
 ------------------------------------------------------------------------
 
-local BANNER_W, BANNER_H = 232, 40
+-- BANNER_H grew from 40 - explicit report ("nicht nur ein kleiner dünner
+-- Balken") wants a genuinely prominent, chunky progress bar, not a
+-- marginally thicker line; giving it its own real vertical space below
+-- the text rows instead of squeezing it into the original height.
+local BANNER_W, BANNER_H = 232, 48
 
 local function BuildBanner()
     if banner then return banner end
@@ -203,22 +207,28 @@ local function BuildBanner()
     subText:SetWordWrap(false)
     banner.subText = subText
 
-    -- Explicit report: too small/subtle, wants it as visible as the old
-    -- 2.7 HUD's bar - a near-invisible 2px sliver at 0.12 alpha wasn't
-    -- reading as a progress bar at all. Thicker track, real background
-    -- contrast, brighter full-opacity fill, drawn one layer above the
-    -- track so it's never blended into it.
-    local track = banner:CreateTexture(nil, "ARTWORK")
-    track:SetPoint("BOTTOMLEFT", slot, "TOPRIGHT", 6, -2)
-    track:SetPoint("BOTTOMRIGHT", -8, 2)
-    track:SetHeight(5)
-    track:SetTexture("Interface\\Buttons\\WHITE8X8")
-    track:SetVertexColor(0, 0, 0, 0.55)
+    -- Explicit report, twice: too small/subtle, wants it as prominent as
+    -- the old 2.7 HUD's bar - "nicht nur ein kleiner dünner Balken". A real
+    -- bordered bar in its own dedicated row (both corners anchored purely
+    -- to `banner` itself, not bridged across two different sibling
+    -- frames - unambiguous position/size, no anchor-resolution guessing)
+    -- instead of a thin line squeezed against the bottom border.
+    local track = SB.CreateFrame("Frame", nil, banner)
+    track:SetPoint("BOTTOMLEFT", banner, "BOTTOMLEFT", 41, 5)
+    track:SetPoint("BOTTOMRIGHT", banner, "BOTTOMRIGHT", -8, 5)
+    track:SetHeight(8)
+    track:SetBackdrop({
+        bgFile = "Interface\\Buttons\\WHITE8X8",
+        edgeFile = "Interface\\Buttons\\WHITE8X8",
+        edgeSize = 1,
+    })
+    track:SetBackdropColor(0, 0, 0, 0.7)
+    track:SetBackdropBorderColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 0.75)
     banner.track = track
 
-    local fill = banner:CreateTexture(nil, "ARTWORK", nil, 1)
-    fill:SetPoint("TOPLEFT", track, "TOPLEFT")
-    fill:SetPoint("BOTTOMLEFT", track, "BOTTOMLEFT")
+    local fill = track:CreateTexture(nil, "ARTWORK")
+    fill:SetPoint("TOPLEFT", 1, -1)
+    fill:SetPoint("BOTTOMLEFT", 1, 1)
     fill:SetWidth(1)
     fill:SetTexture("Interface\\Buttons\\WHITE8X8")
     fill:SetVertexColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 1)
@@ -259,6 +269,7 @@ local function BuildBanner()
     end)
     banner:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+    banner:SetScale(SB.db.ui.announcer.scale or 1.0)
     return banner
 end
 
@@ -344,7 +355,7 @@ local function RenderPrimary()
 
     StopProgressTicker()
     if ValidDuration(entry.duration) then
-        local trackW = banner.track:GetWidth() or 1
+        local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2) -- fill sits 1px inset from the track's own border on each side
         banner.fill:SetWidth(0.01)
         progressTicker = C_Timer.NewTicker(0.1, function()
             local top = activeDisplays[#activeDisplays]
@@ -552,8 +563,28 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             SB:Fire("TOGGLE_MAIN_UI")
         end)
 
-        quickMenu:SetSize(184, #rows * 26 + 16)
+        -- Announcer size - explicit request ("irgendwie clever größer/
+        -- kleiner machen können, aktuell zu klein"). SetScale on both the
+        -- idle icon and the active banner scales everything about them
+        -- (icon, text, the progress bar) together, proportionally, rather
+        -- than this menu trying to independently resize a dozen elements.
+        local sizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
+        sizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
+        sizeLabel:SetPoint("TOP", rows[#rows], "BOTTOM", 0, -12)
+        sizeLabel:SetText("Announcer Size")
+        sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
+
+        local sizeSlider = Theme.CreateSlider(quickMenu, 70, 160, 5, 120, function(value)
+            SB.db.ui.announcer.scale = value / 100
+            SB:RefreshAnnouncerScale()
+        end)
+        sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
+        quickMenu.sizeSlider = sizeSlider
+
+        quickMenu:SetSize(184, #rows * 26 + 66)
     end
+
+    quickMenu.sizeSlider:SetValue(math.floor((SB.db.ui.announcer.scale or 1.0) * 100 + 0.5))
 
     quickMenu.muteBtn.label:SetText(SB:IsReceiveMuted() and "Unmute Incoming" or "Mute Incoming")
     quickMenu.lockBtn.label:SetText(SB.db.ui.layoutLocked and "Unlock Interface" or "Lock Interface")
@@ -579,11 +610,22 @@ function SB:ShowAnnouncer()
     icon:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
     icon:Show()
     SB:RefreshAnnouncerAlpha()
+    SB:RefreshAnnouncerScale()
     RefreshIndicators()
     if #activeDisplays > 0 then
         BuildBanner()
         RenderPrimary()
     end
+end
+
+-- SetScale scales a frame and everything anchored to/inside it (icon,
+-- text, the progress bar) together, proportionally - applied to the icon
+-- immediately, and to the banner too so a sound already playing when the
+-- size changes doesn't stay stuck at the old scale until it next re-shows.
+function SB:RefreshAnnouncerScale()
+    local scale = SB.db.ui.announcer.scale or 1.0
+    if icon then icon:SetScale(scale) end
+    if banner then banner:SetScale(scale) end
 end
 
 function SB:HideAnnouncer()

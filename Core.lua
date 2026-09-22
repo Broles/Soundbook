@@ -717,6 +717,7 @@ local function GetDefaultDB()
                 shown = true,
                 alphaIdle = 100,
                 alphaHover = 100,
+                scale = 1.0,
             },
             -- Global layout lock (3.0 shell) - separate concept from the
             -- Announcer's own `locked` above (that one only ever existed as
