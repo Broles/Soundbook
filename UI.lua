@@ -1255,7 +1255,7 @@ local function BuildFavouritesEntries()
     return ids, slots
 end
 
-RefreshLibrary = function()
+local function RefreshLibraryImpl()
     if isSettingsOpen or isAdminOpen then return end
     local scroll = main.libraryScroll
     -- Defensive floor: the scroll frame's width comes from a multi-hop
@@ -1367,6 +1367,19 @@ RefreshLibrary = function()
 
     if main.tagFilterUpdaters then
         for _, updateFn in ipairs(main.tagFilterUpdaters) do updateFn() end
+    end
+end
+
+-- WoW hides Lua errors from players by default (Interface Options ->
+-- "Display Lua Errors" is off unless the player opts in via
+-- /console scriptErrors 1), which would otherwise make a genuine runtime
+-- error in the Library's own render pass look identical to "there's
+-- nothing to show" - an empty book with no obvious explanation. Report it
+-- to chat directly instead of relying on that setting.
+RefreshLibrary = function()
+    local ok, err = pcall(RefreshLibraryImpl)
+    if not ok then
+        SB:Print("|cffff5555Library refresh error:|r " .. tostring(err))
     end
 end
 
@@ -2129,9 +2142,14 @@ function SB:OpenSettingsAtKeybindings()
 end
 
 function SB:GetMainGridLayout()
-    local contentWidth = main and main.libraryScroll and main.libraryScroll.scroll:GetWidth() or (ENTRY_W * 2)
+    local scrollFrame = main and main.libraryScroll and main.libraryScroll.scroll
+    local contentWidth = scrollFrame and scrollFrame:GetWidth() or (ENTRY_W * 2)
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
-    return columns, nil, nil
+    -- rawWidth/rendered entries+headers surfaced for /sb doctor - lets a
+    -- player tell "genuinely nothing registered" apart from "registered
+    -- but the Library isn't actually rendering it" without needing
+    -- /console scriptErrors 1 enabled first.
+    return columns, contentWidth, usedEntries or 0, usedHeaders or 0
 end
 
 SB:On("TOGGLE_MAIN_UI", function() SB:ToggleMainWindow() end)

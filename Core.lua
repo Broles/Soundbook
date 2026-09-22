@@ -1624,8 +1624,11 @@ local function HandleSlash(msg)
             SB:Print(string.format("Analytics: %s (%s)", analytics.enabled and "ON" or "OFF", activity))
         end
         if SB.GetMainGridLayout then
-            local columns = SB:GetMainGridLayout()
-            SB:Print(string.format("Library grid: %d columns (continuous scroll)", columns))
+            local columns, rawWidth, renderedEntries, renderedHeaders = SB:GetMainGridLayout()
+            local registryCount = 0
+            for _ in pairs(SB.registry or {}) do registryCount = registryCount + 1 end
+            SB:Print(string.format("Library grid: %d columns, width=%.0f | registered sounds=%d, last rendered: %d cards / %d sections",
+                columns, rawWidth or 0, registryCount, renderedEntries or 0, renderedHeaders or 0))
         end
         if SB.databaseStatus and SB.databaseStatus.commit == false then
             SB:Print("Database: compatibility/recovery mode (original SavedVariables not modified)")
