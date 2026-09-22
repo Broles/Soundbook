@@ -1,4 +1,4 @@
-﻿-- EditWindow.lua
+-- EditWindow.lua
 -- Right-click on any sound opens this ONE popup for everything about that
 -- sound: pick an icon from an embedded grid, set its display name, toggle
 -- favourite/muted, and grab its macro command - all in the same window,

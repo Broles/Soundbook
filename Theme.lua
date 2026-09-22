@@ -1,4 +1,4 @@
-﻿-- Theme.lua
+-- Theme.lua
 -- Shared "modern flat" visual language for every Soundbook window except
 -- the Mini Soundbook (which stays borderless/transparent by design):
 -- flat dark panels, a 1px accent-coloured border, square (unornamented)

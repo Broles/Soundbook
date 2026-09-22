@@ -400,6 +400,31 @@ function SB.GetNumFriends()
     return 0
 end
 
+-- Group member count, unified across party and raid: prefer the modern
+-- combined GetNumGroupMembers (includes the player, works for both party
+-- and raid - this is what every call site in this file was written
+-- against). Older Classic-lineage clients split this into
+-- GetNumRaidMembers/GetNumPartyMembers, where GetNumPartyMembers excludes
+-- the player, hence the "+1" below to match GetNumGroupMembers' semantics.
+function SB.GetNumGroupMembers()
+    if GetNumGroupMembers then
+        return GetNumGroupMembers()
+    end
+    if GetNumRaidMembers then
+        local raidCount = GetNumRaidMembers()
+        if raidCount > 0 then
+            return raidCount
+        end
+    end
+    if GetNumPartyMembers then
+        local partyCount = GetNumPartyMembers()
+        if partyCount > 0 then
+            return partyCount + 1
+        end
+    end
+    return 0
+end
+
 -- Whether the player currently has game audio effectively muted: either the
 -- master "Disable All Sound" option, or the Master Volume slider sitting at
 -- 0. Read-only - Soundbook never sets/changes either CVar (see README's

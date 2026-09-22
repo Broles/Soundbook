@@ -99,7 +99,7 @@ local function GetRosterWithRoles()
     local me = SB.NormalizeName(UnitName("player"))
 
     if IsInRaid() then
-        for i = 1, GetNumGroupMembers() do
+        for i = 1, SB.GetNumGroupMembers() do
             local name, rank, _, _, _, _, _, online = GetRaidRosterInfo(i)
             if name then
                 name = SB.NormalizeName(name)
@@ -112,7 +112,7 @@ local function GetRosterWithRoles()
     elseif IsInGroup() then
         -- party1..N excludes the player themselves - added back separately
         -- below so the admin still sees their own row.
-        for i = 1, GetNumGroupMembers() - 1 do
+        for i = 1, SB.GetNumGroupMembers() - 1 do
             local unit = "party" .. i
             local name = UnitName(unit)
             if name then

@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.8.0
+
+### Multi-client support
+
+- Added dedicated TOC files: `Soundbook.toc` (WoW Forever, Interface 16001), `Soundbook-Classic.toc` (Classic Era, Interface 11509), `Soundbook-BCC.toc` (Burning Crusade Classic Anniversary, Interface 20506). CurseForge/WowUp now install the correct build per client automatically.
+- Added `SB.GetNumGroupMembers()` compat wrapper (falls back to `GetNumRaidMembers`/`GetNumPartyMembers` on clients without the unified `GetNumGroupMembers` API) and switched every group-size check in `AdminPanel.lua` and `Communication.lua` to use it.
+- Removed the OPie integration entirely (`OPieIntegration.lua` deleted, dropped from all TOCs) to cut a third-party, Retail-only dependency out of the multi-client compatibility surface.
+
+### Known open items
+
+- WoW Forever is in beta; `C_Timer`, unified group APIs, and addon-message registration are assumed available based on the client's modern internals (confirmed via a third-party addon's TOC and in-game `GetBuildInfo()` check) but not yet confirmed by a live playtest of Soundbook itself.
+- Classic Era and BCC builds are static-analysis-verified against the existing compat layer in `Core.lua`; not covered by a live playtest as part of this change.
+
 ## 2.7.1
 
 ### Smart Search – Tag System

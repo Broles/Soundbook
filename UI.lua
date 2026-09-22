@@ -1,4 +1,4 @@
-﻿-- UI.lua
+-- UI.lua
 -- The main Soundbook window: a WoW-Classic-styled book with page-flip
 -- navigation, a search field, and spellbook-like tabs along the right
 -- edge (Favourites, and the three user-nameable categories).

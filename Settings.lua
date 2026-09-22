@@ -1,4 +1,4 @@
-﻿-- Settings.lua
+-- Settings.lua
 -- The Settings page lives inside the Soundbook window itself (no separate
 -- foreign-looking window). UI.lua shows/hides this panel when the Settings
 -- tab (grouped in the compact right-side dock below the category tabs) is clicked.

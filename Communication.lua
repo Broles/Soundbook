@@ -202,12 +202,12 @@ local function GetGroupCoveredNames(modes)
     -- SB.ResolveGroupChannel above) - whichever of the two is actually
     -- live gets scanned here.
     if modes.RAID and IsInRaid() then
-        for i = 1, GetNumGroupMembers() do
+        for i = 1, SB.GetNumGroupMembers() do
             local name = GetRaidRosterInfo(i)
             if name then covered[IdentityKey(name)] = true end
         end
     elseif modes.RAID and IsInGroup() then
-        for i = 1, GetNumGroupMembers() - 1 do
+        for i = 1, SB.GetNumGroupMembers() - 1 do
             local name = SB.GetUnitFullName and SB.GetUnitFullName("party" .. i) or UnitName("party" .. i)
             if name then covered[IdentityKey(name)] = true end
         end
@@ -374,12 +374,12 @@ function SB.ComputeReachablePlayers()
     end)
     CollectInto("RAID", function(add)
         if IsInRaid() then
-            for i = 1, GetNumGroupMembers() do
+            for i = 1, SB.GetNumGroupMembers() do
                 local name, _, _, _, _, _, _, online = GetRaidRosterInfo(i)
                 if name and online then add(name) end
             end
         elseif IsInGroup() then
-            for i = 1, GetNumGroupMembers() - 1 do
+            for i = 1, SB.GetNumGroupMembers() - 1 do
                 local unit = "party" .. i
                 if UnitIsConnected(unit) then
                     add(SB.GetUnitFullName and SB.GetUnitFullName(unit) or UnitName(unit))
@@ -1536,7 +1536,7 @@ local function IsSenderAuthorizedAdmin(sender)
     local senderKey = IdentityKey(sender)
     if not senderKey then return false end
     if IsInRaid() then
-        for i = 1, GetNumGroupMembers() do
+        for i = 1, SB.GetNumGroupMembers() do
             local rname, rank = GetRaidRosterInfo(i)
             if rname and IdentityKey(rname) == senderKey then
                 return (rank or 0) >= 1 -- 1 = assistant, 2 = leader
@@ -1544,7 +1544,7 @@ local function IsSenderAuthorizedAdmin(sender)
         end
         return false
     elseif IsInGroup() then
-        for i = 1, GetNumGroupMembers() - 1 do
+        for i = 1, SB.GetNumGroupMembers() - 1 do
             local unit = "party" .. i
             local unitName = SB.GetUnitFullName and SB.GetUnitFullName(unit) or UnitName(unit)
             if IdentityKey(unitName) == senderKey then
@@ -1567,7 +1567,7 @@ local function IsSenderCurrentLeader(sender)
     local senderKey = IdentityKey(sender)
     if not senderKey then return false end
     if IsInRaid() then
-        for i = 1, GetNumGroupMembers() do
+        for i = 1, SB.GetNumGroupMembers() do
             local rname, rank = GetRaidRosterInfo(i)
             if rname and IdentityKey(rname) == senderKey then
                 return rank == 2
@@ -1575,7 +1575,7 @@ local function IsSenderCurrentLeader(sender)
         end
         return false
     elseif IsInGroup() then
-        for i = 1, GetNumGroupMembers() - 1 do
+        for i = 1, SB.GetNumGroupMembers() - 1 do
             local unit = "party" .. i
             local unitName = SB.GetUnitFullName and SB.GetUnitFullName(unit) or UnitName(unit)
             if IdentityKey(unitName) == senderKey then

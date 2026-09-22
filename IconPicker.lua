@@ -1,4 +1,4 @@
-﻿-- IconPicker.lua
+-- IconPicker.lua
 -- Icon list resolution (GetMacroIcons compatibility) plus a reusable
 -- scrollable icon grid widget. SB.CreateIconGrid(...) embeds a grid
 -- directly into any parent frame (used inline by EditWindow.lua, matching

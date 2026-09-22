@@ -1,15 +1,25 @@
-# Soundbook 2.5.0
+# Soundbook 2.8.0
 
-Soundbook is an Arcane Codex-style soundboard for **World of Warcraft Classic: The Burning Crusade Anniversary**. It combines local playback, a 20-slot Mini Soundbook, per-sound customization, multiplayer sharing, receive controls, raid administration, history, and anonymous community statistics in one lightweight addon.
+Soundbook is an Arcane Codex-style soundboard for **World of Warcraft**. It combines local playback, a 20-slot Mini Soundbook, per-sound customization, multiplayer sharing, receive controls, raid administration, history, and anonymous community statistics in one lightweight addon.
 
-Version 2.5.0 keeps the established fantasy identity while making the core safer, the library genuinely adaptive, multiplayer traffic bounded, and SavedVariables upgrades atomic.
+Version 2.8.0 ships three TOC files so CurseForge/WowUp install the matching build automatically:
+
+| Client | TOC file | Interface | Status |
+| --- | --- | --- | --- |
+| WoW Forever (beta) | `Soundbook.toc` | 16001 | Static-analysis verified only, not yet live-tested |
+| Classic Era | `Soundbook-Classic.toc` | 11509 | Static-analysis verified only, not yet live-tested |
+| Burning Crusade Classic (Anniversary) | `Soundbook-BCC.toc` | 20506 | Confirmed in live use |
+
+"Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. Report issues if something breaks.
 
 ## Install or upgrade
 
 1. Close World of Warcraft completely.
 2. Back up `WTF/Account/<account>/SavedVariables/Soundbook.lua` before a major upgrade.
-3. Copy the included `Soundbook` folder to:
-   `World of Warcraft/_anniversary_/Interface/AddOns/`
+3. Copy the included `Soundbook` folder into your client's AddOns folder, e.g.:
+   - Burning Crusade Classic (Anniversary): `World of Warcraft/_anniversary_/Interface/AddOns/`
+   - Classic Era: `World of Warcraft/_classic_era_/Interface/AddOns/`
+   - WoW Forever: folder name not yet confirmed — check your own client's directory under `World of Warcraft/` for the `_forever_`-style folder once installed.
 4. Confirm that the final path is `Interface/AddOns/Soundbook/Soundbook.toc`.
 5. Start the game, enable Soundbook, log in, and run `/sb doctor`.
 
@@ -109,7 +119,7 @@ Stable sound IDs use `<category>::<name>`. A customized display name does not ch
 
 ## Compatibility and recovery
 
-- Target interface: `20506`.
+- Target interfaces: `16001` (WoW Forever), `11509` (Classic Era), `20506` (Burning Crusade Classic Anniversary) — see the table above for verification status.
 - Retail-style APIs are used only when available and have Classic-compatible fallbacks where required.
 - Optional sound-handle progress tracking degrades cleanly when `C_Sound.IsPlaying` is unavailable.
 - A database written by a newer Soundbook version is opened in non-committing compatibility mode; it is never downgraded.
