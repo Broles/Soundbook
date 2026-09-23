@@ -1417,12 +1417,27 @@ end
 -- "do not run permanent Every Frame proximity checks while closed".
 ------------------------------------------------------------------------
 
-local PROXIMITY_TOLERANCE = 60   -- px, around the combined active area
-local PROXIMITY_CLOSE_DELAY = 0.3 -- seconds continuously outside before closing
+-- Regression fix (explicit user report): the original 60px/0.3s pairing
+-- closed the Mini Soundbook almost the instant it opened - real screen
+-- distance for a given "UI px" tolerance shrinks a lot at higher UI
+-- scale settings, and 300ms is barely enough time to even register that
+-- something opened, let alone react. Loosened substantially - "in der
+-- Nähe reicht" - plus a separate opening grace period below so the very
+-- act of opening can never itself be followed by an immediate close.
+local PROXIMITY_TOLERANCE = 150  -- px, around the combined active area
+local PROXIMITY_CLOSE_DELAY = 0.6 -- seconds continuously outside before closing
 local PROXIMITY_SAMPLE_INTERVAL = 0.1 -- ~0.1s throttled polling, not every frame
+-- Explicit requirement: "the icon is definitely nearby" - a short window
+-- right after opening (icon click, hover-open, or a forced size-preview
+-- open) during which outside-time can never accumulate at all, regardless
+-- of where the cursor happens to be at that exact instant. Guarantees a
+-- minimum reaction window on every single open, not just a looser ongoing
+-- tolerance.
+local PROXIMITY_OPEN_GRACE = 0.6 -- seconds
 
 local proximityTicker
 local proximityOutsideElapsed = 0
+local proximityGraceRemaining = 0
 -- Interaction priority (explicit requirement): while true, the ticker
 -- never accumulates outside-time at all - "restart the outside-distance
 -- timer only after the active interaction ends" - set by icon drag
@@ -1481,10 +1496,16 @@ end
 local function StopMiniProximityTicker()
     if proximityTicker then proximityTicker:Cancel(); proximityTicker = nil end
     proximityOutsideElapsed = 0
+    proximityGraceRemaining = 0
 end
 
 local function MiniProximityTick()
     if proximityActiveInteraction then
+        proximityOutsideElapsed = 0
+        return
+    end
+    if proximityGraceRemaining > 0 then
+        proximityGraceRemaining = proximityGraceRemaining - PROXIMITY_SAMPLE_INTERVAL
         proximityOutsideElapsed = 0
         return
     end
@@ -1507,8 +1528,13 @@ local function MiniProximityTick()
 end
 
 local function StartMiniProximityTicker()
-    if proximityTicker then return end
+    -- The grace period restarts on every call, even if the ticker is
+    -- already running (e.g. favMenu opening for a size preview while
+    -- Quick Options and its ticker are already active) - every fresh
+    -- open gets its own full reaction window, not just the first one.
     proximityOutsideElapsed = 0
+    proximityGraceRemaining = PROXIMITY_OPEN_GRACE
+    if proximityTicker then return end
     proximityTicker = C_Timer.NewTicker(PROXIMITY_SAMPLE_INTERVAL, MiniProximityTick)
 end
 
@@ -1556,27 +1582,25 @@ function SB.CloseFavMenu()
     if favMenu then favMenu:Hide() end
 end
 
-local function OppositeDirection(dir)
-    if dir == "LEFT" then return "RIGHT"
-    elseif dir == "RIGHT" then return "LEFT"
-    elseif dir == "UP" then return "DOWN"
-    elseif dir == "DOWN" then return "UP"
-    end
-    return "RIGHT"
-end
-
 -- Shared build+populate+position+show logic, factored out of ShowFavMenu so
 -- the Mini Soundbook Size live-preview path (below) can reuse it WITHOUT
 -- going through ShowFavMenu's own Quick-Options-closing side effect - the
 -- preview is an explicit, narrow exception to the single-active-surface
 -- rule, scoped only to the slider-drag interaction.
-local function DisplayFavMenu(anchor, directionOverride)
+--
+-- `positionAnchor` (optional) is ONLY used for the one-time SetPoint call
+-- below - `favMenu.__anchor` (used by SB:RefreshPopoutPositions and every
+-- other re-anchor) always stays `anchor` (the icon), never the position
+-- anchor, so nothing outside this preview path ever sees a Popout
+-- Direction resolved off anything but the icon.
+local function DisplayFavMenu(anchor, directionOverride, positionAnchor)
     BuildFavMenu()
     SB:RefreshMiniSoundbookScale()
     PopulateFavMenu()
     favMenu.__anchor = anchor
-    local direction = directionOverride or SB.ResolvePopoutDirection(anchor)
-    SB.PositionRelativeToIcon(favMenu, anchor, direction)
+    local posFrame = positionAnchor or anchor
+    local direction = directionOverride or SB.ResolvePopoutDirection(posFrame)
+    SB.PositionRelativeToIcon(favMenu, posFrame, direction)
     favMenu.catcher:Show()
     favMenu:Show()
 end
@@ -1607,8 +1631,23 @@ local function StartMiniSizePreview()
     if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end
     if not (favMenu and favMenu:IsShown()) then
         miniSizePreviewForcedOpen = true
-        local dir = OppositeDirection(SB.ResolvePopoutDirection(icon))
-        DisplayFavMenu(icon, dir)
+        -- Regression fix: an independently-computed "opposite side of the
+        -- icon" direction looked correct on paper, but near a screen edge
+        -- SetClampedToScreen pulls an off-screen placement back on-screen -
+        -- straight back toward the icon (and quickMenu, which sits
+        -- immediately next to it), overlapping after all. Chaining off
+        -- quickMenu's own ACTUAL resolved rectangle instead, continuing in
+        -- the SAME direction quickMenu already opened toward (the side
+        -- ResolvePopoutDirection picked specifically because it has room),
+        -- guarantees adjacency to quickMenu with never less than the
+        -- normal POPOUT_GAP between them - it can only ever be pushed
+        -- further into the open screen area, never back toward quickMenu.
+        if quickMenu and quickMenu:IsShown() then
+            local dir = SB.ResolvePopoutDirection(icon)
+            DisplayFavMenu(icon, dir, quickMenu)
+        else
+            DisplayFavMenu(icon)
+        end
         StartMiniProximityTicker()
     end
 end
@@ -1799,13 +1838,19 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         sizeLabel:SetText("Announcer Size")
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
-        -- The value/label update live (Theme.CreateSlider's own Refresh);
-        -- the real icon/banner only actually rescale on mouse-up. No
-        -- preview banner is shown here any more (targeted correction
-        -- round: the Preview must only ever appear during the icon's own
-        -- reposition drag, never from changing a Mini Soundbook option).
+        -- Live preview (explicit requirement, matching Mini Soundbook
+        -- Size's own live preview): the real icon/banner now rescale
+        -- continuously while dragging, not only on mouse-up. No separate
+        -- forced-open/positioning step is needed here, unlike Mini
+        -- Soundbook Size's preview - the icon (and banner, when shown)
+        -- are already on-screen and already independently anchored off
+        -- the icon's own live edges (see SB.PositionRelativeToIcon), so
+        -- growing/shrinking the icon in place dynamically pushes
+        -- quickMenu's own tracked anchor point along with it and can
+        -- never make the icon grow "into" quickMenu's rectangle.
         local sizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
+            SB:RefreshAnnouncerScale()
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
