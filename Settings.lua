@@ -292,6 +292,24 @@ local function BuildChannelMatrix(parent, anchorTo)
         if not NO_SEND_ROW[mode] then
             local sendTile = SB.Theme.CreateToggleTile(grid, MATRIX_TILE_SIZE, function(checked)
                 SB.db.settings.broadcastModes[mode] = checked
+                -- Regression fix (explicit requirement): "if it was
+                -- selected when Send becomes disabled, remove it
+                -- immediately from active output" - the Main Output
+                -- Selector's own selectability is now driven entirely by
+                -- this Send toggle (UI.lua's IsChannelSendEnabled), so a
+                -- stale selection left in place would otherwise still
+                -- read as active there. SetBroadcastBucketAllSelected is
+                -- a harmless no-op if the channel wasn't selected to
+                -- begin with. The Output Rail lives in Main's always-
+                -- visible chrome (not inside the Library/Settings content
+                -- swap), so it needs its own explicit repaint here - it
+                -- can stay visible while Settings is the active view.
+                if not checked then
+                    if SB.SetBroadcastBucketAllSelected then
+                        SB.SetBroadcastBucketAllSelected(mode, false)
+                    end
+                end
+                if SB.RefreshBroadcastTabs then SB.RefreshBroadcastTabs() end
             end)
             sendTile:SetPoint("CENTER", grid, "TOPLEFT", MATRIX_ROW_LABEL_W + cellW / 2, rowCenterY)
             sendTile:SetChecked(SB.db.settings.broadcastModes[mode] and true or false)

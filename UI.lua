@@ -1707,14 +1707,18 @@ local BROADCAST_TABS = {
       color = HexColor("7A7A80") },
 }
 
-local function IsRailBucketAvailable(bucket)
-    if bucket == "GUILD" then return IsInGuild() and true or false end
-    if bucket == "RAID" then return (IsInGroup() or IsInRaid()) and true or false end
-    if bucket == "FRIENDS" then
-        local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
-        return reachable and #reachable.FRIENDS > 0
-    end
-    return true
+-- Regression fix: selectability used to be driven by GROUP MEMBERSHIP
+-- (in a guild / in a group-or-raid / has an online Soundbook friend) -
+-- explicitly wrong per this round's requirement: "Settings Send state is
+-- authoritative... Group membership does not control selectability." A
+-- channel with Send enabled but zero current members (solo, no guild, no
+-- eligible friends) must still be selectable, showing zero recipients -
+-- not disabled. Settings -> Sharing's own "Send" toggle
+-- (SB.db.settings.broadcastModes[bucket]) is the only thing that gates
+-- selectability now.
+local function IsChannelSendEnabled(bucket)
+    local modes = SB.db.settings.broadcastModes
+    return modes and modes[bucket] and true or false
 end
 
 local function RailGroupLabel(bucket)
@@ -1772,6 +1776,22 @@ function SB.SetBroadcastRecipientSelected(bucket, name, selected)
         table.insert(list, name)
         ClearSelfOnly()
     end
+    -- Regression fix: rail.channelSelected[bucket] (the "explicitly
+    -- selected the whole channel" flag - see SetBroadcastBucketAllSelected
+    -- below) used to only ever be set by that function, never re-derived
+    -- here - so unchecking a single member out of a full "Entire Guild"
+    -- selection left the flag stuck at true, making "All" (which ORs this
+    -- flag in) still read as fully selected despite the actual member set
+    -- now being a strict subset (explicit requirement: "partial remote
+    -- selection must not make All appear fully selected"). Recomputed from
+    -- the real resulting state every time an individual pick changes - an
+    -- individual row can only ever be toggled from a bucket that already
+    -- has eligible members, so EligibleNames here is never the "zero
+    -- eligible, explicitly selected anyway" case SetBroadcastBucketAllSelected
+    -- itself still has to special-case.
+    local eligible = EligibleNames(bucket)
+    rail.channelSelected = rail.channelSelected or {}
+    rail.channelSelected[bucket] = (#list > 0 and #list == #eligible) or false
     -- Fired at the true point of mutation (not just wherever a redraw
     -- happens to be called) so nothing that changes this data can ever
     -- forget to notify listeners - explicit requirement, section 19: the
@@ -1818,6 +1838,11 @@ end
 ------------------------------------------------------------------------
 
 local broadcastFlyout
+-- Forward-declared here (before BuildBroadcastFlyout) - its catcher's
+-- click-routing fix, defined inside that function below, needs to call
+-- this as an upvalue, but the function itself isn't actually assigned
+-- until much later in the file (BuildBroadcastTabs' own section).
+local HandleBroadcastTabClick
 
 local function CloseBroadcastFlyout()
     if broadcastFlyout then
@@ -1845,7 +1870,29 @@ local function BuildBroadcastFlyout()
     catcher:SetFrameLevel(math.max(1, f:GetFrameLevel() - 1))
     catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     catcher:Hide()
-    catcher:SetScript("OnClick", CloseBroadcastFlyout)
+    -- Click-routing fix (explicit requirement): this fullscreen catcher
+    -- used to unconditionally close the flyout and consume the click,
+    -- which meant a click on a DIFFERENT selector row (All/Guild/Raid/
+    -- Friends/Self Only - all real frames sitting UNDER this TOOLTIP-
+    -- strata catcher) only ever closed the popup; the row's own OnClick
+    -- never fired, forcing a second click. IsMouseOver() is a pure cursor-
+    -- position-vs-frame-rect check, unaffected by stacking order, so it
+    -- still correctly reports true for a row sitting under this catcher -
+    -- close the old flyout AND run that row's full click action in this
+    -- SAME event, never a synthesized/delayed second click. A genuine
+    -- click outside both the flyout and every selector row still just
+    -- closes it, same as before.
+    catcher:SetScript("OnClick", function()
+        for _, btn in ipairs(broadcastTabButtons) do
+            if btn:IsShown() and btn:IsMouseOver() then
+                local entry = btn.tabEntry
+                CloseBroadcastFlyout()
+                HandleBroadcastTabClick(entry, btn)
+                return
+            end
+        end
+        CloseBroadcastFlyout()
+    end)
     f.catcher = catcher
     f:SetScript("OnHide", function() catcher:Hide() end)
 
@@ -1882,6 +1929,11 @@ local function BuildBroadcastFlyout()
 
     f.rows = {}
     broadcastFlyout = f
+    -- Exposed for test/harness reachability only (this frame has no
+    -- name, so it never registers a _G global) - same pattern already
+    -- used for main.lockBtn/main.resizeGrip/main.header elsewhere in this
+    -- file, not read by any production code path.
+    SB.__outputBroadcastFlyout = f
     return f
 end
 
@@ -2013,14 +2065,46 @@ local function OpenBroadcastFlyout(anchorBtn, bucket)
 end
 
 -- Explicit requirement (section 15): "All" is a convenience select-all
--- across every eligible Guild/Raid/Friends member at once, using the
+-- across every Send-ENABLED Guild/Raid/Friends channel at once, using the
 -- exact same selection storage individual picks use - never a separate,
 -- independently-dispatched "send mode" (SB:DispatchDefaultOutput only
 -- ever sees the one resulting SUBSET, deduplicated, regardless of how it
--- was built).
-function SB.SelectAllBroadcastTargets()
+-- was built). Regression fix: a Send-DISABLED channel must never be
+-- selected by All (it stays untouched/deselected), and this is a real
+-- TOGGLE now, not an always-select action - see IsAllBroadcastFullySelected
+-- below, which both RefreshBroadcastTabs (for the button's own active
+-- state) and this toggle's own "already fully selected -> clear instead"
+-- branch share, so the two can never disagree about what "fully selected"
+-- means.
+function SB.IsAllBroadcastFullySelected()
+    local rail = SB.db.ui.outputRail
+    local anyEnabled, allSelected = false, true
     for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        SB.SetBroadcastBucketAllSelected(bucket, true)
+        if IsChannelSendEnabled(bucket) then
+            anyEnabled = true
+            local eligible = #EligibleNames(bucket)
+            local isSelected = (eligible > 0 and SelectedCount(bucket) == eligible)
+                or (rail.channelSelected and rail.channelSelected[bucket]) or false
+            if not isSelected then allSelected = false end
+        end
+    end
+    return (not rail.selfOnly) and anyEnabled and allSelected
+end
+
+function SB.SelectAllBroadcastTargets()
+    if SB.IsAllBroadcastFullySelected() then
+        -- Every Send-enabled channel is already fully selected - a second
+        -- click on All clears all remote channel selections (explicit
+        -- requirement), same as toggling each one off individually.
+        for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+            SB.SetBroadcastBucketAllSelected(bucket, false)
+        end
+        return
+    end
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        if IsChannelSendEnabled(bucket) then
+            SB.SetBroadcastBucketAllSelected(bucket, true)
+        end
     end
 end
 
@@ -2058,36 +2142,52 @@ local function ApplyTabVisual(btn, active, color)
         -- which read identically for every channel - the whole point of
         -- per-channel colour was lost on the one element a player
         -- actually reads).
+        --
+        -- Regression fix: the extra "glow" layer below (btn.glow, an
+        -- oversized texture deliberately inset -4/+4 past the button's
+        -- own edges for a soft-glow look) is what was bleeding into the
+        -- immediately-adjacent row above/below - these tabs stack with NO
+        -- gap between them (BuildBroadcastTabs), so any oversized layer on
+        -- one row visibly overlaps its neighbour. Dropped entirely -
+        -- explicit requirement: "compact translucent channel-color fill;
+        -- channel-colored text; restrained same-color accent/border. Do
+        -- not use oversized glow/background textures." The backdrop color/
+        -- border below already exactly match the button's own rectangle
+        -- (SetBackdrop's normal bounds, no expansion) and alone satisfy
+        -- "highlight exactly matches the clickable row/button rectangle".
         btn:SetBackdropColor(color[1] * 0.30, color[2] * 0.30, color[3] * 0.30, 0.96)
         btn:SetBackdropBorderColor(color[1], color[2], color[3], 1)
         btn.label:SetTextColor(color[1], color[2], color[3])
         btn.accent:SetVertexColor(color[1], color[2], color[3], 1)
-        btn.glow:SetVertexColor(color[1], color[2], color[3], 0.35)
-        btn.glow:Show()
     else
         btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
         btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
         btn.label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
         btn.accent:SetVertexColor(color[1], color[2], color[3], 0.55)
-        btn.glow:Hide()
     end
+end
+
+-- Shared "is this bucket currently selected" truth - used both by
+-- RefreshBroadcastTabs (for the tab's own active visual) and by the
+-- click handler below (to decide select vs. deselect on the SAME click
+-- logic a second click needs) so the two can never disagree about what
+-- "currently selected" means. A Send-disabled channel is never active,
+-- regardless of stale selection data (see IsChannelSendEnabled above).
+local function IsBucketActive(bucket)
+    if not IsChannelSendEnabled(bucket) then return false end
+    local rail = SB.db.ui.outputRail
+    return SelectedCount(bucket) > 0 or (rail.channelSelected and rail.channelSelected[bucket]) or false
 end
 
 RefreshBroadcastTabs = function()
     local rail = SB.db.ui.outputRail
-    -- "All" itself is active exactly when every eligible person across
-    -- every non-empty bucket is currently selected (and at least one
-    -- bucket actually has someone eligible) - a derived state, same
-    -- principle as each bucket's own "Entire X" row, never a stored flag.
-    local anyEligible, allFullySelected = false, true
-    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        local eligible = #EligibleNames(bucket)
-        if eligible > 0 then
-            anyEligible = true
-            if SelectedCount(bucket) ~= eligible then allFullySelected = false end
-        end
-    end
-    local allActive = (not rail.selfOnly) and anyEligible and allFullySelected
+    -- "All" itself is active exactly when every Send-ENABLED channel is
+    -- currently selected (and at least one channel actually has Send
+    -- enabled) - a derived state, same principle as each bucket's own
+    -- "Entire X" row, never a stored flag. Shared with SB.SelectAllBroadcastTargets'
+    -- own "already fully selected -> clear instead" check, so the two can
+    -- never disagree about what "fully selected" means.
+    local allActive = SB.IsAllBroadcastFullySelected()
 
     for _, btn in ipairs(broadcastTabButtons) do
         local entry = btn.tabEntry
@@ -2097,7 +2197,16 @@ RefreshBroadcastTabs = function()
         elseif entry.key == "ALL" then
             active = allActive
         else
-            available = IsRailBucketAvailable(entry.bucket)
+            -- Regression fix: availability (and therefore selectability)
+            -- is now driven purely by Settings -> Sharing's own "Send"
+            -- toggle, never by group/guild/friend membership (explicit
+            -- requirement - "Group membership does not control
+            -- selectability"). A Send-disabled channel can never be
+            -- active, whatever rail.selected/channelSelected happen to
+            -- still hold (they're cleared the moment Send is turned off -
+            -- see Settings.lua's own sendTile handler - this is just a
+            -- defensive second guard).
+            available = IsChannelSendEnabled(entry.bucket)
             count = SelectedCount(entry.bucket)
             -- Explicit requirement: the channel stays visibly selected
             -- even with zero eligible recipients - count alone can't
@@ -2105,7 +2214,7 @@ RefreshBroadcastTabs = function()
             -- "never touched" (both leave rail.selected[bucket] empty),
             -- so rail.channelSelected (set by SB.SetBroadcastBucketAllSelected)
             -- covers that case. "Do not rely on hover alone."
-            active = count > 0 or (rail.channelSelected and rail.channelSelected[entry.bucket]) or false
+            active = IsBucketActive(entry.bucket)
         end
 
         -- Explicit requirement: always "Raid" in this selector, never
@@ -2119,16 +2228,16 @@ RefreshBroadcastTabs = function()
         btn.label:SetText(label)
 
         ApplyTabVisual(btn, active, entry.color)
-        -- BUGFIX (explicit report): an unavailable bucket (not in a
-        -- guild/group, no online friends) used to also be EnableMouse
-        -- (false) - unclickable, which silently removed the option
-        -- instead of just showing it has nobody in it right now. "Zero
-        -- available recipients simply means zero remote recipients" -
-        -- the choice itself (Guild/Raid/Friends) must stay selectable
-        -- regardless; clicking it still opens the flyout, which already
-        -- shows the correct "Not currently in a guild"/etc. empty state
-        -- (PopulateBroadcastFlyout) rather than a list of people. Still
-        -- dimmed for information, just never disabled.
+        -- Regression fix: dimming/disabling now reflects Settings ->
+        -- Sharing's "Send" toggle, not group/guild/friend membership -
+        -- "Guild Send ON + no guild -> Guild still selectable, currently
+        -- zero recipients" (membership never disables a Send-enabled
+        -- channel) vs. "Send OFF -> clearly disabled/dimmed, cannot be
+        -- selected, clicking it does nothing" (the OnClick handler below
+        -- checks IsChannelSendEnabled itself and no-ops when it's false -
+        -- EnableMouse stays true regardless so hover/click-routing still
+        -- see this button at all, see the flyout catcher's own reasoning
+        -- further below). All/Self Only are never gated by Send at all.
         btn:SetAlpha(available and 1 or 0.60)
         btn:EnableMouse(true)
     end
@@ -2140,6 +2249,13 @@ RefreshBroadcastTabs = function()
     -- (Announcer.lua, section 19) can never miss one.
     SB:Fire("OUTPUT_SELECTION_CHANGED")
 end
+
+-- Exposed so Settings.lua's own Sharing -> Send toggle can refresh the
+-- Output Rail's visuals immediately when Send changes (the rail lives in
+-- Main's always-visible chrome, alongside the Library/Settings content
+-- swap, not inside either of those views - so a Send change made while
+-- Settings is the active view must still repaint it live).
+SB.RefreshBroadcastTabs = function() RefreshBroadcastTabs() end
 
 ------------------------------------------------------------------------
 -- Shared Main-shell layout metrics (3.0 QA round, sections 5-10; UI/UX
@@ -2223,16 +2339,14 @@ local function CreateAttachedTab(parent, color, refreshFn, noOwnBorder)
     end
     btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
 
-    -- Soft ADD-blend glow behind the tile, only shown while active - a
-    -- slightly oversized, low-alpha colour wash reads as a gentle glow
-    -- without needing a dedicated blurred texture asset.
-    local glow = btn:CreateTexture(nil, "BACKGROUND")
-    glow:SetPoint("TOPLEFT", -4, 4)
-    glow:SetPoint("BOTTOMRIGHT", 4, -4)
-    glow:SetTexture("Interface\\Buttons\\WHITE8X8")
-    glow:SetBlendMode("ADD")
-    glow:Hide()
-    btn.glow = glow
+    -- Regression fix: an oversized "glow" layer used to live here (a
+    -- colour wash inset -4/+4 past the button's own edges) - since these
+    -- tabs stack with no gap between rows, it visibly bled into whichever
+    -- row sat directly above/below the active one. Removed entirely -
+    -- ApplyTabVisual's exact-bounds backdrop color/border/accent already
+    -- provide the active highlight, with no risk of ever overlapping a
+    -- neighbour (explicit requirement: "no extension above/below the row;
+    -- no overlap with adjacent channel rows").
 
     -- Active-side marker / always-visible colour code - a left-edge strip
     -- (the edge facing the book, where an attached bookmark tab's spine
@@ -2270,6 +2384,47 @@ end
 -- and fill/glow for its selected state (ApplyTabVisual, unchanged).
 local outputRailContainer
 
+-- Single shared click-processing function for every selector row (All/
+-- Guild/Raid/Friends/Self Only) - used both by each button's own OnClick
+-- AND by the flyout catcher's click-routing fix below, so "click this
+-- row" always means exactly the same thing regardless of which one
+-- dispatched it, and a row switch never needs a synthesized second click.
+HandleBroadcastTabClick = function(entry, btn)
+    if entry.key == "ALL" then
+        SB.SelectAllBroadcastTargets()
+        CloseBroadcastFlyout()
+        RefreshBroadcastTabs()
+    elseif entry.key == "SELF" then
+        SB.SelectSelfOnly()
+        CloseBroadcastFlyout()
+        RefreshBroadcastTabs()
+    else
+        -- Settings Send is authoritative (explicit requirement): a
+        -- Send-disabled channel does nothing on click, full stop.
+        if not IsChannelSendEnabled(entry.bucket) then return end
+        if IsBucketActive(entry.bucket) then
+            -- Second click on an already-selected channel: deselect it
+            -- and close its submenu if it was open (explicit requirement:
+            -- "a selected channel must always be deselectable by clicking
+            -- the same row again").
+            SB.SetBroadcastBucketAllSelected(entry.bucket, false)
+            if broadcastFlyout and broadcastFlyout:IsShown() and broadcastFlyout.__bucket == entry.bucket then
+                CloseBroadcastFlyout()
+            end
+            RefreshBroadcastTabs()
+        else
+            -- First click: select the whole channel as current output AND
+            -- open/refresh its member submenu, already showing it
+            -- selected - OpenBroadcastFlyout repopulates+repositions the
+            -- ONE shared flyout frame, so switching from a different
+            -- bucket's open submenu to this one needs no separate close.
+            SB.SetBroadcastBucketAllSelected(entry.bucket, true)
+            RefreshBroadcastTabs()
+            OpenBroadcastFlyout(btn, entry.bucket)
+        end
+    end
+end
+
 local function BuildBroadcastTabs(parent)
     local railH = #BROADCAST_TABS * TAB_H
     local rail = SB.CreateFrame("Frame", nil, parent)
@@ -2297,31 +2452,7 @@ local function BuildBroadcastTabs(parent)
             divider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
         end
 
-        btn:SetScript("OnClick", function()
-            if entry.key == "ALL" then
-                SB.SelectAllBroadcastTargets()
-                CloseBroadcastFlyout()
-                RefreshBroadcastTabs()
-            elseif entry.key == "SELF" then
-                SB.SelectSelfOnly()
-                CloseBroadcastFlyout()
-                RefreshBroadcastTabs()
-            elseif broadcastFlyout and broadcastFlyout:IsShown() and broadcastFlyout.__bucket == entry.bucket then
-                CloseBroadcastFlyout()
-            else
-                -- Explicit requirement: clicking Guild/Raid/Friends
-                -- immediately selects the WHOLE channel as current
-                -- output (not just opens an empty picker the player then
-                -- has to also tick "All X" in themselves) AND opens its
-                -- member dropdown, already showing that as checked. Zero
-                -- eligible members still selects the channel - the
-                -- dropdown just shows its own empty state
-                -- (PopulateBroadcastFlyout already handles that).
-                SB.SetBroadcastBucketAllSelected(entry.bucket, true)
-                RefreshBroadcastTabs()
-                OpenBroadcastFlyout(btn, entry.bucket)
-            end
-        end)
+        btn:SetScript("OnClick", function() HandleBroadcastTabClick(entry, btn) end)
         btn:HookScript("OnEnter", function(self)
             -- Only All/Self Only (no flyout of their own) get a plain
             -- tooltip - a bucket tab's explanation lives inside its own
