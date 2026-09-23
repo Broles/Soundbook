@@ -9,14 +9,31 @@ local ADDON_NAME, SB = ...
 
 local WINDOW_W = 390
 
+-- ONE content safe area (explicit request - the decorative outer frame is
+-- not usable layout space) - every functional control's X position is
+-- expressed relative to CONTENT_LEFT/CONTENT_W, not its own one-off
+-- offset from whatever sits above it. CONTENT_LEFT/RIGHT match the
+-- window's own decorative border inset (Theme.Panel's corners/edge).
+local CONTENT_MARGIN = 26
+local CONTENT_LEFT = CONTENT_MARGIN
+local CONTENT_W = WINDOW_W - CONTENT_MARGIN * 2
+
+-- The icon/Change Icon column on the left of the Display Name row -
+-- Change Icon (needs ~90px for its label) is wider than the icon itself
+-- (64px, per spec), so the icon is centered within this column rather
+-- than the column being exactly icon-width.
+local ICON_COL_W = 92
+local ICON_SIZE = 64
+local NAME_COL_X = CONTENT_LEFT + ICON_COL_W + 12
+
 -- Macro Command and Macro Output side by side, same row (explicit request -
 -- Ctrl+C copying never worked reliably enough to earn its own dedicated
 -- Copy button, and the two rows stacked on top of each other wasted a full
--- row's height that this window doesn't need to spend). Same full-row
--- width the Default Output dropdown above uses (WINDOW_W - 56), split into
--- two equal columns with a small gap between them.
+-- row's height that this window doesn't need to spend). Split from the
+-- SAME content width every other full-width control uses, not an
+-- independent WINDOW_W-derived number that could exceed it.
 local MACRO_COL_GAP = 10
-local MACRO_COL_W = math.floor((WINDOW_W - 56 - MACRO_COL_GAP) / 2)
+local MACRO_COL_W = math.floor((CONTENT_W - MACRO_COL_GAP) / 2)
 
 local edit
 local currentSoundID
@@ -43,18 +60,30 @@ local function RecomputeDirty()
         or draft.macroTarget ~= originalDraft.macroTarget
 end
 
--- Explicit request: the Macro Output dropdown ONLY (not Default Output
--- above it, not the Soundbook/Mini Soundbook dropdowns elsewhere) shows a
--- shorter "All (check Settings)" for the top "ALL" row instead of the
--- usual "All (checked in Settings)" - it has roughly half the row width to
--- work with (two columns sharing one row, see MACRO_COL_W above) and the
--- longer text was truncating. Wraps the same shared
--- SB.ComputeOutputTargetOptions everything else uses rather than
--- duplicating its whole option-building logic.
+-- Explicit request: "All (checked in Settings)" - SB.ComputeOutputTargetOptions'
+-- own generic text for value="ALL" - reads as if picking it always
+-- broadcasts to every enabled channel. It doesn't: value="ALL" is what
+-- BOTH Default Output and Macro Output store as outputOverride/
+-- macroTarget = nil, i.e. "no override - follow whatever the Output Rail
+-- is currently set to" (a real, separate "All" selection would need its
+-- own explicit value, which doesn't exist here). Relabelled to say what
+-- it actually does; the underlying value/behaviour is unchanged.
+-- Default Output and Macro Output each get their own wrapper (rather than
+-- sharing one) so a future divergence in wording doesn't need untangling
+-- back out of a shared function - wraps SB.ComputeOutputTargetOptions
+-- rather than duplicating its whole option-building logic.
+local function DefaultOutputOptions()
+    local opts = SB.ComputeOutputTargetOptions()
+    if opts[1] and opts[1].value == "ALL" then
+        opts[1].text = "Use Global Output"
+    end
+    return opts
+end
+
 local function MacroOutputOptions()
     local opts = SB.ComputeOutputTargetOptions()
     if opts[1] and opts[1].value == "ALL" then
-        opts[1].text = "All (check Settings)"
+        opts[1].text = "Use Global Output"
     end
     return opts
 end
@@ -120,17 +149,13 @@ local function BuildFrame()
     -- here (a "Change Icon" button opens IconPicker.lua's own popup
     -- instead) - this window is correspondingly much more compact than the
     -- pre-3.0 512px version.
-    edit:SetSize(WINDOW_W, 396) -- +24 from 372 for the new Hide checkbox's own row
-                                 -- content-driven modal with a small safe inset below
-                                 -- (trimmed from 565 - that value was sized
-                                 -- back when Macro Output still sat on its
-                                 -- own row BELOW Macro Command; once the two
-                                 -- moved onto the same row side by side, a
-                                 -- full row's worth of height was freed up
-                                 -- below Save/Cancel but this fixed size was
-                                 -- never shrunk to match, leaving unused
-                                 -- empty space at the bottom - explicit
-                                 -- report).
+    -- Explicit request (section 14, "prefer growing the window over
+    -- squeezing/overlapping controls"): grown to 440 for the grid rebuild -
+    -- a bigger icon (64px, was 46), Alternative Sound's own row (only
+    -- shown for a sound that has one), and Default Output's new separate
+    -- helper line all added real vertical content this fixed height must
+    -- actually fit, not just LOOK big enough at a glance.
+    edit:SetSize(WINDOW_W, 440)
                                  -- Close button is anchored to the Macro Output dropdown
                                  -- above it, not to this height, so as long as this is TALL
                                  -- ENOUGH nothing clips - any extra just becomes a small
@@ -173,14 +198,17 @@ local function BuildFrame()
 
     -- Icon preview + "Change Icon" (3.0 spec section 42) - opens
     -- IconPicker.lua's own virtualized popup instead of permanently
-    -- dedicating a big part of this window to an embedded grid.
-    local iconSlot = SB.Theme.CreateIconSlot(edit, 46)
-    iconSlot:SetPoint("TOPLEFT", 24, -62)
+    -- dedicating a big part of this window to an embedded grid. Icon and
+    -- Change Icon form one left column, both fully inside the content
+    -- safe area; Display Name is the second column, consuming the rest
+    -- of the content width.
+    local iconSlot = SB.Theme.CreateIconSlot(edit, ICON_SIZE)
+    iconSlot:SetPoint("TOPLEFT", CONTENT_LEFT + math.floor((ICON_COL_W - ICON_SIZE) / 2), -62)
     edit.iconPreview = iconSlot.texture
     edit.iconSlot = iconSlot
 
-    local changeIconBtn = SB.Theme.CreateSecondaryButton(edit, "Change Icon", 92, 20)
-    changeIconBtn:SetPoint("TOP", iconSlot, "BOTTOM", 0, -6)
+    local changeIconBtn = SB.Theme.CreateSecondaryButton(edit, "Change Icon", ICON_COL_W, 20)
+    changeIconBtn:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT, -62 - ICON_SIZE - 8)
     changeIconBtn:SetScript("OnClick", function()
         if not currentSoundID then return end
         SB.OpenIconPicker(function(path)
@@ -193,12 +221,12 @@ local function BuildFrame()
 
     local nameLabel = edit:CreateFontString(nil, "OVERLAY")
     nameLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    nameLabel:SetPoint("TOPLEFT", iconSlot, "TOPRIGHT", 12, 2)
+    nameLabel:SetPoint("TOPLEFT", edit, "TOPLEFT", NAME_COL_X, -62)
     nameLabel:SetText("Display Name")
     nameLabel:SetTextColor(0.60, 0.80, 1.0)
 
-    local nameBox = SB.Theme.CreateInputBox(edit, WINDOW_W - 140, 22)
-    nameBox:SetPoint("TOPLEFT", nameLabel, "BOTTOMLEFT", 6, -4)
+    local nameBox = SB.Theme.CreateInputBox(edit, WINDOW_W - CONTENT_MARGIN - NAME_COL_X, 22)
+    nameBox:SetPoint("TOPLEFT", nameLabel, "BOTTOMLEFT", 0, -4)
     nameBox:SetMaxLetters(50)
     nameBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     nameBox:SetScript("OnEditFocusLost", function(self)
@@ -208,7 +236,10 @@ local function BuildFrame()
     end)
     edit.nameBox = nameBox
 
-    -- Favourite / Muted checkboxes
+    -- Favourite / Muted / Hide - one row, one consistent grid (explicit
+    -- request). All three anchor off CONTENT_LEFT with fixed spacing that
+    -- comfortably fits within CONTENT_W (338px at the current WINDOW_W),
+    -- not chained off each other's rendered width.
     -- (forward-declared so the onClick closure below - defined as part of
     -- creating it - can still refer to it by the time it's actually clicked)
     local favCheck
@@ -217,7 +248,7 @@ local function BuildFrame()
         draft.favourite = checked and true or false
         RecomputeDirty()
     end)
-    favCheck:SetPoint("TOPLEFT", changeIconBtn, "BOTTOMLEFT", 0, -14)
+    favCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT, -62 - ICON_SIZE - 8 - 20 - 20)
     edit.favCheck = favCheck
 
     local muteCheck = SB.Theme.CreateCheckbox(edit, "Muted", function(checked)
@@ -225,7 +256,7 @@ local function BuildFrame()
         draft.muted = checked and true or false
         RecomputeDirty()
     end)
-    muteCheck:SetPoint("LEFT", favCheck, "RIGHT", 90, 0)
+    muteCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT + 110, -62 - ICON_SIZE - 8 - 20 - 20)
     edit.muteCheck = muteCheck
 
     -- "Hide" (explicit request) - a new virtual "Hide" category at the very
@@ -239,7 +270,7 @@ local function BuildFrame()
         draft.hidden = checked and true or false
         RecomputeDirty()
     end)
-    hideCheck:SetPoint("TOPLEFT", favCheck, "BOTTOMLEFT", 0, -12)
+    hideCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT + 200, -62 - ICON_SIZE - 8 - 20 - 20)
     edit.hideCheck = hideCheck
     SB.Theme.AttachTooltip(hideCheck, "Hide",
         "Removes this sound from its category - still reachable under Hide at the bottom of the Library.")
@@ -252,7 +283,9 @@ local function BuildFrame()
     -- playback with a license-safe alternate version of this sound (not
     -- necessarily a self-made recording - any alternate that doesn't
     -- trip a copyright system works), on this client only - everyone
-    -- else, and the network soundID itself, are unaffected.
+    -- else, and the network soundID itself, are unaffected. Its own row
+    -- below Favourite/Muted/Hide - its longer label wouldn't fit as a
+    -- fourth item in that row within the content safe area.
     local altCheck = SB.Theme.CreateCheckbox(edit, "Alternative Sound", function(checked)
         if not currentSoundID then return end
         draft.useAlternate = checked and true or false
@@ -262,7 +295,7 @@ local function BuildFrame()
         edit.iconSlot:SetAlternate(draft.useAlternate)
         RecomputeDirty()
     end)
-    altCheck:SetPoint("LEFT", muteCheck, "RIGHT", 90, 0)
+    altCheck:SetPoint("TOPLEFT", favCheck, "BOTTOMLEFT", 0, -10)
     edit.altCheck = altCheck
     SB.Theme.AttachTooltip(altCheck, "Alternative Sound",
         "Plays a license-safe alternative instead, just for you - everyone else still hears the original. Useful if the original triggers automatic copyright mutes (e.g. on Twitch).")
@@ -278,14 +311,19 @@ local function BuildFrame()
     -- SB.OutputTargetRowFont) - see SB:ResolveOutputTarget/
     -- SB.SoundOutputOverrideColor (Communication.lua) for how this is
     -- actually applied and coloured everywhere the sound's icon appears.
+    -- Explicit request: "Default Output (overrides Settings for this
+    -- sound)" is outdated 3.0 terminology (the global routing concept is
+    -- now the Output Rail, not "Settings") and didn't fit its own row
+    -- width anyway. Short label + a separate helper line below the
+    -- dropdown instead.
     local defaultOutputLabel = edit:CreateFontString(nil, "OVERLAY")
     defaultOutputLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    defaultOutputLabel:SetPoint("TOPLEFT", hideCheck, "BOTTOMLEFT", 4, -14)
-    defaultOutputLabel:SetText("Default Output (overrides Settings for this sound)")
+    defaultOutputLabel:SetPoint("TOPLEFT", altCheck, "BOTTOMLEFT", 0, -16)
+    defaultOutputLabel:SetText("Default Output")
     defaultOutputLabel:SetTextColor(0.60, 0.80, 1.0)
 
-    local defaultOutputDD = SB.Theme.CreateDropdown(edit, WINDOW_W - 56, 22, 12)
-    defaultOutputDD.button:SetPoint("TOPLEFT", defaultOutputLabel, "BOTTOMLEFT", -6, -6)
+    local defaultOutputDD = SB.Theme.CreateDropdown(edit, CONTENT_W, 22, 12)
+    defaultOutputDD.button:SetPoint("TOPLEFT", defaultOutputLabel, "BOTTOMLEFT", 0, -6)
     defaultOutputDD:SetOnChange(function(value)
         if not currentSoundID then return end
         draft.outputOverride = (value ~= "ALL") and value or nil
@@ -300,37 +338,32 @@ local function BuildFrame()
     end)
     edit.defaultOutputDD = defaultOutputDD
     SB.Theme.AttachTooltip(defaultOutputDD.button, "Default Output",
-        "This sound always goes to this target on a normal click, regardless of Settings' own Default Output Channel.")
+        "This sound always goes to this target on a normal click, regardless of the Output Rail's own current selection.")
+
+    local defaultOutputHint = edit:CreateFontString(nil, "OVERLAY")
+    defaultOutputHint:SetFontObject(SB.Fonts.DisableSmall)
+    defaultOutputHint:SetPoint("TOPLEFT", defaultOutputDD.button, "BOTTOMLEFT", 0, -4)
+    defaultOutputHint:SetPoint("RIGHT", -CONTENT_MARGIN, 0)
+    defaultOutputHint:SetJustifyH("LEFT")
+    defaultOutputHint:SetWordWrap(true)
+    defaultOutputHint:SetText("Overrides the global Output Rail for this sound.")
+    defaultOutputHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
 
     -- Macro Command (left column) and Macro Output (right column), side by
     -- side on the same row (explicit request - Ctrl+C copying was never
     -- reliable enough to deserve its own dedicated button, and the two
     -- controls stacked on separate rows wasted a full row of height this
-    -- window doesn't need to spend). Both anchored to the SAME row via
-    -- defaultOutputDD.button above, just at different X offsets.
-    -- Explicit bugfix: this row used to sit 10px further right than
-    -- defaultOutputDD's own left edge with no matching adjustment on the
-    -- right, so the whole row (Macro Command + gap + Macro Output) actually
-    -- ran a few px PAST defaultOutputDD's own right edge instead of ending
-    -- flush with it - visible as Macro Output's dropdown text truncating
-    -- more than its raw half-width alone would explain ("All (checked in
-    -- Sett...)"). -6 here (matching the label-sits-6px-left-of-its-own-
-    -- control pattern already used everywhere else in this window) makes
-    -- macroBox's actual left edge land exactly on defaultOutputDD.button's
-    -- own left edge - see outputLabel below for the matching right-edge fix.
-    -- Explicit report: "Macro Command (read-only)" visibly ran into
-    -- "Macro Output" next to it - this label has no width limit and, at
-    -- this font, is wider than the ~162px column it shares a row with
-    -- (MACRO_COL_W). Shortened to fit; "read-only" now lives in a tooltip
-    -- instead of the label itself.
+    -- window doesn't need to spend). Both columns split CONTENT_W evenly
+    -- (MACRO_COL_W, computed from it above) and anchor off CONTENT_LEFT -
+    -- same grid as every other row, not a one-off offset chain.
     local macroLabel = edit:CreateFontString(nil, "OVERLAY")
     macroLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    macroLabel:SetPoint("TOPLEFT", defaultOutputDD.button, "BOTTOMLEFT", -6, -14)
+    macroLabel:SetPoint("TOPLEFT", defaultOutputHint, "BOTTOMLEFT", 0, -14)
     macroLabel:SetText("Macro Command")
     macroLabel:SetTextColor(0.60, 0.80, 1.0)
 
     local macroBox = SB.Theme.CreateInputBox(edit, MACRO_COL_W, 22)
-    macroBox:SetPoint("TOPLEFT", macroLabel, "BOTTOMLEFT", 6, -6)
+    macroBox:SetPoint("TOPLEFT", macroLabel, "BOTTOMLEFT", 0, -6)
     macroBox:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     macroBox:SetBackdropColor(0.008, 0.020, 0.040, 0.82)
     -- WoW's EditBox leaves the cursor (and therefore its horizontal scroll)
@@ -356,24 +389,21 @@ local function BuildFrame()
     edit.SetMacroBoxText = SetMacroBoxText
 
     -- Macro Output - who this specific sound's macro sends to, on top of
-    -- always playing locally. "All" (default) leaves the macro exactly as
-    -- "/sb play <id>", following Settings -> Default Output Channel like
-    -- any other trigger; picking a channel or person here appends a
-    -- "::<Target>" the macro carries with it from then on, overriding that
-    -- setting for THIS macro only (see Macros.lua / Communication.lua's
-    -- SB:DispatchDefaultOutput).
-    -- See macroLabel's own comment above - this +6 (not +10) is what
-    -- actually makes outputDD's right edge land exactly on
-    -- defaultOutputDD.button's own right edge, matching MACRO_COL_W's own
-    -- WINDOW_W-56-based math instead of overshooting it by a few px.
+    -- always playing locally. "Use Global Output" (default) leaves the
+    -- macro exactly as "/sb play <id>", following the Output Rail's own
+    -- current selection like any other trigger; picking a channel or
+    -- person here appends a "::<Target>" the macro carries with it from
+    -- then on, overriding that for THIS macro only (see Macros.lua /
+    -- Communication.lua's SB:DispatchDefaultOutput). Same row as Macro
+    -- Command, second half of the same MACRO_COL_W/MACRO_COL_GAP split.
     local outputLabel = edit:CreateFontString(nil, "OVERLAY")
     outputLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    outputLabel:SetPoint("TOPLEFT", defaultOutputDD.button, "BOTTOMLEFT", 6 + MACRO_COL_W + MACRO_COL_GAP, -14)
+    outputLabel:SetPoint("TOPLEFT", macroLabel, "TOPLEFT", MACRO_COL_W + MACRO_COL_GAP, 0)
     outputLabel:SetText("Macro Output")
     outputLabel:SetTextColor(0.60, 0.80, 1.0)
 
     local outputDD = SB.Theme.CreateDropdown(edit, MACRO_COL_W, 22, 12)
-    outputDD.button:SetPoint("TOPLEFT", outputLabel, "BOTTOMLEFT", -6, -6)
+    outputDD.button:SetPoint("TOPLEFT", outputLabel, "BOTTOMLEFT", 0, -6)
     outputDD:SetOnChange(function(value)
         if not currentSoundID then return end
         draft.macroTarget = (value ~= "ALL") and value or nil
@@ -381,6 +411,9 @@ local function BuildFrame()
         RecomputeDirty()
     end)
     edit.outputDD = outputDD
+    -- Explicit request: Macro Output must read as clearly scoped to just
+    -- the generated macro, distinct from Default Output above it.
+    SB.Theme.AttachTooltip(outputDD.button, "Macro Output", "Affects this generated macro only.")
 
     local MACRO_HINT_TEXT = "Click to select all, then Ctrl+C to copy. Paste as the body of a macro you create yourself, using this sound's icon if you like."
     local macroHint = edit:CreateFontString(nil, "OVERLAY")
@@ -389,8 +422,9 @@ local function BuildFrame()
     -- (explicit report: this text's leading characters were getting cut
     -- off - it was anchored 6px to the LEFT of macroBox, which itself
     -- already sits at the leftmost edge of this window's whole form).
+    -- Width matches the content safe area exactly, not an arbitrary -20.
     macroHint:SetPoint("TOPLEFT", macroBox, "BOTTOMLEFT", 0, -4)
-    macroHint:SetPoint("RIGHT", -20, 0)
+    macroHint:SetPoint("RIGHT", -CONTENT_MARGIN, 0)
     macroHint:SetJustifyH("LEFT")
     macroHint:SetWordWrap(true)
     macroHint:SetText(MACRO_HINT_TEXT)
@@ -438,8 +472,11 @@ local function BuildFrame()
     -- what gets added/changed above in the future, instead of silently
     -- growing every time this window's content changes but its fixed
     -- SetSize height doesn't shrink to match.
+    -- Right-aligned to macroHint's own right edge, which already sits
+    -- exactly on the content safe area's right boundary (macroHint's own
+    -- RIGHT anchor above) - not an arbitrary center-ish offset.
     local saveButton = SB.Theme.CreatePrimaryButton(edit, "Save", 136, 28)
-    saveButton:SetPoint("TOPRIGHT", macroHint, "BOTTOM", -4, -16)
+    saveButton:SetPoint("TOPRIGHT", macroHint, "BOTTOMRIGHT", 0, -16)
     saveButton:SetScript("OnClick", function()
         if not currentSoundID or not draft then return end
         -- 3.0 spec section 43: a full Favourite list must not block saving
@@ -486,13 +523,17 @@ local function BuildFrame()
     end)
     edit.saveButton = saveButton
 
+    -- Anchored relative to Save itself (not independently to macroHint) -
+    -- guarantees the same baseline/height and a consistent gap between
+    -- them by construction, rather than two separately-computed positions
+    -- that happen to look aligned.
     local cancelButton = SB.Theme.CreateSecondaryButton(edit, "Cancel", 136, 28)
-    cancelButton:SetPoint("TOPLEFT", macroHint, "BOTTOM", 4, -16)
+    cancelButton:SetPoint("RIGHT", saveButton, "LEFT", -10, 0)
     cancelButton:SetScript("OnClick", function() edit:Hide() end)
     edit.cancelButton = cancelButton
 
     local formWell = edit:CreateTexture(nil, "BACKGROUND")
-    formWell:SetPoint("TOPLEFT", iconSlot, "TOPLEFT", -10, 10)
+    formWell:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT - 10, -52)
     formWell:SetPoint("BOTTOMRIGHT", macroHint, "BOTTOMRIGHT", 10, -12)
     formWell:SetTexture("Interface\\Buttons\\WHITE8X8")
     formWell:SetVertexColor(0.004, 0.018, 0.045, 0.64)
@@ -588,9 +629,10 @@ local function PopulateEditWindow(soundID)
 
     -- Same options as every other output-target dropdown - every group
     -- always shows, regardless of current membership (see
-    -- SB.ComputeOutputTargetOptions's own comment).
-    edit.defaultOutputDD:SetOptions(SB.ComputeOutputTargetOptions())
-    edit.defaultOutputDD:SetOptionsProvider(SB.ComputeOutputTargetOptions)
+    -- SB.ComputeOutputTargetOptions's own comment) - DefaultOutputOptions
+    -- just relabels the top "ALL"/nil-override row to "Use Global Output".
+    edit.defaultOutputDD:SetOptions(DefaultOutputOptions())
+    edit.defaultOutputDD:SetOptionsProvider(DefaultOutputOptions)
     edit.defaultOutputDD:SetRowFont(SB.OutputTargetRowFont)
     edit.defaultOutputDD:SetValue(draft.outputOverride or "ALL")
 

@@ -245,6 +245,16 @@ local function BuildPopup()
     popup = SB.CreateFrame("Frame", "SoundbookIconPicker", UIParent)
     popup:SetSize(leftMargin + columns * (iconSize + iconPad) + 10 + rightMargin,
         visibleRows * (iconSize + iconPad) + 86)
+    -- ROOT CAUSE of "kann das Icon nicht ändern": this frame never had a
+    -- SetPoint call anywhere in this function - zero anchor points, so its
+    -- on-screen position was genuinely unresolved (not just off-screen -
+    -- undefined). That's also exactly why GetLeft/GetTop in this file's
+    -- own /sb debug line started throwing "bad argument #1 to 'tostring'
+    -- (value expected)" the moment that diagnostic was added: the same
+    -- zero-Lua-values quirk this addon already hit once before (UI.lua's
+    -- Library scroll bug) for the same underlying reason - an unresolved
+    -- position. Centered on the Main Soundbook window, same as Edit Sound.
+    popup:SetPoint("CENTER", SoundbookMainFrame or UIParent, "CENTER")
     popup:SetFrameStrata("DIALOG")
     -- Generously high - this picker can be opened FROM another DIALOG-
     -- strata window (Edit Sound's "Change Icon" button, 3.0 spec section
@@ -291,11 +301,15 @@ function SB.OpenIconPicker(callback, currentPath)
     popup.grid:Populate()
     popup.grid:SetSelectedIcon(currentPath)
     popup:Show()
-    -- Explicit report ("kann das Icon nicht ändern") with no clear repro
-    -- yet - this pins down whether the popup opens at all, how many icons
-    -- GetMacroIcons() actually resolved, and where it's drawn, without
-    -- needing /console scriptErrors.
+    -- Explicit report ("kann das Icon nicht ändern") - root cause found
+    -- and fixed above (popup had no SetPoint at all). Kept as a diagnostic
+    -- in case anything else is still off. GetLeft/GetTop assigned to
+    -- locals first - they can return zero Lua values (not nil) for an
+    -- unresolved position, which crashes tostring() if called on them
+    -- directly (this line's own previous version did exactly that).
+    local shown, level, strata = popup:IsShown(), popup:GetFrameLevel(), popup:GetFrameStrata()
+    local left, top = popup:GetLeft(), popup:GetTop()
     SB:Debug("IconPicker: shown=%s frameLevel=%s frameStrata=%s icons=%d popup.left=%s popup.top=%s",
-        tostring(popup:IsShown()), tostring(popup:GetFrameLevel()), tostring(popup:GetFrameStrata()),
-        #(popup.grid.icons or {}), tostring(popup:GetLeft()), tostring(popup:GetTop()))
+        tostring(shown), tostring(level), tostring(strata),
+        #(popup.grid.icons or {}), tostring(left), tostring(top))
 end
