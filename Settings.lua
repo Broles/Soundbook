@@ -995,7 +995,31 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     if panel then return panel end
 
     panel = CreateFrame("Frame", "SoundbookSettingsPanel", mainFrame)
-    panel:SetAllPoints(contentFrame)
+    -- Regression fix (root cause, 3rd pass): panel used to SetAllPoints
+    -- contentFrame directly - contentFrame IS the Library's own content
+    -- region (UI.lua: content:SetAllPoints(libraryScroll.scroll), anchored
+    -- below the header+Search+tag-filter stack, ~159px down). Since panel
+    -- has SetClipsChildren(true), its OWN top edge is a hard clip
+    -- boundary for every descendant - including tabRow, anchored (see
+    -- below) directly off the header at ~99px down, well ABOVE
+    -- contentFrame's ~159px top. The strip wasn't actually missing, it
+    -- was being clipped into invisibility by its own parent, and the
+    -- scroll content below it lost its own top portion (the first
+    -- section's heading) the exact same way - together, precisely the
+    -- reported "~140-160px empty block, then content starts far too low".
+    -- LEFT/RIGHT/BOTTOM still come from contentFrame (horizontal bounds
+    -- and the bottom edge were never the problem) - only TOP is now
+    -- independent, anchored directly off the header's own bottom edge so
+    -- panel's clip region actually contains everything anchored within
+    -- it, with no gap between the two. Header itself stays untouched.
+    panel:SetPoint("LEFT", contentFrame, "LEFT", 0, 0)
+    panel:SetPoint("RIGHT", contentFrame, "RIGHT", 0, 0)
+    panel:SetPoint("BOTTOM", contentFrame, "BOTTOM", 0, 0)
+    if mainFrame.header then
+        panel:SetPoint("TOP", mainFrame.header, "BOTTOM", 0, 0)
+    else
+        panel:SetPoint("TOP", contentFrame, "TOP", 0, 0)
+    end
     panel:SetFrameLevel(contentFrame:GetFrameLevel() + 20)
     if panel.SetClipsChildren then panel:SetClipsChildren(true) end
     panel:Hide()
@@ -1006,24 +1030,22 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     -- requirement, section 7).
     local L = SB.Theme.LAYOUT
     local tabRow = BuildTabStrip(panel)
-    -- Regression fix (2nd pass): the previous fix anchored the category
-    -- strip off SB.LIBRARY_CONTENT_TOP_OFFSET, which bakes in the
-    -- Library's OWN Search box + tag-filter row heights (159px total) -
-    -- correct for the first Library row, but Settings has neither of
-    -- those elements, so reusing that offset left exactly the large empty
-    -- block being reported (search+filter-sized dead space with nothing
-    -- in it). Settings' content has no relationship to the Library's
-    -- stack at all - it anchors directly off the shared header's own
-    -- bottom edge instead (`mainFrame.header`, exposed by UI.lua),
-    -- skipping the Library-specific offset entirely. Explicit target:
-    -- ~28-32px between the header's gold divider (the header's own
-    -- bottom edge) and the category strip - 30px, the middle of that
-    -- range. Falls back to the old offset only if the header somehow
+    -- Regression fix (3rd pass): the strip itself anchors off the shared
+    -- header's own bottom edge (`mainFrame.header`, exposed by UI.lua),
+    -- with no relationship to the Library's own Search/tag-filter stack
+    -- at all. This anchor was already correct on its own in the 2nd
+    -- pass - the actual remaining bug was panel's own clip boundary
+    -- above (see BuildSettingsPanel's own comment), which cut this strip
+    -- off before it ever reached the screen regardless of its anchor
+    -- math being right. Explicit target: ~18-22px between the header's
+    -- gold divider (the header's own bottom edge) and the category
+    -- strip - 20px, the middle of that range (was 30, outside the
+    -- target). Falls back to the old offset only if the header somehow
     -- isn't exposed yet (defensive, should not happen in practice).
     -- LEFT/RIGHT still come from `panel` itself (untouched, unaffected -
     -- panel's horizontal bounds were never in question). Header itself is
     -- explicitly out of scope for this fix and stays untouched.
-    local HEADER_TO_TABS_GAP = 30
+    local HEADER_TO_TABS_GAP = 20
     tabRow:SetPoint("LEFT", panel, "LEFT", L.GAP_S, 0)
     if mainFrame.header then
         tabRow:SetPoint("TOP", mainFrame.header, "BOTTOM", 0, -HEADER_TO_TABS_GAP)
@@ -1050,6 +1072,7 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     -- separate plain child, fixed at CONTENT_W and horizontally centered
     -- WITHIN scrollChild, not the scroll child itself.
     scroll, scrollChild = sf.scroll, sf.content
+    panel.scroll = scroll -- exposed for test/harness reachability, same pattern as panel.tabRow
     scroll:SetFrameLevel(panel:GetFrameLevel() + 5)
     scrollChild:SetFrameLevel(scroll:GetFrameLevel() + 1)
     -- Explicit target: selected-category content starts ~24px below the
