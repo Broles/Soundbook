@@ -79,3 +79,137 @@ The remaining risks are owned by client behavior, not uncovered logical failures
 - migration against a user's complete real SavedVariables history.
 
 The release is suitable for a focused in-game candidate pass using `TESTING.md`. It should not be described as in-game verified until that pass is completed.
+
+---
+
+## Soundbook 3.0 QA continuation - Round 5 (2026-09-23)
+
+Additive to the above, not a replacement. Covers the fifth round of the 3.0
+UI/UX iteration (Favourites grid, Popout Direction/live preview, right-side
+broadcast tabs, Raid Admin sync, and this round's fixes/refinements), run
+against the same mock WoW API harness described above (6 regression scripts,
+all green after every change in this round).
+
+### P0 - sound playback truncation ("Bad To The Bone" and others)
+
+**Root cause, confirmed by direct binary analysis, not a Lua bug.** Every
+`StopSound` call site in every file the `.toc` actually loads was traced by
+hand (`SoundPlayer.lua`'s `StopAllOwnSounds`, called only from disabled-
+overlap logic or an explicit user Stop) - none of them are duration-timer
+driven, and the UI's progress ticker is provably display-only. `FavouritesWindow.lua`
+contains code that LOOKS like a duration-based auto-stop timer, but that
+file is not in `Soundbook.toc` and never loads - dead code, not a live bug
+source.
+
+The actual cause: `Sounds/Legacy/Bad To The Bone.mp3` and
+`Sounds/Legacy/Dry Fart.mp3` are truncated/corrupted audio files on disk.
+Walking every MPEG frame header in all 79 resolvable shipped `.mp3` files
+and comparing the measured duration against `SoundDurations.lua`'s
+registered value found 77 exact matches (confirming the measurement method
+is sound) and exactly these two outliers - "Bad To The Bone" measures
+**1.027s** of real audio against a registered 2.247s, "Dry Fart" measures
+**0.183s** against a registered 0.392s. Both files end in ~200 bytes of a
+single repeated byte value, not a normal MP3 encoder footer - consistent
+with a truncated/interrupted encode, not an intentionally short clip.
+
+Fix applied: `SoundDurations.lua`'s two entries now match the real files,
+so the UI stops promising a duration the audio can't deliver. **This does
+not restore the missing ~1.2s of "Bad To The Bone."** That requires
+replacing the shipped file with a correct, full-length encode - the audio
+data simply isn't in the repository. Flag this to the user directly.
+
+Also verified and hardened, per the explicit invariant requested: no
+per-handle timer/callback exists anywhere in the playback path, so a stale
+callback cannot act on a newer playback instance - `trackedHandles[handle]`
+is always a fresh table on every new play (no state carries over even if a
+handle number is reused), and the single shared poll ticker reads live
+table state every tick rather than closing over per-instance data.
+
+### Popup wrong direction near a screen edge
+
+Root cause: `SB.ResolvePopoutDirection` compared `anchorFrame:GetCenter()`
+directly against `UIParent:GetWidth()/GetHeight()` without accounting for
+`GetEffectiveScale()` - two different frames' coordinate methods are each
+returned in that frame's OWN local unit space. The Announcer icon carries
+an independent `SetScale` (Announcer Size, 0.7-1.6), so at any non-default
+size the region math was silently skewed and could resolve a genuinely
+edge-positioned icon into the centre "vertical" band. Fixed by normalizing
+through the effective-scale ratio before computing the region percentage.
+Regression-tested with a synthetic case reproducing the exact real-edge/
+non-default-scale scenario.
+
+### Idle Announcer drag shows no preview
+
+Root cause: `StartIconDragPreview`/`ShowDemoBanner`/`ShowRaidMuteBanner`
+all called `banner:Show()` without resetting alpha. `CollapseToIdle`'s own
+fade-out leaves the banner sitting at alpha 0 once idle; a bare `Show()`
+never undid that, so the preview was technically shown (`IsShown()==true`)
+but fully invisible. Dragging while a sound was already playing never hit
+this because `RenderPrimary` always explicitly fades to alpha 1 first.
+Fixed at all three call sites. Regression-tested end-to-end: play a real
+sound, let it end naturally (alpha fades to 0), then start a drag and
+assert the banner is both shown AND at full alpha.
+
+### Favourites popup scrollbar removed
+
+The `ScrollFrame`/viewport cap is gone - every current Favourite (up to
+the 20-slot maximum) is always laid out and shown at once. Column count
+still follows Announcer Size (2 vs. 3, per the original request), with an
+added safety net that only ever escalates 2->3 columns if a 2-column
+layout would grow past 60% of screen height (inert at any normal
+screen/Announcer Size combination - the true worst case, 20 Favourites at
+2 columns, is 240px). Popup height is purely content-driven; fewer
+Favourites means a smaller popup, verified at both 4 and 20 entries.
+
+### Fresh-install crash (found by this round's regression pass, not previously reported)
+
+`PrepareDatabase`'s fast path for a brand-new install (`rawDatabase == nil`)
+returned the raw defaults table without ever running `SanitizeDatabase` -
+and the defaults table never had a `ui.outputRail` entry at all. Every
+new player's very first `RefreshBroadcastTabs()` call (opening the Main
+window) crashed with "attempt to index local 'rail' (a nil value)." An
+upgrading player never hit this since their path always runs
+`SanitizeDatabase`. Fixed by giving `ui.outputRail` an empty default and
+making the fresh-install path run `SanitizeDatabase` too, keeping both
+paths structurally consistent instead of hand-syncing two shapes.
+
+### Main window layout hierarchy
+
+Shared layout metrics (safe inset, toolbar height, section gap, search
+min/preferred/max width, Output Rail top offset) replace ad-hoc per-row
+padding. Title has more breathing room and is vertically centred; Search
+now has a responsive 140-320px width instead of stretching to fill the
+header; Close/Lock/Audio icons share identical geometry via the existing
+`MiniControlButton` chrome (Close keeps a distinct red hover tint);
+toolbar/filter/Library gaps are normalized; the Library scroll frame has a
+wider right inset for the scrollbar; the Output Rail's vertical start now
+aligns with where Library content actually begins instead of a hardcoded
+offset guess.
+
+### Edit Sound refinement
+
+More breathing room below the header before the icon/name block; icon
+reduced from 64px to 56px (still within the requested 56-64px range) to
+balance against the smaller adjacent controls; Favourite/Muted/Hide
+checkboxes now chain off each other's actual rendered label width instead
+of fixed 110px slots that left large, uneven gaps for short labels.
+
+### Icon Picker layering
+
+No longer centres on the exact same screen point as Edit Sound (which
+visually buried it underneath) with a fixed, arbitrary frame level (300).
+Now anchors directly to Edit Sound's own frame when Edit Sound is the
+caller - sticky to its left with a small gap, falling back to the right
+if there isn't room, with a frame level computed from Edit Sound's own
+CURRENT level rather than a guessed constant. Falls back to the original
+centred-on-Main placement for every other caller (Settings' Category icon
+picker has no Edit Sound to anchor to).
+
+### Still gated on a live client
+
+Same residual-risk boundary as the 2.5.0 report above - exact pixel
+layout, hover hit-testing, and real `PlaySoundFile`/`C_Sound.IsPlaying`
+behavior are not something a Lua-only mock can fully replicate. In
+particular: the Popout Direction fix's real-world correctness at actual
+screen edges, and the Icon Picker's left/right fallback placement, are
+logically verified but should get one in-game pass each.
