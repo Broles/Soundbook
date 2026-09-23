@@ -25,6 +25,15 @@ local raidDot        -- small indicator: raid-admin currently restricts you
 -- BEFORE that machinery in this file - can call them as plain upvalues,
 -- same forward-reference idiom already used elsewhere in this file.
 local StartIconDragPreview, StopIconDragPreview
+-- Forward-declared for the same reason (BuildIcon, below, needs to call
+-- these as upvalues, but the proximity/hover system they belong to isn't
+-- defined until much further down, alongside favMenu/quickMenu) -
+-- Mini Soundbook single-active-surface + hover-open + proximity-auto-
+-- close regression fix. HandleMiniIconHoverEnter is the icon's own native
+-- OnEnter hook (hover-open, gated by the persisted setting);
+-- SetMiniActiveInteraction is the shared "an active drag/interaction is
+-- in progress, do not auto-close" flag the proximity ticker reads.
+local HandleMiniIconHoverEnter, SetMiniActiveInteraction, NoteMiniSurfaceHidden
 -- True while the banner is showing PREVIEW content - the icon-drag preview
 -- (StartIconDragPreview/StopIconDragPreview) - rather than an actual
 -- playing sound. This is the ONLY preview trigger (targeted correction
@@ -175,12 +184,16 @@ local function BuildIcon()
         if SB.db.ui.layoutLocked then return end
         self:StartMoving()
         StartIconDragPreview()
+        -- Interaction priority (explicit requirement): repositioning the
+        -- trigger itself must never be interrupted by proximity auto-close.
+        if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end
     end)
     icon:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         local point, _, relPoint, x, y = self:GetPoint()
         SB.db.ui.announcer.pos = { point = point, relPoint = relPoint, x = x, y = y }
         StopIconDragPreview()
+        if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end
     end)
 
     -- Explicit request - rebound:
@@ -245,6 +258,24 @@ local function BuildIcon()
         if not (banner and banner:IsShown()) then
             icon:SetAlpha((SB.db.ui.announcer.alphaIdle or 100) / 100)
         end
+    end)
+
+    -- Mini Soundbook activation mode (explicit requirement): hover-open,
+    -- gated by the persisted SB.db.ui.announcer.openOnHover setting -
+    -- purely native-OnEnter-edge-triggered (fires once per genuine
+    -- transition from outside the icon's own bounds to inside it, never
+    -- on a poll/timer), which is what makes every reopen-loop edge case
+    -- in the spec fall out for free: nothing re-opens anything just
+    -- because the cursor happens to still be resting on the icon after
+    -- some OTHER surface closed - a NEW entry only ever happens after a
+    -- real OnLeave preceded it. Left-click keeps working exactly as
+    -- before regardless of this setting (see icon's own OnClick above) -
+    -- this hook only ever ADDS the hover trigger, never removes the click
+    -- one. HandleMiniIconHoverEnter is defined later in this file
+    -- (alongside the rest of the proximity/surface system) and referenced
+    -- here as a forward-declared upvalue.
+    icon:HookScript("OnEnter", function()
+        if HandleMiniIconHoverEnter then HandleMiniIconHoverEnter() end
     end)
 
     return icon
@@ -1255,7 +1286,10 @@ local function BuildFavMenu()
     catcher:Hide()
     catcher:SetScript("OnClick", function() favMenu:Hide(); catcher:Hide() end)
     favMenu.catcher = catcher
-    favMenu:SetScript("OnHide", function() catcher:Hide() end)
+    favMenu:SetScript("OnHide", function()
+        catcher:Hide()
+        if NoteMiniSurfaceHidden then NoteMiniSurfaceHidden() end
+    end)
 
     favMenu.title = favMenu:CreateFontString(nil, "OVERLAY")
     favMenu.title:SetFontObject(SB.Fonts.Highlight)
@@ -1374,6 +1408,140 @@ local function PopulateFavMenu()
     favMenu:SetHeight(topOffset + math.max(titleH - 22, contentH == 0 and 24 or contentH) + 10)
 end
 
+------------------------------------------------------------------------
+-- Proximity-based auto-close (explicit requirement, Mini Soundbook
+-- layering/proximity regression fix) - a single shared, throttled
+-- ticker covering BOTH transient surfaces (the expanded Mini Soundbook/
+-- favMenu and Quick Options/quickMenu), rather than one competing timer
+-- per element. Inactive (no ticker at all) whenever both are closed -
+-- "do not run permanent Every Frame proximity checks while closed".
+------------------------------------------------------------------------
+
+local PROXIMITY_TOLERANCE = 60   -- px, around the combined active area
+local PROXIMITY_CLOSE_DELAY = 0.3 -- seconds continuously outside before closing
+local PROXIMITY_SAMPLE_INTERVAL = 0.1 -- ~0.1s throttled polling, not every frame
+
+local proximityTicker
+local proximityOutsideElapsed = 0
+-- Interaction priority (explicit requirement): while true, the ticker
+-- never accumulates outside-time at all - "restart the outside-distance
+-- timer only after the active interaction ends" - set by icon drag
+-- (BuildIcon above) and the Announcer/Mini Soundbook Size sliders
+-- (SB.ShowAnnouncerQuickOptions below).
+local proximityActiveInteraction = false
+
+SetMiniActiveInteraction = function(active)
+    proximityActiveInteraction = active and true or false
+    if proximityActiveInteraction then proximityOutsideElapsed = 0 end
+end
+
+local function AddMiniBounds(combined, frame)
+    if not frame or not frame.IsShown or not frame:IsShown() then return combined end
+    local l, r, t, b = frame:GetLeft(), frame:GetRight(), frame:GetTop(), frame:GetBottom()
+    if not (l and r and t and b) then return combined end
+    if not combined then
+        return { left = l, right = r, top = t, bottom = b }
+    end
+    combined.left = math.min(combined.left, l)
+    combined.right = math.max(combined.right, r)
+    combined.top = math.max(combined.top, t)
+    combined.bottom = math.min(combined.bottom, b)
+    return combined
+end
+
+-- Explicit requirement: "use its complete visible bounds plus relevant
+-- child dropdown/popup bounds... include the Mini Soundbook trigger/icon
+-- as part of the valid interaction area." The icon is always included
+-- (it's the shared trigger for both surfaces); favMenu/quickMenu are
+-- included only while actually shown; the Popout Direction dropdown's
+-- own floating list (a separate top-level frame, see
+-- SB.CloseAnnouncerQuickOptions above) is included only while open.
+local function GetCombinedMiniBounds()
+    local combined
+    combined = AddMiniBounds(combined, icon)
+    combined = AddMiniBounds(combined, favMenu)
+    combined = AddMiniBounds(combined, quickMenu)
+    if quickMenu and quickMenu.dirDropdown and quickMenu.dirDropdown:IsListOpen() then
+        combined = AddMiniBounds(combined, quickMenu.dirDropdown:GetListFrame())
+    end
+    return combined
+end
+
+local function IsCursorWithinMiniTolerance()
+    local bounds = GetCombinedMiniBounds()
+    if not bounds then return true end -- nothing to measure against - never force-close
+    local scale = UIParent:GetEffectiveScale()
+    if not scale or scale == 0 then scale = 1 end
+    local x, y = GetCursorPosition()
+    x, y = x / scale, y / scale
+    return x >= bounds.left - PROXIMITY_TOLERANCE and x <= bounds.right + PROXIMITY_TOLERANCE
+        and y >= bounds.bottom - PROXIMITY_TOLERANCE and y <= bounds.top + PROXIMITY_TOLERANCE
+end
+
+local function StopMiniProximityTicker()
+    if proximityTicker then proximityTicker:Cancel(); proximityTicker = nil end
+    proximityOutsideElapsed = 0
+end
+
+local function MiniProximityTick()
+    if proximityActiveInteraction then
+        proximityOutsideElapsed = 0
+        return
+    end
+    if IsCursorWithinMiniTolerance() then
+        proximityOutsideElapsed = 0
+        return
+    end
+    proximityOutsideElapsed = proximityOutsideElapsed + PROXIMITY_SAMPLE_INTERVAL
+    if proximityOutsideElapsed < PROXIMITY_CLOSE_DELAY then return end
+    proximityOutsideElapsed = 0
+    -- Explicit requirement: return each surface to its own normal closed
+    -- lifecycle - SB.CloseFavMenu/SB.CloseAnnouncerQuickOptions already
+    -- do exactly that (real Hide(), no setting/position/size/scale/lock
+    -- changes, dropdown list closed too).
+    if quickMenu and quickMenu:IsShown() then SB.CloseAnnouncerQuickOptions() end
+    if favMenu and favMenu:IsShown() then SB.CloseFavMenu() end
+    if not ((quickMenu and quickMenu:IsShown()) or (favMenu and favMenu:IsShown())) then
+        StopMiniProximityTicker()
+    end
+end
+
+local function StartMiniProximityTicker()
+    if proximityTicker then return end
+    proximityOutsideElapsed = 0
+    proximityTicker = C_Timer.NewTicker(PROXIMITY_SAMPLE_INTERVAL, MiniProximityTick)
+end
+
+-- Canonical "a transient surface just hid" signal - called from BOTH
+-- favMenu's and quickMenu's own OnHide scripts (not just from
+-- SB.CloseFavMenu/SB.CloseAnnouncerQuickOptions) so the ticker stops
+-- promptly no matter WHICH code path actually hid the frame (a row's own
+-- click-to-play, the outside-click catcher, Escape, proximity itself,
+-- ...) - Hide() always fires OnHide reliably, making it the one
+-- authoritative place to check this, rather than duplicating the same
+-- "is the other one still open" check at every individual call site.
+NoteMiniSurfaceHidden = function()
+    if not ((quickMenu and quickMenu:IsShown()) or (favMenu and favMenu:IsShown())) then
+        StopMiniProximityTicker()
+    end
+end
+
+-- Mini Soundbook activation mode (explicit requirement): the icon's own
+-- native OnEnter hook (BuildIcon above) - fires once per genuine
+-- transition into the icon's bounds, never on a poll. Gated by both the
+-- persisted setting AND Quick Options' own open state ("opening Quick
+-- Options must suppress automatic hover-opening... must not immediately
+-- reopen... requires a fresh valid hover entry after Quick Options
+-- closes" - satisfied for free here: nothing re-checks this while the
+-- cursor merely continues resting on the icon after Quick Options closes
+-- elsewhere, only a genuine new OnEnter does, and that only ever fires
+-- after a real OnLeave).
+HandleMiniIconHoverEnter = function()
+    if not (SB.db and SB.db.ui and SB.db.ui.announcer and SB.db.ui.announcer.openOnHover) then return end
+    if quickMenu and quickMenu:IsShown() then return end
+    if SB.ShowFavMenu then SB.ShowFavMenu(icon) end
+end
+
 -- Exposed on SB (not a plain local) - BuildIcon's OnClick handler above
 -- calls this by name before this point in the file is even reached at
 -- load time; only actually invoked later, on a real click, by which time
@@ -1403,6 +1571,7 @@ function SB.ShowFavMenu(anchor)
     SB.PositionRelativeToIcon(favMenu, anchor, SB.ResolvePopoutDirection(anchor))
     favMenu.catcher:Show()
     favMenu:Show()
+    StartMiniProximityTicker()
 end
 
 -- Mini Soundbook Size - independent of Announcer Size (SB:RefreshAnnouncerScale
@@ -1471,9 +1640,12 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         catcher:SetFrameLevel(quickMenu:GetFrameLevel() > 1 and quickMenu:GetFrameLevel() - 1 or 1)
         catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
         catcher:Hide()
-        catcher:SetScript("OnClick", function() quickMenu:Hide(); catcher:Hide() end)
+        catcher:SetScript("OnClick", function() SB.CloseAnnouncerQuickOptions() end)
         quickMenu.catcher = catcher
-        quickMenu:SetScript("OnHide", function() catcher:Hide() end)
+        quickMenu:SetScript("OnHide", function()
+            catcher:Hide()
+            if NoteMiniSurfaceHidden then NoteMiniSurfaceHidden() end
+        end)
 
         local rows = {}
         local function AddRow(label, onClick)
@@ -1590,6 +1762,12 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
+        -- Interaction priority (explicit requirement): "dragging Announcer
+        -- Size" must never be interrupted by proximity auto-close -
+        -- HookScript composes with the OnMouseUp handler just above
+        -- rather than replacing it.
+        sizeSlider:HookScript("OnMouseDown", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end end)
+        sizeSlider:HookScript("OnMouseUp", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end end)
         quickMenu.sizeSlider = sizeSlider
 
         -- Regression fix (explicit requirement): "Both Settings -> Mini
@@ -1613,6 +1791,11 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         end)
         miniSizeSlider:SetScript("OnMouseUp", function() SB:RefreshMiniSoundbookScale() end)
         miniSizeSlider:SetPoint("TOP", miniSizeLabel, "BOTTOM", -14, -8)
+        -- Interaction priority (explicit requirement): same as Announcer
+        -- Size above - "dragging Mini Soundbook Size" must never be
+        -- interrupted by proximity auto-close.
+        miniSizeSlider:HookScript("OnMouseDown", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end end)
+        miniSizeSlider:HookScript("OnMouseUp", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end end)
         quickMenu.miniSizeSlider = miniSizeSlider
 
         -- +24 for the new "Open Mini Soundbook on Hover" checkbox row.
@@ -1631,6 +1814,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     SB.PositionRelativeToIcon(quickMenu, anchor, SB.ResolvePopoutDirection(anchor))
     quickMenu.catcher:Show()
     quickMenu:Show()
+    StartMiniProximityTicker()
 end
 
 -- Explicit requirement (section 22): if Popout Direction changes while
