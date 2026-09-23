@@ -318,6 +318,25 @@ local function SanitizeDatabase(db, defaults)
         -- existing setup to something wrong" principle already applied
         -- elsewhere, just resolved toward the safer option here.
         ui.outputRail.selfOnly = (settings.defaultOutputTarget == "SELF")
+        -- Explicit requirement: a genuinely fresh install (no old
+        -- single-bucket data to migrate at all) defaults the Output Rail
+        -- to "All", and there must always be SOME selection - never
+        -- nothing. Deferred to a one-time flag rather than populated with
+        -- real recipient names here - guild/group/friends rosters are
+        -- frequently still empty this early at login (same reasoning as
+        -- the migration comment above), so guessing membership at
+        -- Sanitize time would be unreliable. UI.lua's roster-ready event
+        -- handler consumes this flag exactly once, calling the SAME
+        -- SB.SelectAllBroadcastTargets() a real "All" click uses, once
+        -- live roster/Send-enabled data actually exists - never a
+        -- separate ad-hoc selection path. An upgrading player migrating
+        -- real old data (oldMode ~= nil) deliberately does NOT get this -
+        -- their existing choice (including a deliberate SELF/local-only
+        -- start) is preserved untouched, same principle as the comment
+        -- above.
+        if not oldMode then
+            ui.outputRail.needsDefaultAll = true
+        end
     end
     ui.outputRail.mode = nil
     ui.outputRail.recipients = nil

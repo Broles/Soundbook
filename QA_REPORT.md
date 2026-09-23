@@ -1459,3 +1459,171 @@ hover-open feel instant, does the 60px tolerance genuinely feel natural
 moving between the trigger/Mini Soundbook/Quick Options/its dropdown,
 does 300ms read as deliberate rather than laggy or twitchy" pass needs
 one in-game check, same residual gap every round has disclosed.
+
+---
+
+## Round 13 - Settings layout root cause (3rd pass), Mini Soundbook Size live preview, Output Rail always-selected default
+
+### 1. Settings layout regression - true root cause (3rd report)
+
+The first two passes (Rounds 10-11) fixed the category strip's own
+anchor math - correctly, but incompletely. The bug reported a 3rd time
+was a **different mechanism neither pass touched**: `SB.BuildSettingsPanel`
+built its `panel` frame with `panel:SetAllPoints(contentFrame)` and
+`panel:SetClipsChildren(true)`. `SetClipsChildren` clips every
+descendant to the *clipping frame's own rectangle*, regardless of how
+that descendant is individually anchored - a child's `SetPoint` math can
+be completely correct and still render invisible if it sits outside its
+clipping ancestor's own bounds. `contentFrame` is the Library's content
+region, anchored well below the shared header; `tabRow` (the category
+strip) was anchored directly off `mainFrame.header`'s own bottom edge -
+correct in isolation, but that placed it *above* `panel`'s clip
+boundary, which was still pinned to `contentFrame`. The empty gap
+users kept reporting was this clipped region, not a wrong offset number.
+
+Fixed by giving `panel` its own independent anchors instead of
+`SetAllPoints(contentFrame)` - LEFT/RIGHT/BOTTOM from `contentFrame` (its
+horizontal region and bottom edge are still correct), but TOP from
+`mainFrame.header`'s own BOTTOM (with a defensive fallback to
+`contentFrame`'s TOP if the header isn't exposed yet) - so panel's own
+clip rectangle now starts exactly where the category strip is anchored,
+never clipping it away. One authoritative anchor chain: header -> (small
+gap, `HEADER_TO_TABS_GAP = 20`, within the required 18-22px range) ->
+category nav (fixed, never scrolls) -> (24px gap) -> the scroll frame,
+identical for all 5 categories since none of them position their own
+content independently - they all render inside the same shared
+`scrollChild`. `panel.scroll` exposed alongside the existing
+`panel.tabRow` purely for harness reachability.
+
+Verified structurally, not just smoke-tested, for the first time this
+round: `mock.lua`'s `SetPoint`/`SetAllPoints`/`ClearAllPoints` used to be
+complete no-ops that didn't even record their arguments, so no prior test
+could actually check an anchor chain - only whether building the UI
+errored. Enhanced (purely additively - nothing could have depended on
+the old no-op behaviour since nothing previously read it) to record every
+call via a new `f:GetPointByName(point)` accessor. `loader_settings.lua`'s
+new section 5 asserts: `panel` has no `ALL` point (`SetAllPoints` is
+really gone); `panel`'s TOP is really anchored to `mainFrame.header`, not
+`contentFrame`; `tabRow`'s TOP sits exactly 20px below the header; the
+scroll frame's TOPLEFT sits exactly 24px below `tabRow`; and the same
+holds identically across all 5 Settings categories via
+`SB:ShowSettingsSection(key)`.
+
+This resolves the clip-boundary bug precisely - it does not, and cannot,
+resolve real pixel geometry: the mock's `GetLeft`/`GetRight`/`GetTop`/
+`GetBottom` are still fixed stubs, not real anchor-resolved screen
+coordinates, so the exact 70-80px "Playback appears below the divider"
+target still needs a live-client visual check, same disclosed limitation
+as every prior round's attempt at this same bug.
+
+### 2. Mini Soundbook Size: live preview while dragging
+
+An explicit, narrow exception to Round 12's single-active-transient-
+surface rule, scoped only to dragging the Mini Soundbook Size slider
+inside Quick Options:
+
+- `SB.ShowFavMenu`'s own build+populate+position+show body was factored
+  out into a shared `DisplayFavMenu(anchor, directionOverride)` local -
+  `ShowFavMenu` itself still closes Quick Options first as before
+  (unchanged, single-active-surface rule intact everywhere else); the
+  new preview path calls `DisplayFavMenu` directly, bypassing that
+  mutual exclusion for this one case only.
+- `StartMiniSizePreview()` (wired to the slider's `OnMouseDown`): if the
+  Mini Soundbook isn't already shown, force-opens it via `DisplayFavMenu`
+  flanked on the *opposite* side from Quick Options (new
+  `OppositeDirection(dir)` helper) so the two surfaces never overlap each
+  other while both are visible, and marks that it was the one that forced
+  it open. Also engages the existing interaction-priority flag
+  (`SetMiniActiveInteraction`), same as every other slider in Quick
+  Options, so proximity auto-close can never interrupt the drag.
+- The slider's value-change callback now calls
+  `SB:RefreshMiniSoundbookScale()` on every change, not only on
+  `OnMouseUp` - the Mini Soundbook's actual on-screen size now updates
+  continuously while dragging, from 50% to 200%, the same persisted
+  `SB.db.ui.announcer.favScale` setting the slider always wrote to (no
+  separate preview-only value introduced).
+- `EndMiniSizePreview()` (wired to `OnMouseUp`): releases the interaction
+  flag, and closes the Mini Soundbook again via the existing
+  `SB.CloseFavMenu()` - but only if this preview was the one that forced
+  it open. If it was already legitimately open beforehand (not reachable
+  through the current UI today, since opening Quick Options always closes
+  it first - kept as a defensive guard matching the exact requirement
+  wording regardless), release leaves it exactly as it was.
+- The separate Announcer Size slider and its own preview-independence
+  guarantees (section 3, prior rounds) are untouched - opening Quick
+  Options alone still previews neither Announcer nor Mini Soundbook Size.
+
+Verified in a new section 5 of `loader_minisurfaces.lua`: drag-start
+force-opens the Mini Soundbook while Quick Options stays open and usable;
+dragging to 160% then 90% updates `favMenu:GetScale()` live at each step
+(not deferred to release); release closes the forced-open Mini Soundbook
+again while Quick Options remains open and the final value (0.9) persists
+through the existing `favScale` setting; and a Mini Soundbook already
+shown before a drag starts survives release untouched (the defensive
+branch above). `loader_popout.lua`'s pre-existing assertions that opening
+Quick Options alone, and changing Mini Soundbook Size, never touch the
+separate Announcer Preview banner state still pass unchanged.
+
+### 3. Output Rail: always-selected default ("All" on fresh install)
+
+Before this round, `Database.lua`'s `SanitizeDatabase` left a genuinely
+fresh install (no old single-bucket data to migrate) with `selfOnly =
+false` and every bucket's `selected` list empty - a real, reachable
+"nothing at all selected" state, not the required "All" default.
+
+Fixed with a one-time flag rather than populating real recipient names
+at Sanitize time - guild/group/friends rosters are frequently still
+empty this early at login (the same reasoning the existing migration
+comment already gives for not guessing membership during migration).
+`SanitizeDatabase` now sets `ui.outputRail.needsDefaultAll = true`, but
+only when there was no old single-bucket data to migrate from at all
+(`oldMode == nil`) - an upgrading player's real, possibly-deliberate
+existing choice (including a legitimate SELF/local-only start) is never
+touched. `UI.lua`'s existing roster-ready event handler (already listens
+for `GROUP_ROSTER_UPDATE`/`PLAYER_ENTERING_WORLD`/`GUILD_ROSTER_UPDATE`/
+`FRIENDLIST_UPDATE`/`IGNORELIST_UPDATE`) now consumes this flag exactly
+once, on whichever of those fires first after login, by calling the
+*same* `SB.SelectAllBroadcastTargets()` a real "All" click performs -
+never a separate ad-hoc selection path. Once consumed the flag is
+cleared and never re-applied, so a player who deliberately changes their
+pick afterward (including to Self Only) is never overridden again.
+
+This does not change how selection already persists across `/reload` or
+a full game restart - that was already ordinary SavedVariables
+persistence, unaffected by this bug; the only real gap was the fresh-
+install starting state.
+
+Verified in two new sections of `loader_outputselector.lua`: a fresh
+`SB:PrepareDatabase({})` is flagged; a new
+`SB.__EmitRosterEvent()` (test/harness-only, since the mock WoW API's
+`RegisterEvent` is a no-op and never dispatches a real event) drives the
+production handler directly and confirms the flag is consumed exactly
+once, `SB.IsAllBroadcastFullySelected()` reads true afterward, and a
+later deliberate Self Only pick survives a subsequent roster event
+untouched; a simulated *upgrading* player with an already-migrated,
+empty Output Rail is confirmed to never receive the flag at all.
+
+### Verification
+
+All 13 mock regression scripts still pass, now with real structural
+anchor-chain assertions for the Settings layout fix, a new live-preview
+section in `loader_minisurfaces.lua`, and two new sections in
+`loader_outputselector.lua` for the default-selection fix - no existing
+assertion needed to change.
+
+### Still gated on a live client
+
+The Settings layout fix resolves the actual clipping bug, not real pixel
+geometry - the mock harness still has no real anchor-chain math or
+screen coordinates, so the specific "~70-80px below the divider" visual
+target needs a live-client check, same disclosed limitation as prior
+rounds. The Output Rail default-All fix is deliberately deferred to the
+first roster-ready event after login rather than applied at Sanitize
+time, since guild/friends/group rosters are frequently still empty at
+that exact moment - if none of the five roster events happens to fire
+before the player looks at the Output Rail for the very first time
+after a truly fresh install, the tabs will briefly show "All" selected
+with zero actual recipients until one does (the same "explicitly
+selected, zero eligible" state already accepted elsewhere in this
+addon for a legitimately empty guild) - worth a live-client sanity check
+on a genuinely brand-new character/account, not just the existing SavedVariables-reset simulation this environment can run.

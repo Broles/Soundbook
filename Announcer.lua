@@ -1556,6 +1556,31 @@ function SB.CloseFavMenu()
     if favMenu then favMenu:Hide() end
 end
 
+local function OppositeDirection(dir)
+    if dir == "LEFT" then return "RIGHT"
+    elseif dir == "RIGHT" then return "LEFT"
+    elseif dir == "UP" then return "DOWN"
+    elseif dir == "DOWN" then return "UP"
+    end
+    return "RIGHT"
+end
+
+-- Shared build+populate+position+show logic, factored out of ShowFavMenu so
+-- the Mini Soundbook Size live-preview path (below) can reuse it WITHOUT
+-- going through ShowFavMenu's own Quick-Options-closing side effect - the
+-- preview is an explicit, narrow exception to the single-active-surface
+-- rule, scoped only to the slider-drag interaction.
+local function DisplayFavMenu(anchor, directionOverride)
+    BuildFavMenu()
+    SB:RefreshMiniSoundbookScale()
+    PopulateFavMenu()
+    favMenu.__anchor = anchor
+    local direction = directionOverride or SB.ResolvePopoutDirection(anchor)
+    SB.PositionRelativeToIcon(favMenu, anchor, direction)
+    favMenu.catcher:Show()
+    favMenu:Show()
+end
+
 function SB.ShowFavMenu(anchor)
     -- Single-active-transient-surface rule (explicit requirement): Quick
     -- Options never coexists with the expanded Mini Soundbook - closed
@@ -1564,14 +1589,36 @@ function SB.ShowFavMenu(anchor)
     -- deliberately left alone here - it's opened FROM a favMenu row and
     -- is meant to coexist with it.
     if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
-    BuildFavMenu()
-    SB:RefreshMiniSoundbookScale()
-    PopulateFavMenu()
-    favMenu.__anchor = anchor
-    SB.PositionRelativeToIcon(favMenu, anchor, SB.ResolvePopoutDirection(anchor))
-    favMenu.catcher:Show()
-    favMenu:Show()
+    DisplayFavMenu(anchor)
     StartMiniProximityTicker()
+end
+
+-- Mini Soundbook Size live preview (explicit, narrow exception to the
+-- single-active-transient-surface rule, scoped ONLY to dragging this one
+-- slider): while the user drags, the Mini Soundbook must be visible and
+-- reflect the size continuously, coexisting with Quick Options rather than
+-- closing it. If the Mini Soundbook was already legitimately open, it is
+-- left exactly as-is and untouched on release. If it had to be force-opened
+-- for the preview, it is closed again on release via the SAME CloseFavMenu
+-- lifecycle everything else uses.
+local miniSizePreviewForcedOpen = false
+
+local function StartMiniSizePreview()
+    if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end
+    if not (favMenu and favMenu:IsShown()) then
+        miniSizePreviewForcedOpen = true
+        local dir = OppositeDirection(SB.ResolvePopoutDirection(icon))
+        DisplayFavMenu(icon, dir)
+        StartMiniProximityTicker()
+    end
+end
+
+local function EndMiniSizePreview()
+    if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end
+    if miniSizePreviewForcedOpen then
+        miniSizePreviewForcedOpen = false
+        SB.CloseFavMenu()
+    end
 end
 
 -- Mini Soundbook Size - independent of Announcer Size (SB:RefreshAnnouncerScale
@@ -1788,14 +1835,21 @@ function SB.ShowAnnouncerQuickOptions(anchor)
 
         local miniSizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
             SB.db.ui.announcer.favScale = value / 100
+            -- Live preview (explicit requirement): apply continuously while
+            -- dragging, not only on release.
+            SB:RefreshMiniSoundbookScale()
         end)
         miniSizeSlider:SetScript("OnMouseUp", function() SB:RefreshMiniSoundbookScale() end)
         miniSizeSlider:SetPoint("TOP", miniSizeLabel, "BOTTOM", -14, -8)
-        -- Interaction priority (explicit requirement): same as Announcer
-        -- Size above - "dragging Mini Soundbook Size" must never be
-        -- interrupted by proximity auto-close.
-        miniSizeSlider:HookScript("OnMouseDown", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end end)
-        miniSizeSlider:HookScript("OnMouseUp", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end end)
+        -- Interaction priority AND live-preview forced-open/close (explicit
+        -- requirement): dragging this slider must never be interrupted by
+        -- proximity auto-close, must force the Mini Soundbook visible if it
+        -- isn't already, and must return it to its prior state on release -
+        -- all via the existing StartMiniSizePreview/EndMiniSizePreview
+        -- lifecycle above (a narrow, explicit exception to the single-
+        -- active-surface rule, scoped only to this slider).
+        miniSizeSlider:HookScript("OnMouseDown", function() StartMiniSizePreview() end)
+        miniSizeSlider:HookScript("OnMouseUp", function() EndMiniSizePreview() end)
         quickMenu.miniSizeSlider = miniSizeSlider
 
         -- +24 for the new "Open Mini Soundbook on Hover" checkbox row.

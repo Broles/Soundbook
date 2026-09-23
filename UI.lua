@@ -3390,9 +3390,31 @@ rosterEventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
 rosterEventFrame:RegisterEvent("FRIENDLIST_UPDATE")
 rosterEventFrame:RegisterEvent("IGNORELIST_UPDATE")
 rosterEventFrame:SetScript("OnEvent", function()
+    -- Explicit requirement: a fresh install defaults the Output Rail to
+    -- "All" and must never have nothing selected. Database.lua's
+    -- SanitizeDatabase sets this one-time flag only for a genuinely fresh
+    -- install (never for an upgrading player's real, possibly-deliberate
+    -- choice); consumed exactly once, on whichever of this frame's events
+    -- fires first after login - by that point at least Send-enabled state
+    -- is always valid, even if a given roster is itself still empty (the
+    -- same "explicitly selected, zero eligible" state already treated as
+    -- legitimate everywhere else - see SetBroadcastBucketAllSelected).
+    -- Reuses the exact same SB.SelectAllBroadcastTargets() a real "All"
+    -- click performs, never a separate ad-hoc selection path.
+    local rail = SB.db and SB.db.ui and SB.db.ui.outputRail
+    if rail and rail.needsDefaultAll then
+        rail.needsDefaultAll = nil
+        SB.SelectAllBroadcastTargets()
+    end
     SB:RefreshAdminTabVisibility()
     RefreshBroadcastTabs()
 end)
+
+-- Exposed for test/harness reachability only (the mock WoW API's
+-- RegisterEvent is a no-op, so this frame's OnEvent never fires from a
+-- real event dispatch in the mock harness) - not read by any production
+-- code path.
+SB.__EmitRosterEvent = function() rosterEventFrame:GetScript("OnEvent")() end
 
 -- Same reasoning as the roster events above - a newly-discovered
 -- Soundbook presence (Communication.lua's SB:NoteKnownUser) can turn a
