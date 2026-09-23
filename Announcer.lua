@@ -1086,10 +1086,14 @@ local function GetFavMenuHeaderText()
     local phrase, secondary, isLocal = DescribeEffectiveTargetPhrase()
     local overridesPresent = AnyVisibleFavouriteHasOverride()
     local primary
+    -- Explicit requirement: "Play sound locally"/"Play locally" reads as
+    -- technical jargon - "Play for Yourself" says the same thing (only
+    -- you hear it) in plain language, used consistently everywhere this
+    -- Mini Soundbook state is presented.
     if overridesPresent then
-        primary = isLocal and "Default destination: Play sound locally" or ("Default destination: " .. phrase)
+        primary = isLocal and "Default destination: Play for Yourself" or ("Default destination: " .. phrase)
     else
-        primary = isLocal and "Play sound locally:" or ("Send sound to " .. phrase .. ":")
+        primary = isLocal and "Play for Yourself:" or ("Send sound to " .. phrase .. ":")
     end
     return primary, secondary
 end
@@ -1107,7 +1111,15 @@ local FAV_MENU_ROW_H = 24
 -- the Library's window width - explicit request: "zwei bzw drei Spaltig,
 -- je nach dem wie groß die size eingestellt ist beim announcer". 1.15 is
 -- simply the midpoint of that slider's range.
-local FAV_COL_W = { [2] = 150, [3] = 118 }
+-- Widened 10% (explicit requirement: "increase its usable width by 10%
+-- relative to the current build... give the sound-name text the
+-- additional width... existing names that fit within the enlarged
+-- control must no longer be unnecessarily truncated") - width only, not
+-- font size; row height (FAV_MENU_ROW_H) and every interaction below are
+-- unchanged. GetOrCreateFavMenuRow's own name text already derives its
+-- available width from this column width (colW - icon - gaps), so
+-- widening it here is the one change that actually grows the text.
+local FAV_COL_W = { [2] = 165, [3] = 130 }
 -- `count` (optional - the number of Favourites about to be laid out) adds
 -- an adaptive safety net on top of the scale-based choice above (3.0 QA
 -- round, section 4): now that the popup never scrolls and always shows

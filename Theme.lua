@@ -55,7 +55,10 @@ Theme.LAYOUT = {
     GAP_L        = 16, -- section-to-section gap
     GAP_XL       = 24, -- major block-to-block gap
     CONTROL_H    = 24, -- standard control height (buttons, inputs, tabs)
-    HEADER_H     = 32, -- primary title row height (Main's title row / Settings & Keybindings context header)
+    -- Targeted correction round: the shared major-window header height
+    -- (Theme.CreateHeader's own default), used by Main/Settings/
+    -- Keybindings alike - explicit target ~60px.
+    HEADER_H     = 60,
     ICON_BTN     = 24, -- header utility icon size (Close/Lock/Quick Audio)
     TAB_H        = 24, -- Settings-style navigation tab height
 }
@@ -225,7 +228,7 @@ function Theme.CreateHeader(parent, title, height)
     local header = CreateFrame("Frame", nil, parent)
     header:SetPoint("TOPLEFT", 9, -9)
     header:SetPoint("TOPRIGHT", -9, -9)
-    header:SetHeight(height or 58)
+    header:SetHeight(height or 60)
 
     local bg = header:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
@@ -292,14 +295,24 @@ end
 -- 4-state control, unlike Theme.CreateFlatButton (only idle/hover/
 -- disabled - no distinct "active" look of its own), so a hovered INACTIVE
 -- tab can never be visually confused with the genuinely active one.
--- `btn:SetActive(bool)` toggles the persistent state; hover/leave still
--- layers its own lighter tint on top of whichever base (idle or active)
--- is currently set, the same idle/hover/pressed layering
--- CreateMiniControlButton already uses elsewhere in this file.
-function Theme.CreateTabButton(parent, text, width, height)
+-- `btn:SetActive(bool)` toggles the persistent state.
+--
+-- Targeted correction round: no filled tile any more (explicit
+-- requirement - "do not use large filled selected tabs; give each
+-- category its own active underline color") - `accentColor` (optional,
+-- defaults to GOLD) is THIS tab's own identifying colour, used only for
+-- its underline/hover tint, never a background fill, and never applied
+-- to anything outside this one tab ("this color identifies the selected
+-- category only - do not recolor the complete Settings content"). Active
+-- = primary text + a 2px underline in accentColor, sized to the label's
+-- own rendered width + 12px (recomputed on SetText, so a relabel never
+-- leaves a stale-width underline). Hover (inactive only) = the same
+-- accentColor at reduced intensity on the text alone. Inactive = dim
+-- text, nothing else.
+function Theme.CreateTabButton(parent, text, width, height, accentColor)
+    accentColor = accentColor or Theme.GOLD
     local btn = SB.CreateFrame("Button", nil, parent)
     btn:SetSize(width or 90, height or Theme.LAYOUT.TAB_H)
-    btn:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
 
     local label = btn:CreateFontString(nil, "OVERLAY")
     label:SetFontObject(SB.Fonts.HighlightSmall)
@@ -308,36 +321,36 @@ function Theme.CreateTabButton(parent, text, width, height)
     btn.label = label
 
     local mark = btn:CreateTexture(nil, "OVERLAY")
-    mark:SetPoint("BOTTOMLEFT", 2, 0)
-    mark:SetPoint("BOTTOMRIGHT", -2, 0)
     mark:SetHeight(2)
     mark:SetTexture(WHITE)
-    mark:SetVertexColor(unpack(Theme.GOLD))
+    mark:SetVertexColor(accentColor[1], accentColor[2], accentColor[3], 1)
     mark:Hide()
     btn.selectedMark = mark
+
+    local function LayoutMark()
+        local w = math.min(btn:GetWidth() or 90, (label:GetStringWidth() or 0) + 12)
+        mark:ClearAllPoints()
+        mark:SetWidth(math.max(1, w))
+        mark:SetPoint("BOTTOM", label, "BOTTOM", 0, -4)
+    end
 
     local active, hovering = false, false
     local function Apply()
         if not btn:IsEnabled() then
-            btn:SetBackdropColor(0.018, 0.035, 0.060, 0.55)
-            btn:SetBackdropBorderColor(0, 0, 0, 0)
             label:SetTextColor(0.42, 0.46, 0.53)
             mark:Hide()
             return
         end
         if active then
-            btn:SetBackdropColor(Theme.GOLD[1] * 0.22, Theme.GOLD[2] * 0.22, Theme.GOLD[3] * 0.22, hovering and 0.98 or 0.88)
-            btn:SetBackdropBorderColor(0, 0, 0, 0)
             label:SetTextColor(unpack(Theme.TEXT))
+            LayoutMark()
             mark:Show()
         elseif hovering then
-            btn:SetBackdropColor(0.04, 0.11, 0.22, 0.80)
-            btn:SetBackdropBorderColor(0, 0, 0, 0)
-            label:SetTextColor(0.80, 0.88, 1.0)
+            label:SetTextColor(accentColor[1] * 0.55 + Theme.TEXT_DIM[1] * 0.45,
+                accentColor[2] * 0.55 + Theme.TEXT_DIM[2] * 0.45,
+                accentColor[3] * 0.55 + Theme.TEXT_DIM[3] * 0.45)
             mark:Hide()
         else
-            btn:SetBackdropColor(0, 0, 0, 0)
-            btn:SetBackdropBorderColor(0, 0, 0, 0)
             label:SetTextColor(unpack(Theme.TEXT_DIM))
             mark:Hide()
         end
@@ -351,10 +364,17 @@ function Theme.CreateTabButton(parent, text, width, height)
         return active
     end
 
+    local origSetText = label.SetText
+    label.SetText = function(self, ...)
+        origSetText(self, ...)
+        if active then LayoutMark() end
+    end
+
     btn:SetScript("OnEnter", function() hovering = true; Apply() end)
     btn:SetScript("OnLeave", function() hovering = false; Apply() end)
     btn:HookScript("OnEnable", Apply)
     btn:HookScript("OnDisable", Apply)
+    btn:SetScript("OnSizeChanged", function() if active then LayoutMark() end end)
     Apply()
 
     return btn
@@ -746,17 +766,19 @@ function Theme.CreateMiniControlButton(parent, size)
     -- Soundbook 2.0 visual pass: idle has NO box/border at all now - just
     -- the bare icon glyph, so the header reads as icons floating on the
     -- panel rather than a row of buttons - explicit request. Hover reads
-    -- as a soft gold-edged glow rather than a solid saturated fill
-    -- (explicit request: "keine große gefüllte Farbfläche"), and pressed
-    -- uses gold (not the blurple ACCENT, which reads as violet against
-    -- this dark navy - explicit request to remove that tone).
+    -- as a soft Arcane Cyan-edged glow (targeted correction round: "gold
+    -- for active/important states, Arcane Blue/Cyan for hover
+    -- interaction" - hover previously used gold too, indistinguishable
+    -- from a pressed/active state), and pressed keeps gold (not the
+    -- blurple ACCENT, which reads as violet against this dark navy -
+    -- explicit request to remove that tone).
     local function Idle()
         btn:SetBackdropColor(0, 0, 0, 0)
         btn:SetBackdropBorderColor(0, 0, 0, 0)
     end
     local function Hover()
-        btn:SetBackdropColor(0.04, 0.12, 0.24, 0.80)
-        btn:SetBackdropBorderColor(unpack(Theme.GOLD))
+        btn:SetBackdropColor(0.04, 0.14, 0.24, 0.80)
+        btn:SetBackdropBorderColor(unpack(Theme.ARCANE_HOVER))
     end
     local function Pressed()
         btn:SetBackdropColor(Theme.GOLD[1] * 0.32, Theme.GOLD[2] * 0.32, Theme.GOLD[3] * 0.32, 0.9)
@@ -844,6 +866,28 @@ function Theme.CreateMuteGlyph(parent, size)
         end
     end
     btn:SetMuted(false)
+    return btn
+end
+
+-- Quick Audio (Main window header) - reuses the EXACT same speaker-with-
+-- slash artwork CreateMuteGlyph draws (Assets/ControlIcons.tga's second
+-- quadrant is literally a speaker glyph, not a generic square), but with a
+-- single static tint rather than the red/green toggle state, since Quick
+-- Audio opens a menu - it isn't itself a mute toggle. Explicit requirement:
+-- "should visually read as a speaker/audio control... do NOT use WoW item/
+-- spell/inventory artwork for Quick Audio... prefer the existing Soundbook
+-- control-icon system/asset where possible" - this is that asset, not a
+-- new one.
+function Theme.CreateAudioGlyph(parent, size)
+    size = size or 16
+    local btn = Theme.CreateMiniControlButton(parent, size)
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetPoint("TOPLEFT", 2, -2)
+    icon:SetPoint("BOTTOMRIGHT", -2, 2)
+    icon:SetTexture(CONTROL_ICONS)
+    icon:SetTexCoord(0.25, 0.50, 0, 1)
+    icon:SetVertexColor(0.58, 0.78, 1.0, 0.92)
+    btn.icon = icon
     return btn
 end
 

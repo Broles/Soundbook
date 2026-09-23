@@ -73,12 +73,20 @@ local sectionBottomAnchor = {}
 local sectionTabButtons = {}
 local currentSectionKey
 
+-- Targeted correction round: single-word tab labels (explicit requirement -
+-- the old labels were too long for a compact tab strip). `color` is each
+-- category's own active-state accent (its underline colour, section-
+-- specific per requirement, not a single shared active colour) - existing
+-- palette tokens only: Arcane Cyan, the Guild-channel green, GOLD, a
+-- Friends-style blue, and the Raid/Party orange. Underlying content/key
+-- assignments are completely unchanged - this only touches the label text
+-- and adds the colour used by BuildTabStrip below.
 local SECTION_ORDER = {
-    { key = "playback", label = "Sound & Playback" },
-    { key = "sharing", label = "Sharing & Receiving" },
-    { key = "mini", label = "Mini Soundbook" },
-    { key = "library", label = "Library & Appearance" },
-    { key = "advanced", label = "Advanced" },
+    { key = "playback", label = "Sound",    color = SB.Theme.V3.ARCANE_CYAN },
+    { key = "sharing",  label = "Sharing",  color = { SB.CHANNEL_COLOR.GUILD.r, SB.CHANNEL_COLOR.GUILD.g, SB.CHANNEL_COLOR.GUILD.b } },
+    { key = "mini",     label = "Mini",     color = SB.Theme.GOLD },
+    { key = "library",  label = "Library",  color = { SB.CHANNEL_COLOR.FRIENDS.r, SB.CHANNEL_COLOR.FRIENDS.g, SB.CHANNEL_COLOR.FRIENDS.b } },
+    { key = "advanced", label = "Advanced", color = { SB.CHANNEL_COLOR.RAID.r, SB.CHANNEL_COLOR.RAID.g, SB.CHANNEL_COLOR.RAID.b } },
 }
 
 local CHECKBOX_HELP = {
@@ -224,10 +232,14 @@ local MATRIX_HEADER_H, MATRIX_ROW_H, MATRIX_TILE_SIZE = 20, 26, 18
 -- Main-window Default Output selector, which stays a separate, frequently
 -- -changed runtime choice living outside Settings entirely.
 local function BuildChannelMatrix(parent, anchorTo)
-    local header = parent:CreateFontString(nil, "OVERLAY")
-    header:SetFontObject(SB.Fonts.HighlightSmall)
-    header:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -4)
-    header:SetText("Channels - Send / Receive")
+    -- Targeted correction round (explicit requirement): "Channels" now
+    -- uses the SAME section-heading component/hierarchy as "Notifications"
+    -- below it (Theme.CreateSectionHeader - Normal font, gold text, gold
+    -- divider line) instead of a plain small HighlightSmall label that
+    -- read as weak/secondary next to it.
+    local header = SB.Theme.CreateSectionHeader(parent, "Channels")
+    header:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -16)
+    header:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 
     local subHint = parent:CreateFontString(nil, "OVERLAY")
     subHint:SetFontObject(SB.Fonts.DisableSmall)
@@ -349,19 +361,26 @@ end
 -- reached from the Mini Soundbook's own Quick Options menu, alongside its
 -- existing indefinite Mute Incoming toggle - see Announcer.lua). This is
 -- a READ-ONLY compact status - shown only while a mute is actually
--- active, with a single Resume Receiving action to end it early. A fixed-
--- height container (whether or not anything's currently displayed inside
--- it) so nothing below it needs to reflow when the mute state changes
--- while this tab happens to be open.
+-- active, with a single Resume Receiving action to end it early.
+--
+-- UI/UX polish pass (explicit requirement: "do not reserve blank space
+-- for content that does not exist") - height is no longer a fixed 54px
+-- reserved regardless of whether a mute is active; RefreshChannelMatrix
+-- below now collapses it to ~0 when nothing is shown, and Notifications
+-- (anchored to this container's BOTTOM) reflows immediately below it via
+-- WoW's own live anchor resolution the instant the height changes -
+-- nothing here needs its own reflow logic beyond setting the height.
+local receiveMuteContainer
+
 local function BuildReceiveMuteInfo(parent, anchorTo)
     local container = CreateFrame("Frame", nil, parent)
-    container:SetHeight(54)
-    container:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -10)
+    container:SetHeight(1)
+    container:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, 0)
     container:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
 
     local info = container:CreateFontString(nil, "OVERLAY")
     info:SetFontObject(SB.Fonts.HighlightSmall)
-    info:SetPoint("TOPLEFT", 0, 0)
+    info:SetPoint("TOPLEFT", 0, -8)
     info:SetPoint("RIGHT", 0, 0)
     info:SetJustifyH("LEFT")
     info:SetTextColor(1, 0.55, 0.35)
@@ -373,6 +392,7 @@ local function BuildReceiveMuteInfo(parent, anchorTo)
     resumeBtn:Hide()
 
     receiveMuteInfoText, receiveMuteResumeBtn = info, resumeBtn
+    receiveMuteContainer = container
     return container
 end
 
@@ -393,6 +413,15 @@ function SB:RefreshChannelMatrix()
     local muted = SB:IsReceiveMuted()
     receiveMuteInfoText:SetShown(muted)
     receiveMuteResumeBtn:SetShown(muted)
+    -- Collapses to ~0 when nothing is shown (see BuildReceiveMuteInfo's
+    -- own comment) instead of always reserving room for it; Notifications
+    -- reflows immediately below via the live anchor chain, and
+    -- FitSettingsPanelHeight is re-run so the Sharing tab's own
+    -- scrollable height (and scrollbar) catch up to the new content
+    -- height right away, not just on the next tab switch.
+    if receiveMuteContainer then
+        receiveMuteContainer:SetHeight(muted and 54 or 1)
+    end
     if muted then
         local remaining = SB:GetReceiveMuteRemaining()
         if remaining then
@@ -402,6 +431,7 @@ function SB:RefreshChannelMatrix()
             receiveMuteInfoText:SetText("Incoming sounds muted indefinitely")
         end
     end
+    if SB.FitSettingsPanelHeight and panel:IsShown() then SB:FitSettingsPanelHeight() end
 end
 
 SB:On("RECEIVE_MUTE_CHANGED", function()
@@ -548,7 +578,17 @@ local function BuildSharingSection(content, topAnchor)
     local channelMatrix = BuildChannelMatrix(content, topAnchor)
     local muteInfo = BuildReceiveMuteInfo(content, channelMatrix)
 
-    local notifyHeader = Section(content, "Chat Notifications", muteInfo, -8)
+    -- Targeted correction round (explicit requirement): renamed from
+    -- "Chat Notifications" to "Notifications", same section-heading
+    -- hierarchy as "Channels" above. The -24 gap here (was -8, chained
+    -- after a mute-info container that used to always reserve 54px
+    -- whether or not a mute was active) is now the ONLY gap between them -
+    -- muteInfo's own height collapses to ~0 when nothing is displayed in
+    -- it (BuildReceiveMuteInfo/RefreshChannelMatrix below), so this reads
+    -- as "immediately after Channels" instead of leaving a large empty
+    -- region, while still measuring out to the requested ~24px target
+    -- once a mute IS active and muteInfo has real content again.
+    local notifyHeader = Section(content, "Notifications", muteInfo, -24)
     local notifyMutedCheck = Checkbox(content, "Show received sound details", notifyHeader, 0, -8, function(checked)
         SB.db.settings.notifyOnMuted = checked
     end)
@@ -744,6 +784,16 @@ end
 -- Section 5: Advanced
 ------------------------------------------------------------------------
 
+-- Targeted correction round (explicit requirement): "Replay Introduction"
+-- and "Latest Sound Updates" moved here from the old persistent footer,
+-- joining the existing "Run Diagnostics" button as one primary action
+-- area - three buttons, one per row, 8px vertical gap, each the full
+-- available Advanced content width (CONTENT_W - 20, the same column
+-- every other full-width Settings control already uses - never the old
+-- footer's cramped half-width pairing) rather than a fixed narrow width.
+-- Each button's own action is carried over completely unchanged.
+local ACTION_BTN_GAP = 8
+
 local function BuildAdvancedSection(content, topAnchor)
     local diagHeader = Section(content, "Diagnostics", topAnchor, -4)
     local debugCheck = Checkbox(content, "Debug Mode", diagHeader, 0, -8, function(checked)
@@ -751,18 +801,41 @@ local function BuildAdvancedSection(content, topAnchor)
     end)
     debugCheck:SetChecked(SB.db.settings.debug)
 
+    local actionsHeader = Section(content, "Actions", debugCheck, -16)
+
     local diagnosticsBtn = SB.Theme.CreateFlatButton(content, "Run Diagnostics", CONTENT_W - 20, 22)
-    diagnosticsBtn:SetPoint("TOPLEFT", debugCheck, "BOTTOMLEFT", 0, -10)
+    diagnosticsBtn:SetPoint("TOPLEFT", actionsHeader, "BOTTOMLEFT", 0, -8)
     diagnosticsBtn:SetScript("OnClick", function()
         SlashCmdList["SOUNDBOOK"]("doctor")
     end)
     Help(diagnosticsBtn, "Run Diagnostics", "Check Soundbook and print a short health report in chat.")
 
-    return diagnosticsBtn
+    local introBtn = SB.Theme.CreateSecondaryButton(content, "Replay Introduction", CONTENT_W - 20, 22)
+    introBtn:SetPoint("TOPLEFT", diagnosticsBtn, "BOTTOMLEFT", 0, -ACTION_BTN_GAP)
+    introBtn:SetScript("OnClick", function()
+        SB.db.settings.introSeen = false
+        if SB.ShowIntro then SB:ShowIntro() end
+    end)
+    Help(introBtn, "Replay Introduction", "Show the first-run Soundbook introduction again.")
+
+    local updatesBtn = SB.Theme.CreateSecondaryButton(content, "Latest Sound Updates", CONTENT_W - 20, 22)
+    updatesBtn:SetPoint("TOPLEFT", introBtn, "BOTTOMLEFT", 0, -ACTION_BTN_GAP)
+    updatesBtn:SetScript("OnClick", function()
+        if SB.ShowNewSoundsWindow then SB:ShowNewSoundsWindow() end
+    end)
+    Help(updatesBtn, "Latest Sound Updates", "See which sounds were added recently and try them out.")
+
+    local versionText = content:CreateFontString(nil, "OVERLAY")
+    versionText:SetFontObject(SB.Fonts.DisableSmall)
+    versionText:SetPoint("TOPLEFT", updatesBtn, "BOTTOMLEFT", 0, -10)
+    versionText:SetText("Soundbook v" .. tostring(SB.VERSION or "?"))
+    versionText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    return versionText
 end
 
 ------------------------------------------------------------------------
--- Tab strip + persistent Help & Information footer
+-- Tab strip
 ------------------------------------------------------------------------
 
 -- UI/UX polish pass (explicit requirement, section 7: "Tabs should use a
@@ -773,9 +846,19 @@ end
 -- underline bolted on: the previous "active" look WAS the same hover fill
 -- CreateFlatButton already used for a transient mouse-over, so hovering a
 -- DIFFERENT, inactive tab rendered identically to the real active one.
+-- Targeted correction round: "all five tabs share the available inner
+-- width evenly... 8px target gap between tab regions... consistent
+-- height, target ~28px... no clipping at minimum Main-window width."
+-- Each region's width is recomputed from the row's own live width (single
+-- explicit-width-per-region layout, no fixed pixel guesses that could
+-- clip at 560px), so five single-word labels always fit with equal
+-- spacing regardless of window size.
+local TAB_STRIP_H = 28
+local TAB_STRIP_GAP = 8
+
 local function BuildTabStrip(parent)
     local tabRow = CreateFrame("Frame", nil, parent)
-    tabRow:SetHeight(SB.Theme.LAYOUT.TAB_H)
+    tabRow:SetHeight(TAB_STRIP_H)
 
     local function ApplySelection()
         for key, btn in pairs(sectionTabButtons) do
@@ -783,72 +866,31 @@ local function BuildTabStrip(parent)
         end
     end
 
-    local prevTab
+    local buttons = {}
     for _, entry in ipairs(SECTION_ORDER) do
-        local btn = SB.Theme.CreateTabButton(tabRow, entry.label, 60, SB.Theme.LAYOUT.TAB_H)
-        local neededWidth = math.ceil(btn.label:GetStringWidth() or 60) + 18
-        btn:SetWidth(neededWidth)
-        if prevTab then
-            btn:SetPoint("LEFT", prevTab, "RIGHT", SB.Theme.LAYOUT.GAP_S, 0)
-        else
-            btn:SetPoint("LEFT", 0, 0)
-        end
+        local btn = SB.Theme.CreateTabButton(tabRow, entry.label, 90, TAB_STRIP_H, entry.color)
         btn:SetScript("OnClick", function()
             SB:ShowSettingsSection(entry.key)
         end)
         sectionTabButtons[entry.key] = btn
-        prevTab = btn
+        table.insert(buttons, btn)
     end
+
+    local function LayoutTabs()
+        local n = #buttons
+        local totalW = tabRow:GetWidth() or (90 * n + TAB_STRIP_GAP * (n - 1))
+        local regionW = math.max(1, (totalW - TAB_STRIP_GAP * (n - 1)) / n)
+        for i, btn in ipairs(buttons) do
+            btn:SetWidth(regionW)
+            btn:ClearAllPoints()
+            btn:SetPoint("TOPLEFT", tabRow, "TOPLEFT", (i - 1) * (regionW + TAB_STRIP_GAP), 0)
+        end
+    end
+    tabRow:SetScript("OnSizeChanged", LayoutTabs)
+    LayoutTabs()
 
     tabRow.ApplySelection = ApplySelection
     return tabRow
-end
-
--- Persistent utility area (explicit requirement) - NOT a sixth section,
--- always visible regardless of which of the five sections is active.
--- Replay Introduction and Latest Sound Updates are informational/
--- navigation, not configuration, so they live here rather than inside
--- Advanced or any other section.
-local function BuildHelpFooter(parent)
-    local footer = CreateFrame("Frame", nil, parent)
-    footer:SetHeight(60)
-
-    local divider = footer:CreateTexture(nil, "ARTWORK")
-    divider:SetPoint("TOPLEFT", 0, 0)
-    divider:SetPoint("TOPRIGHT", 0, 0)
-    divider:SetHeight(1)
-    divider:SetColorTexture(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.5)
-
-    local label = footer:CreateFontString(nil, "OVERLAY")
-    label:SetFontObject(SB.Fonts.DisableSmall)
-    label:SetPoint("TOPLEFT", 0, -6)
-    label:SetText("Help & Information")
-    label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-
-    local gap = 8
-    local btnW = (CONTENT_W - 20 - gap) / 2
-    local introBtn = SB.Theme.CreateSecondaryButton(footer, "Replay Introduction", btnW, 22)
-    introBtn:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -6)
-    introBtn:SetScript("OnClick", function()
-        SB.db.settings.introSeen = false
-        if SB.ShowIntro then SB:ShowIntro() end
-    end)
-    Help(introBtn, "Replay Introduction", "Show the first-run Soundbook introduction again.")
-
-    local updatesBtn = SB.Theme.CreateSecondaryButton(footer, "Latest Sound Updates", btnW, 22)
-    updatesBtn:SetPoint("LEFT", introBtn, "RIGHT", gap, 0)
-    updatesBtn:SetScript("OnClick", function()
-        if SB.ShowNewSoundsWindow then SB:ShowNewSoundsWindow() end
-    end)
-    Help(updatesBtn, "Latest Sound Updates", "See which sounds were added recently and try them out.")
-
-    local versionText = footer:CreateFontString(nil, "OVERLAY")
-    versionText:SetFontObject(SB.Fonts.DisableSmall)
-    versionText:SetPoint("TOPLEFT", introBtn, "BOTTOMLEFT", 0, -6)
-    versionText:SetText("Soundbook v" .. tostring(SB.VERSION or "?"))
-    versionText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-
-    return footer
 end
 
 ------------------------------------------------------------------------
@@ -896,11 +938,12 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     tabRow:SetPoint("RIGHT", -L.GAP_S, 0)
     panel.tabRow = tabRow
 
-    local footer = BuildHelpFooter(panel)
-    footer:SetPoint("BOTTOMLEFT", L.GAP_S, L.GAP_S)
-    footer:SetPoint("BOTTOMRIGHT", -(L.GAP_S + 2), L.GAP_S)
-    panel.footer = footer
-
+    -- Targeted correction round (explicit requirement): the old
+    -- persistent "Help & Information" footer is gone - Replay
+    -- Introduction/Latest Sound Updates moved into Advanced (see
+    -- BuildAdvancedSection above) - so the scrollable area now runs all
+    -- the way to the panel's own bottom edge instead of stopping above a
+    -- separate footer container. No empty footer/divider left behind.
     local sf = SB.Theme.CreateScrollFrame(panel)
     -- Same reasoning as the pre-restructure panel: `scrollChild` is the
     -- REAL scroll child WoW's ScrollFrame API owns - stays anchored at its
@@ -914,7 +957,7 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     scroll:SetFrameLevel(panel:GetFrameLevel() + 5)
     scrollChild:SetFrameLevel(scroll:GetFrameLevel() + 1)
     scroll:SetPoint("TOPLEFT", tabRow, "BOTTOMLEFT", 0, -L.GAP_M)
-    scroll:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", -2, L.GAP_M)
+    scroll:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -2, L.GAP_S)
     -- Provisional, corrected below by FitSettingsPanelHeight once real
     -- geometry is resolvable - same defensive pattern the pre-restructure
     -- single-page panel used (content:SetHeight(2000) "provisional,

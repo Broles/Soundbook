@@ -243,7 +243,10 @@ local FONT_OBJECT_TEMPLATES = {
 -- template's own size already is - keeps FONT_OBJECT_TEMPLATES itself a
 -- plain name->template map instead of every tier needing its own bespoke
 -- creation branch.
-local BASE_SIZE_MULT = { Title = 1.30 }
+-- 1.5x GameFontNormalLarge's 16px baseline lands the shared Title tier at
+-- the requested ~24px (at normal font scale/UI scale) - explicit
+-- requirement, targeted correction round.
+local BASE_SIZE_MULT = { Title = 1.50 }
 
 for key, blizzardTemplate in pairs(FONT_OBJECT_TEMPLATES) do
     local obj = CreateFont("Soundbook" .. key .. "Font")

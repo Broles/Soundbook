@@ -104,9 +104,27 @@ local function AcquireRow(index)
     -- Always SELF-only - explicit requirement: this is a local "try it
     -- out" click, never a broadcast to guild/friends, regardless of
     -- whatever the player's own Default Output Channel setting is (same
-    -- reasoning/pattern as AnalyticsUI.lua's own row click).
+    -- reasoning/pattern as AnalyticsUI.lua's own row click). SB:TriggerSound
+    -- passing "SELF" as an explicit override already takes precedence over
+    -- both the global Default Output setting AND any per-sound "Default
+    -- Output" override (SB:ResolveOutputTarget checks the explicit
+    -- override first), and SB:DispatchDefaultOutput returns immediately
+    -- for target=="SELF" without sending anything - nothing here needs to
+    -- duplicate that.
+    --
+    -- Explicit isolation requirement: this preview surface must behave
+    -- like an exclusive one-sound-at-a-time player EVEN when the player's
+    -- own "Allow overlapping sounds" setting is on - SB:PlaySound only
+    -- self-stops when that setting is off. SB:StopAllSounds() is the same
+    -- existing public stop path the Mini Soundbook's own Stop button and
+    -- "/sb stop" already use - called explicitly here, every click,
+    -- BEFORE the new preview starts, without touching the saved
+    -- allowOverlap setting itself (still exactly what it was before and
+    -- after this window is open/closed) or any other saved setting.
     row:SetScript("OnClick", function(self)
-        if self.soundID then SB:TriggerSound(self.soundID, "SELF") end
+        if not self.soundID then return end
+        SB:StopAllSounds()
+        SB:TriggerSound(self.soundID, "SELF")
     end)
     row:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")

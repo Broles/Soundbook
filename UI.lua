@@ -75,7 +75,7 @@ local keybindModePanel
 local isKeybindModeOpen = false
 local lockToolbarBtn
 local mainTitle
-local backToLibraryBtn, contextTitle
+local backToLibraryBtn
 local selectedSoundID
 local playingSoundID
 local playingStateTimer
@@ -1933,15 +1933,29 @@ local function PopulateBroadcastFlyout(bucket)
     f:SetHeight(math.abs(y) + 10)
 end
 
+-- BUGFIX (explicit report): previously opened LEFT of its trigger by
+-- design ("toward the screen interior, away from the outer edge the tabs
+-- are attached to") - directly over the Library/sound list, exactly what
+-- this round's report flags ("must not cover the Soundbook content").
+-- Now opens to the RIGHT (outside the Main window, ~8px clear of its
+-- trigger) by default, and only flips back to the left when the screen
+-- genuinely doesn't have room on the right - an explicit GetRight()-vs-
+-- GetScreenWidth() check, not left to SetClampedToScreen alone (clamping
+-- would just slide it back left over the Library on a narrow/off-centre
+-- screen, reintroducing the exact problem being fixed).
 local function OpenBroadcastFlyout(anchorBtn, bucket)
     GameTooltip:Hide()
     PopulateBroadcastFlyout(bucket)
     broadcastFlyout:ClearAllPoints()
-    -- Prefer LEFT (toward the screen interior, away from the outer edge
-    -- the tabs are attached to) - explicit requirement. SetClampedToScreen
-    -- above safely nudges it back on-screen if there isn't room, without
-    -- ever becoming inaccessible.
-    broadcastFlyout:SetPoint("TOPRIGHT", anchorBtn, "TOPLEFT", -4, 0)
+    local gap = 8
+    local screenW = (type(GetScreenWidth) == "function" and GetScreenWidth()) or 1024
+    local anchorRight = anchorBtn:GetRight() or 0
+    local flyoutW = broadcastFlyout:GetWidth() or 190
+    if anchorRight + gap + flyoutW <= screenW then
+        broadcastFlyout:SetPoint("TOPLEFT", anchorBtn, "TOPRIGHT", gap, 0)
+    else
+        broadcastFlyout:SetPoint("TOPRIGHT", anchorBtn, "TOPLEFT", -gap, 0)
+    end
     broadcastFlyout.catcher:Show()
     broadcastFlyout:Show()
 end
@@ -2035,10 +2049,18 @@ RefreshBroadcastTabs = function()
         btn.label:SetText(label)
 
         ApplyTabVisual(btn, active, entry.color)
-        -- Disabled (unavailable bucket): stays readable, just visibly
-        -- dimmed as a whole and unclickable - never invisible.
-        btn:SetAlpha(available and 1 or 0.45)
-        btn:EnableMouse(available)
+        -- BUGFIX (explicit report): an unavailable bucket (not in a
+        -- guild/group, no online friends) used to also be EnableMouse
+        -- (false) - unclickable, which silently removed the option
+        -- instead of just showing it has nobody in it right now. "Zero
+        -- available recipients simply means zero remote recipients" -
+        -- the choice itself (Guild/Raid/Friends) must stay selectable
+        -- regardless; clicking it still opens the flyout, which already
+        -- shows the correct "Not currently in a guild"/etc. empty state
+        -- (PopulateBroadcastFlyout) rather than a list of people. Still
+        -- dimmed for information, just never disabled.
+        btn:SetAlpha(available and 1 or 0.60)
+        btn:EnableMouse(true)
     end
 
     -- This is called right after every real selection change (select-all,
@@ -2064,20 +2086,31 @@ end
 -- spaced within it.
 ------------------------------------------------------------------------
 local LAYOUT = SB.Theme.LAYOUT
-local SAFE_INSET = LAYOUT.SAFE_INSET -- clear of the frame's own decorative border/corner ornament (was 8)
-local TITLE_ROW_H = LAYOUT.HEADER_H  -- primary title row height (was a local 22 buried in BuildMainFrame)
-local TOOLBAR_H = TITLE_ROW_H + 6 + 1 + LAYOUT.GAP_S + 32 -- title row + its divider + gap + search/action row
-local SECTION_GAP = LAYOUT.GAP_M -- vertical gap between major sections (toolbar -> filters -> library)
-local SEARCH_MIN_W = 140 -- never shrinks narrower than this stays usable
-local SEARCH_MAX_W = 320 -- never grows wider than this on a wide window - stays the
-                          -- primary Library input without dominating the header
+local SAFE_INSET = LAYOUT.SAFE_INSET -- clear of the frame's own decorative border/corner ornament
+-- Targeted correction round: the Main header is now Theme.CreateHeader
+-- itself (the shared major-window header - same crest/gold-divider/
+-- centred-title language as Edit Sound), not a bespoke title row, so its
+-- own fixed 9px top/left inset (Theme.CreateHeader's own anchor, matching
+-- Edit Sound's established value) is what everything below actually
+-- measures from - not SAFE_INSET, which stays the Library/content area's
+-- own inset. HEADER_TOP_INSET/HEADER_H are named here (rather than
+-- re-reading Theme.CreateHeader's internals) purely so this file's own
+-- vertical anchor-chain arithmetic (RAIL_TOP_OFFSET below) is legible.
+local HEADER_TOP_INSET = 9
+local HEADER_H = LAYOUT.HEADER_H
+local SEARCH_H = 32
+local SEARCH_GAP_TOP = LAYOUT.GAP_L    -- header's gold divider -> Search: real vertical separation (explicit requirement)
+local SEARCH_GAP_BOTTOM = LAYOUT.GAP_M -- Search -> filter row: same, on the other side
+local SECTION_GAP = LAYOUT.GAP_M -- vertical gap between major sections (filters -> library)
+local SEARCH_MIN_W = 320 -- explicit requirement: "a sensible minimum around 320px rather than a fixed narrow width"
 local TAG_FILTER_BAR_H = 22
--- Output Rail's own top offset (broadcast tabs) - deliberately the SAME
--- vertical position Library content starts at (toolbar + gap + filter
--- row + gap), so the rail reads as aligned WITH the Library rather than
--- floating alongside the title/toolbar area above it (explicit
--- requirement, section 10: "vertically aligned with Library content").
-local RAIL_TOP_OFFSET = SAFE_INSET + TOOLBAR_H + SECTION_GAP + TAG_FILTER_BAR_H + SECTION_GAP
+-- Output Rail's own top offset (broadcast tabs) - the exact vertical
+-- position Library content starts at, derived arithmetically from the
+-- same header -> Search -> filter-row anchor chain used below (rather
+-- than a separately-maintained guess) so it can never silently drift out
+-- of sync with the real layout - explicit requirement, section 10:
+-- "vertically aligned with Library content".
+local RAIL_TOP_OFFSET = HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP + SEARCH_H + SEARCH_GAP_BOTTOM + TAG_FILTER_BAR_H + SECTION_GAP
 
 ------------------------------------------------------------------------
 -- Shared "attached tab" button builder - used for BOTH the upper
@@ -2482,55 +2515,32 @@ local function BuildMainFrame()
     tinsert(UISpecialFrames, "SoundbookMainFrame")
 
     ------------------------------------------------------------------
-    -- Toolbar - explicit redesign: a visible "Soundbook" product title
-    -- (row 1, higher hierarchy, integrated with the frame via a thin gold
-    -- divider - not a giant ornamental banner) with Search promoted to
-    -- the primary interaction of row 2 (taller, using most of the header
-    -- width), and the remaining utility controls (Quick Audio, Lock)
-    -- demoted to small secondary icons beside it. Admin/Settings moved
-    -- OUT of the toolbar entirely - they're now the lower-right utility
-    -- tabs (BuildUtilityTabs below).
+    -- Shared major-window header (targeted correction round) - the SAME
+    -- Theme.CreateHeader crest/gold-divider/centred-title component Edit
+    -- Sound's own header uses, not a bespoke Main-only title row (explicit
+    -- requirement: "one consistent major-window header treatment for Main
+    -- Soundbook, Settings and Keybindings, visually based on the existing
+    -- Edit Sound header"). The title is centred against the HEADER'S OWN
+    -- full width (Theme.CreateHeader anchors its label to the header's
+    -- own BOTTOM point) - the back button and utility icons below are
+    -- separate overlays in their own corners, so neither can ever pull
+    -- the title off-centre, and "Soundbook" stays visually independent of
+    -- whichever of them happens to be shown.
     ------------------------------------------------------------------
-    local toolbar = SB.CreateFrame("Frame", nil, main)
-    toolbar:SetPoint("TOPLEFT", SAFE_INSET, -SAFE_INSET)
-    toolbar:SetPoint("TOPRIGHT", -SAFE_INSET, -SAFE_INSET)
-    toolbar:SetHeight(TOOLBAR_H)
-    main.toolbar = toolbar
+    local mainHeader = SB.Theme.CreateHeader(main, "Soundbook", HEADER_H)
+    main.header = mainHeader
+    mainTitle = mainHeader.title
 
-    -- Row 1: product identity - reserved as its own non-overlapping header
-    -- zone (explicit requirement, section 1: "reserve explicit
-    -- non-overlapping header zones for title, back navigation, utility
-    -- controls and decorative ornaments"). ONE shared title treatment
-    -- (Theme.ApplyTitleStyle - same font tier/colour/shadow Edit Sound's
-    -- own header uses) instead of a smaller, differently-coloured label,
-    -- so the Main title is "clearly more prominent, comparable in visual
-    -- quality and hierarchy to Edit Sound's title" without importing Edit
-    -- Sound's own crest bar (still "no giant banner" - the prominence
-    -- comes from typography/colour/shadow, not added ornamentation).
-    -- Left-aligned (explicit requirement, section 6 - unlike Edit Sound's
-    -- centred title, this one doesn't need to be centred), with its own
-    -- small left inset ON TOP of the toolbar's own SAFE_INSET so it never
-    -- visually collides with the frame's corner ornament, and vertically
-    -- centred within its own taller row rather than pinned flush to the top.
-    local titleY = -math.floor((TITLE_ROW_H - (SB.Fonts.Title.baseSize or 20)) / 2)
-    local title = toolbar:CreateFontString(nil, "OVERLAY")
-    mainTitle = title
-    toolbar.mainTitle = title
-    SB.Theme.ApplyTitleStyle(title)
-    title:SetPoint("TOPLEFT", 4, titleY)
-    title:SetText("Soundbook")
-
-    -- Back-navigation zone: while Settings/Admin/Keybind Mode owns the
-    -- content area, the product title swaps for "< Library" (returns to
-    -- the Library) plus a label naming the active view, in the exact same
-    -- row/position and using the SAME title treatment as "Soundbook"
-    -- itself - explicit requirement: "same title hierarchy... across
-    -- Main, Settings, Keybindings". Search is hidden at the same time
-    -- (RefreshMainWindow) rather than sitting there doing nothing, so the
-    -- header reads as "you're in Settings now", not "the Library header,
-    -- minus a working search box".
-    backToLibraryBtn = SB.Theme.CreateSecondaryButton(toolbar, "< Library", 92, TITLE_ROW_H - 8)
-    backToLibraryBtn:SetPoint("TOPLEFT", 4, -math.floor((TITLE_ROW_H - (TITLE_ROW_H - 8)) / 2))
+    -- Back-navigation zone (top-left, inside the header's own safe
+    -- padding): while Settings/Admin/Keybind Mode owns the content area,
+    -- this replaces "Soundbook" with the active view's own name directly
+    -- on the SAME title label (RefreshMainWindow) rather than a second
+    -- competing label - the title stays ONE element, always centred,
+    -- completely independent of whether the back button is shown.
+    -- Explicit requirement: "< Soundbook", not "< Library" - there is no
+    -- user-facing destination called "Library".
+    backToLibraryBtn = SB.Theme.CreateSecondaryButton(mainHeader, "< Soundbook", 108, 22)
+    backToLibraryBtn:SetPoint("TOPLEFT", 12, -12)
     backToLibraryBtn:SetScript("OnClick", function()
         isSettingsOpen = false
         isAdminOpen = false
@@ -2538,68 +2548,65 @@ local function BuildMainFrame()
         SB:RefreshMainWindow()
     end)
     backToLibraryBtn:Hide()
-    toolbar.backToLibraryBtn = backToLibraryBtn
+    mainHeader.backBtn = backToLibraryBtn
 
-    contextTitle = toolbar:CreateFontString(nil, "OVERLAY")
-    SB.Theme.ApplyTitleStyle(contextTitle)
-    contextTitle:SetPoint("LEFT", backToLibraryBtn, "RIGHT", LAYOUT.GAP_M, 0)
-    contextTitle:Hide()
-    toolbar.contextTitle = contextTitle
-
-    -- Utility zone (top-right): Close/Lock/Quick Audio all share identical
-    -- geometry (size, hitbox, padding) via Theme.CreateMiniControlButton's
-    -- one chrome - explicit requirement (section 3: "same size, hit area,
-    -- alignment, spacing and hover/pressed/active states"). Nudged down
-    -- from the very top edge so the group sits centred within the title
-    -- row rather than flush against it, comfortably inside the header safe
-    -- area and clear of the frame's own corner ornament. Close keeps that
-    -- same geometry but gets its own distinct destructive hover tint (red,
-    -- instead of the shared gold) so it still reads as "this one closes
+    -- Utility zone (top-right, inside the header's own safe padding, at
+    -- least 16px clear of the header's own right edge): Quick Audio ->
+    -- Lock -> Close, left to right (explicit order requirement). One
+    -- shared chrome family (Theme.CreateMiniControlButton) - identical
+    -- 24x24 visual size and 6px gaps, each padded to an effective ~28x28
+    -- hitbox via SetHitRectInsets (visual stays compact; the actual click
+    -- target is comfortably bigger - explicit requirement, without a
+    -- second wrapper frame per button). Close keeps its own distinct
+    -- destructive hover tint (red) so it still reads as "this one closes
     -- the window", not just another utility icon.
     local HEADER_ICON_SIZE = LAYOUT.ICON_BTN
-    local headerIconY = -math.floor((TITLE_ROW_H - HEADER_ICON_SIZE) / 2)
-    local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, HEADER_ICON_SIZE)
-    closeBtn:SetPoint("TOPRIGHT", 0, headerIconY)
+    local HEADER_ICON_HIT_PAD = 2 -- 24 + 2*2 = 28px effective hitbox
+    local HEADER_ICON_INSET = 16
+    local function ExpandHitbox(btn)
+        btn:SetHitRectInsets(-HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD)
+    end
+
+    local closeBtn = SB.Theme.CreateCloseGlyph(mainHeader, HEADER_ICON_SIZE)
+    closeBtn:SetPoint("TOPRIGHT", -HEADER_ICON_INSET, -12)
+    ExpandHitbox(closeBtn)
     closeBtn:HookScript("OnEnter", function() closeBtn:SetBackdropBorderColor(1, 0.35, 0.35, 1) end)
     closeBtn:SetScript("OnClick", function() main:Hide() end)
 
-    local titleLine = toolbar:CreateTexture(nil, "ARTWORK")
-    titleLine:SetPoint("TOPLEFT", 0, -(TITLE_ROW_H + 6))
-    titleLine:SetPoint("RIGHT", 0, 0)
-    titleLine:SetHeight(1)
-    titleLine:SetTexture("Interface\\Buttons\\WHITE8X8")
-    titleLine:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.55)
-
-    -- Row 2: Search is the primary interaction here - explicit request:
-    -- taller (32px, within the 30-36px target). Quick Audio/Lock are
-    -- secondary - smaller, clustered at the right edge, never competing
-    -- with Search or the title for attention.
-    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, HEADER_ICON_SIZE)
-    lockToolbarBtn:SetPoint("BOTTOMRIGHT", toolbar, "BOTTOMRIGHT", 0, 0)
+    lockToolbarBtn = SB.Theme.CreateLockGlyph(mainHeader, HEADER_ICON_SIZE)
+    lockToolbarBtn:SetPoint("RIGHT", closeBtn, "LEFT", -LAYOUT.GAP_S, 0)
+    ExpandHitbox(lockToolbarBtn)
     lockToolbarBtn:SetScript("OnClick", function()
         SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
         RefreshLockVisual()
     end)
     SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
 
-    -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
-    -- (mute incoming / lock / muted players / open Soundbook / Announcer
-    -- size / Popout Direction), so there is exactly one such menu in the
-    -- whole addon rather than two diverging copies.
-    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, HEADER_ICON_SIZE)
-    audioBtn:SetPoint("BOTTOMRIGHT", lockToolbarBtn, "BOTTOMLEFT", -LAYOUT.GAP_S, 0)
-    local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
-    audioIcon:SetPoint("TOPLEFT", 2, -2)
-    audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    audioIcon:SetTexture("Interface\\Icons\\INV_Misc_Bell_01")
-    audioIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    -- "Quick Audio" - reuses the Announcer's own Quick Options menu (mute
+    -- incoming / lock / muted players / open Soundbook / Announcer size /
+    -- Popout Direction), so there is exactly one such menu in the whole
+    -- addon rather than two diverging copies. Theme.CreateAudioGlyph draws
+    -- a monochrome speaker glyph from Soundbook's own control-icon atlas -
+    -- explicit requirement: no WoW item/spell/inventory artwork here.
+    local audioBtn = SB.Theme.CreateAudioGlyph(mainHeader, HEADER_ICON_SIZE)
+    audioBtn:SetPoint("RIGHT", lockToolbarBtn, "LEFT", -LAYOUT.GAP_S, 0)
+    ExpandHitbox(audioBtn)
     audioBtn:SetScript("OnClick", function(self)
         if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
     end)
     SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
+    main.audioBtn = audioBtn
 
-    searchBox = SB.Theme.CreateInputBox(toolbar, SEARCH_MIN_W, 32)
-    searchBox:SetPoint("BOTTOMLEFT", toolbar, "BOTTOMLEFT", 0, 0)
+    ------------------------------------------------------------------
+    -- Search - the Main window's primary interaction, centred in the
+    -- content area (explicit requirement: "center the search field
+    -- horizontally... roughly 66% of available content width, with a
+    -- sensible minimum around 320px") instead of left-anchored. Its own
+    -- row below the header's gold divider, with real vertical separation
+    -- both from the header above and the filter row/Library below.
+    ------------------------------------------------------------------
+    searchBox = SB.Theme.CreateInputBox(main, SEARCH_MIN_W, SEARCH_H)
+    searchBox:SetPoint("TOP", mainHeader, "BOTTOM", 0, -SEARCH_GAP_TOP)
     searchBox:SetTextInsets(10, 8, 0, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -2610,20 +2617,18 @@ local function BuildMainFrame()
     end)
     main.searchBox = searchBox
 
-    -- Responsive Min/Preferred/Max width (explicit requirement, section
-    -- 7) - Search fills whatever space is left after the action icons on
-    -- a narrow window (down to SEARCH_MIN_W), but stops growing past
-    -- SEARCH_MAX_W on a wide one instead of stretching edge-to-edge, so
-    -- there's always room left for the title/navigation and it never
-    -- dominates the header. Anchored by explicit SetWidth (not a second
-    -- RIGHT-edge SetPoint) recomputed on toolbar resize - the same
-    -- "single anchor + explicit width, never two anchor points" rule
-    -- this addon's other resizable content already follows.
+    -- Responsive width (explicit requirement) - a single TOP anchor (no
+    -- LEFT/RIGHT points) means changing only the WIDTH keeps the box
+    -- centred automatically, so it "remains centered as the window is
+    -- resized" for free. Recomputed from main's OnSizeChanged (main.lua's
+    -- shared handler, near the resize grip below, calls this directly -
+    -- see ResizeSearchBox's own forward reference there) rather than a
+    -- second competing OnSizeChanged handler on the same frame.
     local function ResizeSearchBox()
-        local available = (toolbar:GetWidth() or 0) - (audioBtn:GetWidth() or 0) - (lockToolbarBtn:GetWidth() or 0) - 12
-        searchBox:SetWidth(math.max(SEARCH_MIN_W, math.min(SEARCH_MAX_W, available)))
+        local contentW = math.max(0, (main:GetWidth() or 0) - 2 * SAFE_INSET)
+        searchBox:SetWidth(math.max(SEARCH_MIN_W, math.min(contentW, contentW * 0.66)))
     end
-    toolbar:SetScript("OnSizeChanged", ResizeSearchBox)
+    main.ResizeSearchBox = ResizeSearchBox
     ResizeSearchBox()
 
     searchPlaceholder = searchBox:CreateFontString(nil, "OVERLAY")
@@ -2632,13 +2637,14 @@ local function BuildMainFrame()
     searchPlaceholder:SetText("Find a sound...")
 
     ------------------------------------------------------------------
-    -- Tag filter row, directly under the toolbar - explicit hierarchy
-    -- (section 9): current view -> Search/toolbar -> filters -> Library,
-    -- so filters sit visually BELOW Search with a clear, consistent
-    -- SECTION_GAP rather than crowding the same row.
+    -- Tag filter row, directly under Search - explicit hierarchy:
+    -- current view -> header -> Search -> filters -> Library, so filters
+    -- sit visually BELOW Search with a clear, consistent SECTION_GAP
+    -- rather than crowding the same row.
     ------------------------------------------------------------------
     local tagFilterBar = BuildTagFilterBar(main)
-    tagFilterBar:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -SECTION_GAP)
+    tagFilterBar:SetPoint("TOP", searchBox, "BOTTOM", 0, -SEARCH_GAP_BOTTOM)
+    tagFilterBar:SetPoint("LEFT", main, "LEFT", SAFE_INSET, 0)
     tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -SAFE_INSET, 0)
 
     ------------------------------------------------------------------
@@ -2724,11 +2730,31 @@ local function BuildMainFrame()
     resizeGrip:GetNormalTexture():SetAllPoints()
     resizeGrip:GetHighlightTexture():SetAllPoints()
     resizeGrip:GetPushedTexture():SetAllPoints()
-    resizeGrip:SetScript("OnMouseDown", function()
+    -- BUGFIX (explicit report): a plain click (mouse down + up with no
+    -- real drag) could expand/"maximize" the window. Root cause -
+    -- OnMouseDown called main:StartSizing("BOTTOMRIGHT") unconditionally,
+    -- and WoW's native StartSizing ties the given corner DIRECTLY to the
+    -- cursor's current screen position from that instant on, every frame,
+    -- for as long as sizing is active - it does not track a delta from
+    -- where the click started. resizeGrip's own hit region is 34x34 but
+    -- deliberately inset from the window's true corner (explicit earlier
+    -- report: "too small/hard to click"), so a click anywhere in that
+    -- padding is already several pixels away from the real corner -
+    -- engaging StartSizing right on mousedown made the window's corner
+    -- snap to wherever inside the grip you happened to click, even with
+    -- zero mouse movement afterward. RegisterForDrag/OnDragStart fixes
+    -- this for free: WoW's own drag detection already requires a real
+    -- mouse-move-while-held before OnDragStart fires - a plain click never
+    -- reaches it at all - exactly the "mouse down + drag starts manual
+    -- resizing; a simple click does not change size" behaviour required,
+    -- with no custom threshold-tracking code needed (the same pattern
+    -- `main` itself already uses for window-move, just never applied here).
+    resizeGrip:RegisterForDrag("LeftButton")
+    resizeGrip:SetScript("OnDragStart", function()
         if SB.db.ui.layoutLocked then return end
         main:StartSizing("BOTTOMRIGHT")
     end)
-    resizeGrip:SetScript("OnMouseUp", function()
+    resizeGrip:SetScript("OnDragStop", function()
         main:StopMovingOrSizing()
         SaveSize()
         if main.layoutRefreshTimer then
@@ -2741,6 +2767,11 @@ local function BuildMainFrame()
     main.resizeGrip = resizeGrip
     main:SetScript("OnSizeChanged", function()
         if not main.content then return end
+        -- Search's own centred width is cheap to recompute (no layout
+        -- pass), so it tracks every resize tick immediately rather than
+        -- waiting on the debounced Library reflow below - explicit
+        -- requirement: "must remain centered as the window is resized".
+        ResizeSearchBox()
         if main.layoutRefreshTimer then main.layoutRefreshTimer:Cancel() end
         main.layoutRefreshTimer = C_Timer.NewTimer(0.05, function()
             main.layoutRefreshTimer = nil
@@ -2781,12 +2812,15 @@ end
 function SB:RefreshMainWindow()
     if not main then return end
     if isSettingsOpen or isAdminOpen or isKeybindModeOpen then
-        if mainTitle then mainTitle:Hide() end
-        if backToLibraryBtn then backToLibraryBtn:Show() end
-        if contextTitle then
-            contextTitle:SetText(isSettingsOpen and "Settings" or isAdminOpen and "Raid Admin" or "Keybindings")
-            contextTitle:Show()
+        -- The title stays ONE always-visible, always-centred element
+        -- (Theme.CreateHeader's own label) - only its TEXT changes to
+        -- name the active view; the back button is a wholly separate
+        -- corner overlay, so it can never pull the title off-centre or
+        -- compete with it (explicit requirement).
+        if mainTitle then
+            mainTitle:SetText(isSettingsOpen and "Settings" or isAdminOpen and "Raid Admin" or "Keybindings")
         end
+        if backToLibraryBtn then backToLibraryBtn:Show() end
         if isSettingsOpen then
             settingsPanel:Show()
             if SB.RefreshChannelMatrix then SB:RefreshChannelMatrix() end
@@ -2829,9 +2863,8 @@ function SB:RefreshMainWindow()
         end
         for i = 1, #sectionHeaders do sectionHeaders[i]:Hide() end
     else
-        if mainTitle then mainTitle:Show() end
+        if mainTitle then mainTitle:SetText("Soundbook") end
         if backToLibraryBtn then backToLibraryBtn:Hide() end
-        if contextTitle then contextTitle:Hide() end
         if searchBox then searchBox:Show() end
         if searchPlaceholder then searchPlaceholder:SetShown(searchBox:GetText() == "") end
         -- RefreshBroadcastTabs (unconditionally called at the very end of
