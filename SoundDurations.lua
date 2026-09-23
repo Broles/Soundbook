@@ -28,6 +28,7 @@ SB.SoundDurations = {
     -- replace the file with a full-length encode and regenerate this line
     -- again if/when a correct one is available.
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Bad To The Bone"] = 1.027,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Borat Vagine"] = 7.824,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Cant Touch This"] = 20.193,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Celebration"] = 10.214,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Charge Army"] = 7.497,
@@ -41,11 +42,14 @@ SB.SoundDurations = {
     -- as "Bad To The Bone" just above (measured 0.183s, not 0.392s).
     -- Smaller drift, likely wasn't noticed yet, flagged proactively.
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dry Fart"] = 0.183,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Duel of the Fates"] = 15.984,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\El Chombo - Chacarron"] = 9.000,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Einfach Geil"] = 2.873,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Du bist gut genug"] = 7.367,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Emotional Damage"] = 3.396,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Epic Saxx"] = 7.445,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fahhh"] = 2.351,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fart 3D"] = 10.584,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fart echo"] = 7.784,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fart wet"] = 1.985,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Few Moments Later"] = 2.064,
@@ -53,6 +57,7 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Follow You"] = 8.255,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\GTA San"] = 7.706,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Gimme the loot"] = 3.072,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Goat Screaming"] = 1.907,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Haha Mexican"] = 3.370,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Haha Ostrich"] = 1.907,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Haha Peter"] = 1.332,
