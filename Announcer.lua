@@ -127,19 +127,26 @@ local function BuildIcon()
         SB.db.ui.announcer.pos = { point = point, relPoint = relPoint, x = x, y = y }
     end)
 
+    -- Explicit request - rebound:
+    -- Left click: Favourites quick-play menu (new, see ShowFavMenu below)
+    -- Right click: Open Soundbook (was left click)
+    -- Shift+Right click: Quick Options (was plain right click)
     icon:SetScript("OnClick", function(self, mouseButton)
         if mouseButton == "LeftButton" then
-            SB:Fire("TOGGLE_MAIN_UI")
-        else
+            if SB.ShowFavMenu then SB.ShowFavMenu(self) end
+        elseif IsShiftKeyDown() then
             SB.ShowAnnouncerQuickOptions(self)
+        else
+            SB:Fire("TOGGLE_MAIN_UI")
         end
     end)
 
     icon:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Soundbook", 1, 1, 1)
-        GameTooltip:AddLine("Left Click: Open Soundbook", 0.85, 0.9, 1)
-        GameTooltip:AddLine("Right Click: Quick Options", 0.85, 0.9, 1)
+        GameTooltip:AddLine("Left Click: Send a Favourite", 0.85, 0.9, 1)
+        GameTooltip:AddLine("Right Click: Open Soundbook", 0.85, 0.9, 1)
+        GameTooltip:AddLine("Shift + Right Click: Quick Options", 0.85, 0.9, 1)
         GameTooltip:Show()
     end)
     icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -351,6 +358,10 @@ local function RenderPrimary()
     -- Library's section-header carets in UI.lua).
     local color = SB.GetChannelColor(entry.channelLabel or "Self")
     banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
+    -- Explicit request: the progress bar takes on the channel's own colour
+    -- (green for Guild, etc.) instead of always gold - same SB.CHANNEL_COLOR
+    -- semantics used everywhere else a channel is shown.
+    banner.fill:SetVertexColor(color.r, color.g, color.b, 1)
 
     local extra = #activeDisplays - 1
     banner.overlapBadge:SetText(extra > 0 and ("+" .. extra) or "")
@@ -564,6 +575,194 @@ local function HideDemoBanner()
     if not demoBannerActive then return end
     demoBannerActive = false
     if #activeDisplays == 0 then CollapseToIdle() end
+end
+
+------------------------------------------------------------------------
+-- Favourites quick-play menu - explicit request: left-click the icon
+-- opens up to 20 Favourites as a scrollable list, titled with exactly
+-- where a click will actually send them ("Send Sound to Guild (2):",
+-- matching the Output Rail's own current selection). Picking one plays
+-- it through SB:TriggerSound with no override, identical to a normal
+-- Library click.
+------------------------------------------------------------------------
+
+local favMenu
+
+-- Mirrors the Output Rail's own "P/R shows whichever you're actually in,
+-- (N) is the real reachable count" language (UI.lua's RailGroupLabel/
+-- ConfigureHeader) so this menu's title always says the same thing the
+-- Rail itself would show for the current selection.
+local function GetSendTargetLabel()
+    local target = SB.db.settings.defaultOutputTarget or "ALL"
+    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
+    if target == "ALL" then
+        return "Send Sound to All:"
+    elseif target == "SELF" then
+        return "Send Sound to Self:"
+    elseif target == "SUBSET" then
+        local rail = SB.db.ui.outputRail
+        local mode = rail and rail.mode
+        local count = rail and #(rail.recipients or {}) or 0
+        local label = (mode == "GUILD" and "Guild") or (mode == "FRIENDS" and "Friends")
+            or (mode == "RAID" and (IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party")))
+            or "Selected"
+        return string.format("Send Sound to %s (%d):", label, count)
+    elseif target == "GUILD" then
+        return string.format("Send Sound to Guild (%d):", reachable and #reachable.GUILD or 0)
+    elseif target == "FRIENDS" then
+        return string.format("Send Sound to Friends (%d):", reachable and #reachable.FRIENDS or 0)
+    elseif target == "RAID" or target == "PARTY" then
+        local label = IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party")
+        return string.format("Send Sound to %s (%d):", label, reachable and #reachable.RAID or 0)
+    elseif type(target) == "string" and target:match("^PLAYER:") then
+        local name = target:match("^PLAYER:(.+)$")
+        return string.format("Send Sound to %s:", (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name)
+    end
+    return "Send Sound:"
+end
+
+local function GetOrCreateFavMenuRow(index)
+    if favMenu.rows[index] then return favMenu.rows[index] end
+    local row = CreateFrame("Button", nil, favMenu.content)
+    row:SetHeight(24)
+    local hl = row:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.15)
+    local icon = row:CreateTexture(nil, "ARTWORK")
+    icon:SetSize(18, 18)
+    icon:SetPoint("LEFT", 6, 0)
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    row.icon = icon
+    local keybind = row:CreateFontString(nil, "OVERLAY")
+    keybind:SetFontObject(SB.Fonts.DisableSmall)
+    keybind:SetPoint("RIGHT", -6, 0)
+    keybind:SetJustifyH("RIGHT")
+    keybind:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    row.keybind = keybind
+    local text = row:CreateFontString(nil, "OVERLAY")
+    text:SetFontObject(SB.Fonts.HighlightSmall)
+    text:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    text:SetPoint("RIGHT", keybind, "LEFT", -4, 0)
+    text:SetJustifyH("LEFT")
+    text:SetWordWrap(false)
+    row.text = text
+    row:SetScript("OnClick", function(self)
+        if self.soundID then SB:TriggerSound(self.soundID) end
+        favMenu:Hide()
+    end)
+    favMenu.rows[index] = row
+    return row
+end
+
+local function BuildFavMenu()
+    if favMenu then return favMenu end
+    favMenu = SB.CreateFrame("Frame", "SoundbookFavMenu", UIParent)
+    favMenu:SetWidth(220)
+    favMenu:SetFrameStrata("DIALOG")
+    Theme.CleanPanel(favMenu)
+    favMenu:SetClampedToScreen(true)
+    favMenu:Hide()
+
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("DIALOG")
+    catcher:SetFrameLevel(favMenu:GetFrameLevel() > 1 and favMenu:GetFrameLevel() - 1 or 1)
+    catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    catcher:Hide()
+    catcher:SetScript("OnClick", function() favMenu:Hide(); catcher:Hide() end)
+    favMenu.catcher = catcher
+    favMenu:SetScript("OnHide", function() catcher:Hide() end)
+
+    favMenu.title = favMenu:CreateFontString(nil, "OVERLAY")
+    favMenu.title:SetFontObject(SB.Fonts.Highlight)
+    favMenu.title:SetPoint("TOPLEFT", 10, -8)
+    favMenu.title:SetPoint("RIGHT", -10, 0)
+    favMenu.title:SetJustifyH("LEFT")
+    favMenu.title:SetWordWrap(false)
+    favMenu.title:SetTextColor(unpack(SB.Theme.GOLD))
+
+    favMenu.emptyText = favMenu:CreateFontString(nil, "OVERLAY")
+    favMenu.emptyText:SetFontObject(SB.Fonts.DisableSmall)
+    favMenu.emptyText:SetPoint("TOPLEFT", 10, -32)
+    favMenu.emptyText:SetPoint("RIGHT", -10, 0)
+    favMenu.emptyText:SetJustifyH("LEFT")
+    favMenu.emptyText:SetWordWrap(true)
+    favMenu.emptyText:SetText("No Favourites yet.")
+    favMenu.emptyText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    favMenu.emptyText:Hide()
+
+    local sf = SB.Theme.CreateScrollFrame(favMenu)
+    sf.scroll:SetPoint("TOPLEFT", 4, -30)
+    sf.scroll:SetPoint("BOTTOMRIGHT", -4, 8)
+    -- Single TOPLEFT anchor + explicit SetWidth on the scroll child, never
+    -- a second (RIGHT-edge) anchor point - a ScrollFrame's own scroll
+    -- child breaks (GetLeft/GetTop go unresolvable, everything anchored
+    -- off it collapses) the moment it's ever actually scrolled if it has
+    -- two anchor points instead of one. This exact bug already cost a
+    -- long debugging session on the Library's own ScrollFrame earlier -
+    -- see UI.lua's RefreshLibraryImpl for the full writeup.
+    sf.content:SetPoint("TOPLEFT", 0, 0)
+    sf.content:SetWidth(206)
+    favMenu.scroll = sf
+    favMenu.rows = {}
+
+    return favMenu
+end
+
+-- Up to 8 rows visible before scrolling (24px each) - "wenn zu lang dann
+-- scrollbar" - taller than that and the thumb (already part of
+-- Theme.CreateScrollFrame) takes over, same as every other scroll area
+-- in this addon.
+local FAV_MENU_VISIBLE_ROWS = 8
+local FAV_MENU_ROW_H = 24
+
+local function PopulateFavMenu()
+    favMenu.title:SetText(GetSendTargetLabel())
+
+    local favourites = SB.GetFavourites and SB:GetFavourites() or {}
+    local shown = 0
+    local y = 0
+    for slot = 1, SB.MAX_FAVOURITES do
+        local soundID = favourites[slot]
+        if soundID then
+            shown = shown + 1
+            local row = GetOrCreateFavMenuRow(shown)
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 0, -y)
+            row:SetPoint("RIGHT", 0, 0)
+            row.soundID = soundID
+            row.icon:SetTexture(SB:GetSoundIcon(soundID))
+            row.text:SetText(SB:GetSoundDisplayName(soundID))
+            local hotkey = SB.GetFavouriteHotkeyLabel and SB:GetFavouriteHotkeyLabel(slot)
+            row.keybind:SetText(hotkey or "")
+            row:Show()
+            y = y + FAV_MENU_ROW_H
+        end
+    end
+    for i = shown + 1, #favMenu.rows do favMenu.rows[i]:Hide() end
+
+    favMenu.emptyText:SetShown(shown == 0)
+    favMenu.scroll.content:SetHeight(math.max(1, y))
+    local visibleH = math.min(shown, FAV_MENU_VISIBLE_ROWS) * FAV_MENU_ROW_H
+    favMenu.scroll.scroll:SetHeight(math.max(FAV_MENU_ROW_H, visibleH))
+    favMenu.scroll.UpdateThumb()
+
+    local titleH = (shown == 0) and 46 or 24
+    favMenu:SetHeight(30 + math.max(titleH - 22, visibleH == 0 and 24 or visibleH) + 10)
+end
+
+-- Exposed on SB (not a plain local) - BuildIcon's OnClick handler above
+-- calls this by name before this point in the file is even reached at
+-- load time; only actually invoked later, on a real click, by which time
+-- this assignment has long since run (same pattern SB.ShowAnnouncerQuickOptions
+-- already used successfully here).
+function SB.ShowFavMenu(anchor)
+    BuildFavMenu()
+    PopulateFavMenu()
+    favMenu:ClearAllPoints()
+    favMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
+    favMenu.catcher:Show()
+    favMenu:Show()
 end
 
 function SB.ShowAnnouncerQuickOptions(anchor)
