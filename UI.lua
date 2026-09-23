@@ -13,10 +13,14 @@ local ICON_SIZE   = 22
 local THREE_COLUMN_WIDTH = 600
 -- Explicit report: category headers (Favourites/Legacy/...) should stand
 -- out more from the sound rows below them, and the collapse caret wasn't
--- obviously a collapse control. Grown from 24 for the bigger title font
--- (NormalLarge instead of Highlight) and the bigger caret glyph below.
-local SECTION_HEADER_H = 30
-local SECTION_GAP = 10
+-- obviously a collapse control. Grown from 24, then again in the UI/UX
+-- polish pass, for the bigger title font (NormalLarge instead of
+-- Highlight) and the bigger caret glyph below, plus real breathing room
+-- around them (section 5: "disclosure arrow, section icon, section title
+-- and Keybinds action should sit on one clean baseline with deliberate
+-- spacing").
+local SECTION_HEADER_H = 32
+local SECTION_GAP = SB.Theme.LAYOUT.GAP_M -- same shared spacing system Main's toolbar metrics use
 -- Left margin for the entry grid so column 0's icon decoration (the
 -- Favourite hover preview's 130% scale-up especially) has room before the
 -- ScrollFrame's own hard clip edge at scroll.content's x=0 - see its use
@@ -828,7 +832,7 @@ local function CreateEntryButton(index)
     -- Flat square icon slot - its border turns the accent colour when the
     -- sound is a Favourite, replacing the old separate star badge.
     local slot = SB.Theme.CreateIconSlot(btn, ICON_SIZE + 2)
-    slot:SetPoint("LEFT", 4, 0)
+    slot:SetPoint("LEFT", GRID_LEFT_PAD, 0)
     btn.slot = slot
     btn.icon = slot.texture
 
@@ -873,8 +877,8 @@ local function CreateEntryButton(index)
 
     local name = btn:CreateFontString(nil, "OVERLAY")
     name:SetFontObject(SB.Fonts.Highlight)
-    name:SetPoint("LEFT", slot, "RIGHT", 8, 0)
-    name:SetPoint("RIGHT", -8, 0)
+    name:SetPoint("LEFT", slot, "RIGHT", SB.Theme.LAYOUT.GAP_S, 0)
+    name:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
     name:SetJustifyH("LEFT")
     name:SetWordWrap(false)
     btn.nameText = name
@@ -885,7 +889,7 @@ local function CreateEntryButton(index)
     -- PopulateEntryButton and Keybindings.lua's SB:GetFavouriteHotkeyLabel).
     local hotkeyText = btn:CreateFontString(nil, "OVERLAY")
     hotkeyText:SetFontObject(SB.Fonts.DisableSmall)
-    hotkeyText:SetPoint("RIGHT", -8, 0)
+    hotkeyText:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
     hotkeyText:SetWidth(82)
     hotkeyText:SetJustifyH("RIGHT")
     hotkeyText:SetWordWrap(false)
@@ -903,7 +907,7 @@ local function CreateEntryButton(index)
     local TAG_CAP_W, TAG_H = 7, 14
     local tag = SB.CreateFrame("Frame", nil, btn)
     tag:SetHeight(TAG_H)
-    tag:SetPoint("RIGHT", -8, 0)
+    tag:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
     tag:Hide()
 
     local leftCap = tag:CreateTexture(nil, "ARTWORK")
@@ -1155,7 +1159,7 @@ local function PopulateEntryButton(btn, soundID, favouriteSlot, isFavouritesBloc
                 btn.tag.middle:SetVertexColor(style.bg[1], style.bg[2], style.bg[3], 0.92)
                 btn.tag:SetWidth(btn.TAG_CAP_W * 2 + btn.tag.text:GetStringWidth() + 8)
                 btn.tag:ClearAllPoints()
-                btn.tag:SetPoint("RIGHT", -8, 0)
+                btn.tag:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
                 btn.tag:Show()
                 btn.nameText:ClearAllPoints()
                 btn.nameText:SetPoint("LEFT", btn.slot, "RIGHT", 8, 0)
@@ -1208,17 +1212,20 @@ local function CreateSectionHeaderRow(index)
 
     -- Explicit report: not obviously a collapse/expand control - bigger,
     -- bolder and brighter gold than the rest of the row, not just a small
-    -- dim ">"/"v" easy to miss entirely.
+    -- dim ">"/"v" easy to miss entirely. UI/UX polish pass: caret, icon,
+    -- title and the Keybinds action all sit on one clean baseline with
+    -- deliberate spacing (explicit requirement, section 5) - gaps bumped
+    -- from the original tight 2px pairing to the shared GAP_S unit.
     local caret = hdr:CreateFontString(nil, "OVERLAY")
     caret:SetFontObject(SB.Fonts.NormalLarge)
-    caret:SetPoint("LEFT", 2, 0)
+    caret:SetPoint("LEFT", GRID_LEFT_PAD, 0)
     caret:SetWidth(18)
     caret:SetTextColor(1, 0.82, 0.15)
     hdr.caret = caret
 
     local icon = hdr:CreateTexture(nil, "ARTWORK")
     icon:SetSize(18, 18)
-    icon:SetPoint("LEFT", caret, "RIGHT", 2, 0)
+    icon:SetPoint("LEFT", caret, "RIGHT", SECTION_GAP / 2, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     hdr.icon = icon
 
@@ -1228,19 +1235,24 @@ local function CreateSectionHeaderRow(index)
     -- sound names already use.
     local title = hdr:CreateFontString(nil, "OVERLAY")
     title:SetFontObject(SB.Fonts.NormalLarge)
-    title:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    title:SetPoint("LEFT", icon, "RIGHT", SECTION_GAP / 2, 0)
     title:SetTextColor(unpack(SB.Theme.TEXT))
     hdr.title = title
 
     local count = hdr:CreateFontString(nil, "OVERLAY")
     count:SetFontObject(SB.Fonts.DisableSmall)
-    count:SetPoint("RIGHT", -6, 0)
+    count:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
     count:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     hdr.count = count
 
-    -- Favourites-only shortcut, replacing count in that one row.
-    local keybindsBtn = SB.Theme.CreateFlatButton(hdr, "Keybinds", 90, 18)
-    keybindsBtn:SetPoint("RIGHT", -4, 0)
+    -- Favourites-only shortcut, replacing count in that one row - a clear
+    -- secondary action (explicit requirement: "feel like a clear secondary
+    -- action, not a floating unrelated element") via the same flat
+    -- secondary-button chrome Settings/Edit Sound already use for their
+    -- own secondary actions, sized to comfortably clear the row's own
+    -- height rather than looking squeezed into it.
+    local keybindsBtn = SB.Theme.CreateSecondaryButton(hdr, "Keybinds", 92, SECTION_HEADER_H - 10)
+    keybindsBtn:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
     keybindsBtn:SetScript("OnClick", function() SB:ToggleKeybindMode() end)
     keybindsBtn:Hide()
     hdr.keybindsBtn = keybindsBtn
@@ -2038,20 +2050,28 @@ RefreshBroadcastTabs = function()
 end
 
 ------------------------------------------------------------------------
--- Shared Main-shell layout metrics (3.0 QA round, sections 5-10) - one
--- place every header/toolbar/content measurement below reads from,
--- instead of each row picking its own ad-hoc padding number. Doesn't
--- change the window's own min/max resizable size, just how the fixed
--- header rows and the gaps between major sections (title -> toolbar ->
--- filters -> Library/Output Rail) are spaced within it.
+-- Shared Main-shell layout metrics (3.0 QA round, sections 5-10; UI/UX
+-- polish pass) - one place every header/toolbar/content measurement below
+-- reads from, instead of each row picking its own ad-hoc padding number.
+-- SAFE_INSET/HEADER_H/CONTROL_H/GAP_* are pulled from Theme.LAYOUT (the
+-- same shared spacing system Settings/Edit Sound/Keybindings now use too -
+-- explicit requirement, section 2: "a small shared spacing system...
+-- instead of many per-screen magic offsets") rather than re-declared here;
+-- SEARCH_MIN_W/MAX_W and the row/section metrics below stay Main-specific
+-- since nothing else needs them. Doesn't change the window's own min/max
+-- resizable size, just how the fixed header rows and the gaps between
+-- major sections (title -> toolbar -> filters -> Library/Output Rail) are
+-- spaced within it.
 ------------------------------------------------------------------------
-local SAFE_INSET = 8    -- clear of the frame's own decorative border/corner ornament
-local TOOLBAR_H = 68     -- title row + search/action row, combined
-local SECTION_GAP = 10   -- vertical gap between major sections (toolbar -> filters -> library)
+local LAYOUT = SB.Theme.LAYOUT
+local SAFE_INSET = LAYOUT.SAFE_INSET -- clear of the frame's own decorative border/corner ornament (was 8)
+local TITLE_ROW_H = LAYOUT.HEADER_H  -- primary title row height (was a local 22 buried in BuildMainFrame)
+local TOOLBAR_H = TITLE_ROW_H + 6 + 1 + LAYOUT.GAP_S + 32 -- title row + its divider + gap + search/action row
+local SECTION_GAP = LAYOUT.GAP_M -- vertical gap between major sections (toolbar -> filters -> library)
 local SEARCH_MIN_W = 140 -- never shrinks narrower than this stays usable
 local SEARCH_MAX_W = 320 -- never grows wider than this on a wide window - stays the
                           -- primary Library input without dominating the header
-local TAG_FILTER_BAR_H = 20
+local TAG_FILTER_BAR_H = 22
 -- Output Rail's own top offset (broadcast tabs) - deliberately the SAME
 -- vertical position Library content starts at (toolbar + gap + filter
 -- row + gap), so the rail reads as aligned WITH the Library rather than
@@ -2065,7 +2085,7 @@ local RAIL_TOP_OFFSET = SAFE_INSET + TOOLBAR_H + SECTION_GAP + TAG_FILTER_BAR_H 
 -- they read as one visual family while their own colour/behaviour differ.
 ------------------------------------------------------------------------
 
-local TAB_W, TAB_H, TAB_GAP = 108, 28, 3
+local TAB_W, TAB_H = 108, 28
 
 -- CreateAttachedTab(parent, color, refreshFn, noOwnBorder) - the broadcast
 -- (Output Rail) tabs pass noOwnBorder=true: they live inside one shared
@@ -2204,7 +2224,7 @@ local function BuildTagFilterBar(parent)
     main.tagFilterBar = tagFilterBar
     main.tagFilterUpdaters = {}
 
-    local FILTER_PILL_H, FILTER_PILL_CAP_W, FILTER_PILL_GAP = 20, 8, 6
+    local FILTER_PILL_H, FILTER_PILL_CAP_W, FILTER_PILL_GAP = TAG_FILTER_BAR_H, 8, LAYOUT.GAP_S
     local filterPills = {}
     for _, tagKey in ipairs(TAG_FILTER_ORDER) do
         local style = TAG_STYLE[tagKey]
@@ -2267,17 +2287,16 @@ local function BuildTagFilterBar(parent)
         pill:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
+    -- Left-aligned starting at GRID_LEFT_PAD (explicit requirement,
+    -- sections 4-5: "align the toolbar to the same interior content
+    -- guides as the library below it" / filter pills "alignment with the
+    -- main content column") - the same left guide the Library's own
+    -- section headers and sound rows start from, instead of centring
+    -- across the bar's full width independent of that column. Kept the
+    -- function name (still recomputes every pill's position on resize;
+    -- only the alignment rule changed).
     local function RecenterFilterPills()
-        local totalW, visibleCount = 0, 0
-        for _, pill in ipairs(filterPills) do
-            if pill:IsShown() then
-                visibleCount = visibleCount + 1
-                totalW = totalW + pill:GetWidth()
-            end
-        end
-        if visibleCount > 1 then totalW = totalW + (visibleCount - 1) * FILTER_PILL_GAP end
-        local barW = tagFilterBar:GetWidth() or 0
-        local x = math.max(0, (barW - totalW) / 2)
+        local x = GRID_LEFT_PAD
         for _, pill in ipairs(filterPills) do
             if pill:IsShown() then
                 pill:ClearAllPoints()
@@ -2364,15 +2383,39 @@ function SB:RefreshAdminTabVisibility()
     end
 end
 
+-- Same "one shared container, borderless segments, thin dividers" treatment
+-- Output Rail's own BuildBroadcastTabs uses (explicit requirement, section
+-- 6: "consistent widths, gaps, padding and state styling... belong to the
+-- same design language as the rest of the addon") - a separate container
+-- from the Output Rail above it (Admin/Settings navigate views, the rail
+-- above picks a send target - different functions, kept visually distinct
+-- groups), but built from the exact same TAB_W/TAB_H and border language
+-- so the two read as one coherent right-side dock rather than two
+-- different tab styles stacked on top of each other.
 local function BuildUtilityTabs(parent)
-    adminTabBtn = CreateAttachedTab(parent, SB.Theme.GOLD, RefreshUtilityTabs)
-    adminTabBtn:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30 + (TAB_H + TAB_GAP))
+    local utilityRail = SB.CreateFrame("Frame", nil, parent)
+    utilityRail:SetSize(TAB_W, TAB_H * 2)
+    utilityRail:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30)
+    utilityRail:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    utilityRail:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+    utilityRail:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+    main.utilityRail = utilityRail
+
+    adminTabBtn = CreateAttachedTab(utilityRail, SB.Theme.GOLD, RefreshUtilityTabs, true)
+    adminTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, 0)
     adminTabBtn.label:SetText("Admin")
     adminTabBtn:SetScript("OnClick", ToggleAdmin)
     adminTabBtn:Hide()
 
-    settingsTabBtn = CreateAttachedTab(parent, SB.Theme.GOLD, RefreshUtilityTabs)
-    settingsTabBtn:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30)
+    local divider = utilityRail:CreateTexture(nil, "ARTWORK")
+    divider:SetPoint("TOPLEFT", adminTabBtn, "BOTTOMLEFT", 0, 0)
+    divider:SetPoint("TOPRIGHT", adminTabBtn, "BOTTOMRIGHT", 0, 0)
+    divider:SetHeight(1)
+    divider:SetTexture("Interface\\Buttons\\WHITE8X8")
+    divider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
+
+    settingsTabBtn = CreateAttachedTab(utilityRail, SB.Theme.GOLD, RefreshUtilityTabs, true)
+    settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, -TAB_H)
     settingsTabBtn.label:SetText("Settings")
     settingsTabBtn:SetScript("OnClick", ToggleSettings)
     main.settingsTabBtn = settingsTabBtn
@@ -2454,34 +2497,40 @@ local function BuildMainFrame()
     toolbar:SetHeight(TOOLBAR_H)
     main.toolbar = toolbar
 
-    -- Row 1: product identity. Compact and readable rather than a large
-    -- ornamental crest (explicit "avoid a giant banner" requirement) -
-    -- one FontString a size up from a normal label, plus a thin Arcane
-    -- divider line standing in for "a subtle Arcane crest". Left-aligned
-    -- (explicit requirement, section 6 - unlike Edit Sound's centred
-    -- title, this one doesn't need to be centred), with its own small
-    -- left inset ON TOP of the toolbar's own SAFE_INSET so it never
+    -- Row 1: product identity - reserved as its own non-overlapping header
+    -- zone (explicit requirement, section 1: "reserve explicit
+    -- non-overlapping header zones for title, back navigation, utility
+    -- controls and decorative ornaments"). ONE shared title treatment
+    -- (Theme.ApplyTitleStyle - same font tier/colour/shadow Edit Sound's
+    -- own header uses) instead of a smaller, differently-coloured label,
+    -- so the Main title is "clearly more prominent, comparable in visual
+    -- quality and hierarchy to Edit Sound's title" without importing Edit
+    -- Sound's own crest bar (still "no giant banner" - the prominence
+    -- comes from typography/colour/shadow, not added ornamentation).
+    -- Left-aligned (explicit requirement, section 6 - unlike Edit Sound's
+    -- centred title, this one doesn't need to be centred), with its own
+    -- small left inset ON TOP of the toolbar's own SAFE_INSET so it never
     -- visually collides with the frame's corner ornament, and vertically
-    -- centred within its own row rather than pinned flush to the very top.
-    local TITLE_ROW_H = 22
-    local titleY = -math.floor((TITLE_ROW_H - (SB.Fonts.NormalLarge.baseSize or 16)) / 2)
+    -- centred within its own taller row rather than pinned flush to the top.
+    local titleY = -math.floor((TITLE_ROW_H - (SB.Fonts.Title.baseSize or 20)) / 2)
     local title = toolbar:CreateFontString(nil, "OVERLAY")
     mainTitle = title
     toolbar.mainTitle = title
-    title:SetFontObject(SB.Fonts.NormalLarge)
+    SB.Theme.ApplyTitleStyle(title)
     title:SetPoint("TOPLEFT", 4, titleY)
     title:SetText("Soundbook")
-    title:SetTextColor(unpack(SB.Theme.GOLD))
 
-    -- Settings/Admin/Keybind Mode context header (explicit requirement) -
-    -- while any of those own the content area, the product title swaps
-    -- for "< Library" (returns to the Library) plus a label naming the
-    -- active view, in the exact same row/position - Search is hidden at
-    -- the same time (RefreshMainWindow) rather than sitting there doing
-    -- nothing, so the header reads as "you're in Settings now", not "the
-    -- Library header, minus a working search box".
-    backToLibraryBtn = SB.Theme.CreateSecondaryButton(toolbar, "< Library", 88, TITLE_ROW_H - 2)
-    backToLibraryBtn:SetPoint("TOPLEFT", 4, titleY)
+    -- Back-navigation zone: while Settings/Admin/Keybind Mode owns the
+    -- content area, the product title swaps for "< Library" (returns to
+    -- the Library) plus a label naming the active view, in the exact same
+    -- row/position and using the SAME title treatment as "Soundbook"
+    -- itself - explicit requirement: "same title hierarchy... across
+    -- Main, Settings, Keybindings". Search is hidden at the same time
+    -- (RefreshMainWindow) rather than sitting there doing nothing, so the
+    -- header reads as "you're in Settings now", not "the Library header,
+    -- minus a working search box".
+    backToLibraryBtn = SB.Theme.CreateSecondaryButton(toolbar, "< Library", 92, TITLE_ROW_H - 8)
+    backToLibraryBtn:SetPoint("TOPLEFT", 4, -math.floor((TITLE_ROW_H - (TITLE_ROW_H - 8)) / 2))
     backToLibraryBtn:SetScript("OnClick", function()
         isSettingsOpen = false
         isAdminOpen = false
@@ -2492,26 +2541,30 @@ local function BuildMainFrame()
     toolbar.backToLibraryBtn = backToLibraryBtn
 
     contextTitle = toolbar:CreateFontString(nil, "OVERLAY")
-    contextTitle:SetFontObject(SB.Fonts.NormalLarge)
-    contextTitle:SetPoint("LEFT", backToLibraryBtn, "RIGHT", 10, 0)
-    contextTitle:SetTextColor(unpack(SB.Theme.TEXT))
+    SB.Theme.ApplyTitleStyle(contextTitle)
+    contextTitle:SetPoint("LEFT", backToLibraryBtn, "RIGHT", LAYOUT.GAP_M, 0)
     contextTitle:Hide()
     toolbar.contextTitle = contextTitle
 
-    -- Every header-action icon (Close/Lock/Audio) shares identical
+    -- Utility zone (top-right): Close/Lock/Quick Audio all share identical
     -- geometry (size, hitbox, padding) via Theme.CreateMiniControlButton's
-    -- one chrome - explicit requirement (section 8). Close keeps that same
-    -- geometry but gets its own distinct destructive hover tint (red,
+    -- one chrome - explicit requirement (section 3: "same size, hit area,
+    -- alignment, spacing and hover/pressed/active states"). Nudged down
+    -- from the very top edge so the group sits centred within the title
+    -- row rather than flush against it, comfortably inside the header safe
+    -- area and clear of the frame's own corner ornament. Close keeps that
+    -- same geometry but gets its own distinct destructive hover tint (red,
     -- instead of the shared gold) so it still reads as "this one closes
     -- the window", not just another utility icon.
-    local HEADER_ICON_SIZE = 24
+    local HEADER_ICON_SIZE = LAYOUT.ICON_BTN
+    local headerIconY = -math.floor((TITLE_ROW_H - HEADER_ICON_SIZE) / 2)
     local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, HEADER_ICON_SIZE)
-    closeBtn:SetPoint("TOPRIGHT", 0, 0)
+    closeBtn:SetPoint("TOPRIGHT", 0, headerIconY)
     closeBtn:HookScript("OnEnter", function() closeBtn:SetBackdropBorderColor(1, 0.35, 0.35, 1) end)
     closeBtn:SetScript("OnClick", function() main:Hide() end)
 
     local titleLine = toolbar:CreateTexture(nil, "ARTWORK")
-    titleLine:SetPoint("TOPLEFT", 0, -(TITLE_ROW_H + 2))
+    titleLine:SetPoint("TOPLEFT", 0, -(TITLE_ROW_H + 6))
     titleLine:SetPoint("RIGHT", 0, 0)
     titleLine:SetHeight(1)
     titleLine:SetTexture("Interface\\Buttons\\WHITE8X8")
@@ -2534,7 +2587,7 @@ local function BuildMainFrame()
     -- size / Popout Direction), so there is exactly one such menu in the
     -- whole addon rather than two diverging copies.
     local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, HEADER_ICON_SIZE)
-    audioBtn:SetPoint("BOTTOMRIGHT", lockToolbarBtn, "BOTTOMLEFT", -4, 0)
+    audioBtn:SetPoint("BOTTOMRIGHT", lockToolbarBtn, "BOTTOMLEFT", -LAYOUT.GAP_S, 0)
     local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
     audioIcon:SetPoint("TOPLEFT", 2, -2)
     audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)

@@ -204,13 +204,34 @@ local function StartKeybindCapture(slot)
     end)
 end
 
+-- UI/UX polish pass (explicit requirement, section 10: "establish clear
+-- columns for slot number, icon/name, binding and Clear action... use
+-- consistent row spacing") - four columns on one baseline: slot # ->
+-- icon+name -> binding -> Clear, now with a real left safe-area inset and
+-- the same alternating-row-tint/separator language the Main Library's own
+-- sound rows use (UI.lua's CreateEntryButton), so this reads as the same
+-- product family instead of a bare, un-decorated list.
+local ROW_PAD = 6
+
 local function CreateKeybindSlotRow(parent, slot)
     local row = CreateFrame("Frame", nil, parent)
     row:SetHeight(ROW_H)
 
+    local rowBg = row:CreateTexture(nil, "BACKGROUND")
+    rowBg:SetAllPoints()
+    rowBg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    rowBg:SetVertexColor(0.015, 0.055, 0.12, (slot % 2 == 0) and 0.42 or 0.24)
+
+    local separator = row:CreateTexture(nil, "BORDER")
+    separator:SetPoint("BOTTOMLEFT", ROW_PAD, 0)
+    separator:SetPoint("BOTTOMRIGHT", -ROW_PAD, 0)
+    separator:SetHeight(1)
+    separator:SetTexture("Interface\\Buttons\\WHITE8X8")
+    separator:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.18)
+
     local slotLabel = row:CreateFontString(nil, "OVERLAY")
     slotLabel:SetFontObject(SB.Fonts.DisableSmall)
-    slotLabel:SetPoint("LEFT", 0, 0)
+    slotLabel:SetPoint("LEFT", ROW_PAD, 0)
     slotLabel:SetWidth(20)
     slotLabel:SetJustifyH("LEFT")
     slotLabel:SetText(tostring(slot))
@@ -219,7 +240,7 @@ local function CreateKeybindSlotRow(parent, slot)
 
     local icon = row:CreateTexture(nil, "ARTWORK")
     icon:SetSize(ICON_SIZE, ICON_SIZE)
-    icon:SetPoint("LEFT", slotLabel, "RIGHT", 6, 0)
+    icon:SetPoint("LEFT", slotLabel, "RIGHT", SB.Theme.LAYOUT.GAP_S, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     row.icon = icon
 
@@ -227,7 +248,7 @@ local function CreateKeybindSlotRow(parent, slot)
     -- required so a bound slot can be unbound without ambiguity (Escape
     -- during capture only cancels, it never deletes - see StartKeybindCapture).
     local clearBtn = SB.Theme.CreateSecondaryButton(row, "Clear", 46, 20)
-    clearBtn:SetPoint("RIGHT", 0, 0)
+    clearBtn:SetPoint("RIGHT", -ROW_PAD, 0)
     clearBtn:SetScript("OnClick", function()
         StopKeybindCapture()
         SB:SetFavouriteKeybind(slot, nil)
@@ -235,7 +256,7 @@ local function CreateKeybindSlotRow(parent, slot)
     row.clearBtn = clearBtn
 
     local bindBtn = SB.Theme.CreateFlatButton(row, "Not bound", 110, 22)
-    bindBtn:SetPoint("RIGHT", clearBtn, "LEFT", -6, 0)
+    bindBtn:SetPoint("RIGHT", clearBtn, "LEFT", -SB.Theme.LAYOUT.GAP_S, 0)
     row.bindBtn = bindBtn
     bindBtn:SetScript("OnClick", function()
         if activeCaptureSlot == slot then
@@ -248,8 +269,8 @@ local function CreateKeybindSlotRow(parent, slot)
 
     local nameText = row:CreateFontString(nil, "OVERLAY")
     nameText:SetFontObject(SB.Fonts.HighlightSmall)
-    nameText:SetPoint("LEFT", icon, "RIGHT", 8, 0)
-    nameText:SetPoint("RIGHT", bindBtn, "LEFT", -10, 0)
+    nameText:SetPoint("LEFT", icon, "RIGHT", SB.Theme.LAYOUT.GAP_S, 0)
+    nameText:SetPoint("RIGHT", bindBtn, "LEFT", -SB.Theme.LAYOUT.GAP_M, 0)
     nameText:SetJustifyH("LEFT")
     nameText:SetWordWrap(false)
     row.nameText = nameText
@@ -278,28 +299,32 @@ function SB.BuildKeybindModePanel(main, content)
     keybindPanel:SetAllPoints(content)
     keybindPanel:Hide()
 
-    local title = keybindPanel:CreateFontString(nil, "OVERLAY")
-    title:SetFontObject(SB.Fonts.Normal)
-    title:SetPoint("TOPLEFT", 8, -8)
-    title:SetText("Favourite Keybindings")
-    title:SetTextColor(unpack(SB.Theme.GOLD))
-
-    local doneBtn = SB.Theme.CreatePrimaryButton(keybindPanel, "Done", 90, 24)
-    doneBtn:SetPoint("TOPRIGHT", -8, -8)
+    -- UI/UX polish pass: no second in-panel title any more - the Main
+    -- toolbar's own context header ("< Library" + "Keybindings", see
+    -- UI.lua's RefreshMainWindow) already names this screen using the
+    -- ONE shared title treatment every screen uses, so a second
+    -- "Favourite Keybindings" heading directly below it was pure
+    -- duplication and part of what made "the instruction text, title and
+    -- Done button compete visually" (explicit requirement, section 10).
+    -- Done keeps its own safe-area inset (LAYOUT.SAFE_INSET, not a bare
+    -- 8) instead of doubling as a de facto second header row.
+    local L = SB.Theme.LAYOUT
+    local doneBtn = SB.Theme.CreatePrimaryButton(keybindPanel, "Done", 90, L.CONTROL_H)
+    doneBtn:SetPoint("TOPRIGHT", -L.SAFE_INSET, -L.SAFE_INSET)
     keybindPanel.doneBtn = doneBtn
 
     local hint = keybindPanel:CreateFontString(nil, "OVERLAY")
     hint:SetFontObject(SB.Fonts.DisableSmall)
-    hint:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -6)
-    hint:SetPoint("RIGHT", -8, 0)
+    hint:SetPoint("TOPLEFT", keybindPanel, "TOPLEFT", L.SAFE_INSET, -L.SAFE_INSET)
+    hint:SetPoint("RIGHT", doneBtn, "LEFT", -L.GAP_M, 0)
     hint:SetJustifyH("LEFT")
     hint:SetWordWrap(true)
     hint:SetText("Click a slot's binding, then press the key combination - Escape cancels without changing it.")
     keybindPanel.hint = hint
 
     local sf = SB.Theme.CreateScrollFrame(keybindPanel)
-    sf.scroll:SetPoint("TOPLEFT", hint, "BOTTOMLEFT", -8, -10)
-    sf.scroll:SetPoint("BOTTOMRIGHT", -10, 8)
+    sf.scroll:SetPoint("TOPLEFT", keybindPanel, "TOPLEFT", L.SAFE_INSET - 8, -(L.SAFE_INSET + L.CONTROL_H + L.GAP_M))
+    sf.scroll:SetPoint("BOTTOMRIGHT", -(L.SAFE_INSET + 2), L.SAFE_INSET)
     sf.content:SetPoint("TOPLEFT", 0, 0)
     sf.content:SetWidth(1)
 

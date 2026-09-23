@@ -225,10 +225,25 @@ SB.Fonts = {}
 local FONT_OBJECT_TEMPLATES = {
     Normal         = "GameFontNormal",
     NormalLarge    = "GameFontNormalLarge",
+    -- UI/UX polish pass: one shared "Title" tier, used by every screen's
+    -- primary heading (Main's "Soundbook", the Settings/Keybindings context
+    -- label that replaces it, and Edit Sound's own header) instead of each
+    -- one picking its own size/colour - explicit requirement: "same title
+    -- hierarchy... one primary title treatment across these screens".
+    -- Based on NormalLarge (not a wholly separate template) so it inherits
+    -- the same typeface, just meaningfully bigger - see the baseSize boost
+    -- right below, applied once here rather than through a second CopyFontObject.
+    Title          = "GameFontNormalLarge",
     Highlight      = "GameFontHighlight",
     HighlightSmall = "GameFontHighlightSmall",
     DisableSmall   = "GameFontDisableSmall",
 }
+
+-- Per-tier size boost applied once, on top of whatever the copied Blizzard
+-- template's own size already is - keeps FONT_OBJECT_TEMPLATES itself a
+-- plain name->template map instead of every tier needing its own bespoke
+-- creation branch.
+local BASE_SIZE_MULT = { Title = 1.30 }
 
 for key, blizzardTemplate in pairs(FONT_OBJECT_TEMPLATES) do
     local obj = CreateFont("Soundbook" .. key .. "Font")
@@ -240,7 +255,7 @@ for key, blizzardTemplate in pairs(FONT_OBJECT_TEMPLATES) do
     -- always computes from this original size, never from whatever size is
     -- currently live on the object, so repeated scale changes never compound.
     local _, size = obj:GetFont()
-    obj.baseSize = size or 12
+    obj.baseSize = math.floor((size or 12) * (BASE_SIZE_MULT[key] or 1) + 0.5)
     SB.Fonts[key] = obj
 end
 

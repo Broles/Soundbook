@@ -38,6 +38,28 @@ Theme.METRICS      = {
     header = 44, sectionGap = 16, controlHeight = 22,
 }
 
+-- UI/UX polish pass: one small shared spacing/sizing system, referenced by
+-- Main, Settings, Edit Sound and Keybindings instead of each screen
+-- re-deriving its own magic offsets (explicit requirement, section 2 -
+-- "use a small shared spacing system consistently instead of many
+-- per-screen magic offsets"). Additive to Theme.METRICS above, which
+-- several pre-3.0 surfaces still read directly - this is the 3.0 polish
+-- pass's own vocabulary, named for what each number actually controls
+-- rather than a generic T-shirt size, so a caller can tell at a glance
+-- which one it needs.
+Theme.LAYOUT = {
+    SAFE_INSET   = 14, -- outer clearance from a window's own decorative frame/corners
+    GUTTER       = 10, -- horizontal gutter between a content column and a side rail
+    GAP_S        = 6,  -- tight gap (icon <-> its own label, adjacent inline controls)
+    GAP_M        = 10, -- normal gap (a control and the label/hint directly above it)
+    GAP_L        = 16, -- section-to-section gap
+    GAP_XL       = 24, -- major block-to-block gap
+    CONTROL_H    = 24, -- standard control height (buttons, inputs, tabs)
+    HEADER_H     = 32, -- primary title row height (Main's title row / Settings & Keybindings context header)
+    ICON_BTN     = 24, -- header utility icon size (Close/Lock/Quick Audio)
+    TAB_H        = 24, -- Settings-style navigation tab height
+}
+
 -- Soundbook 3.0 design tokens - additive only, the tokens above stay exactly
 -- as they are since the pre-3.0 UI (Settings, Edit Sound, etc.) still reads
 -- them directly during the staged rollout (see the 3.0 Discovery Report's
@@ -226,7 +248,7 @@ function Theme.CreateHeader(parent, title, height)
     crest:SetAlpha(0.72)
 
     local label = header:CreateFontString(nil, "OVERLAY")
-    label:SetFontObject(SB.Fonts.NormalLarge)
+    label:SetFontObject(SB.Fonts.Title)
     label:SetPoint("BOTTOM", 0, 4)
     label:SetText(title or "")
     label:SetTextColor(unpack(Theme.TEXT))
@@ -246,6 +268,96 @@ function Theme.CreateHeader(parent, title, height)
     LayoutCrest(header)
     header.title, header.crest = label, crest
     return header
+end
+
+-- The ONE primary title treatment (explicit requirement, section 1: "use
+-- one primary title treatment across these screens, do not alternate
+-- title colors/styles arbitrarily") - applies the exact same font tier,
+-- colour and shadow Theme.CreateHeader's own title uses (the established
+-- Edit Sound look) to a FontString a caller builds and positions itself.
+-- Used for Main's own "Soundbook" title and the Settings/Keybindings
+-- context label that replaces it in the same header slot, so all four
+-- surfaces' primary heading share one visual definition instead of each
+-- screen hand-picking its own colour/size.
+function Theme.ApplyTitleStyle(fontString)
+    fontString:SetFontObject(SB.Fonts.Title)
+    fontString:SetTextColor(unpack(Theme.TEXT))
+    fontString:SetShadowColor(0.20, 0.35, 0.95, 0.9)
+    fontString:SetShadowOffset(1, -1)
+end
+
+-- Shared navigation-tab chrome (explicit requirement, section 7: "Tabs
+-- should use a shared state system with the rest of the UI: idle, hover,
+-- active, disabled") - used by Settings' section tab strip. A true
+-- 4-state control, unlike Theme.CreateFlatButton (only idle/hover/
+-- disabled - no distinct "active" look of its own), so a hovered INACTIVE
+-- tab can never be visually confused with the genuinely active one.
+-- `btn:SetActive(bool)` toggles the persistent state; hover/leave still
+-- layers its own lighter tint on top of whichever base (idle or active)
+-- is currently set, the same idle/hover/pressed layering
+-- CreateMiniControlButton already uses elsewhere in this file.
+function Theme.CreateTabButton(parent, text, width, height)
+    local btn = SB.CreateFrame("Button", nil, parent)
+    btn:SetSize(width or 90, height or Theme.LAYOUT.TAB_H)
+    btn:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
+
+    local label = btn:CreateFontString(nil, "OVERLAY")
+    label:SetFontObject(SB.Fonts.HighlightSmall)
+    label:SetPoint("CENTER")
+    label:SetText(text or "")
+    btn.label = label
+
+    local mark = btn:CreateTexture(nil, "OVERLAY")
+    mark:SetPoint("BOTTOMLEFT", 2, 0)
+    mark:SetPoint("BOTTOMRIGHT", -2, 0)
+    mark:SetHeight(2)
+    mark:SetTexture(WHITE)
+    mark:SetVertexColor(unpack(Theme.GOLD))
+    mark:Hide()
+    btn.selectedMark = mark
+
+    local active, hovering = false, false
+    local function Apply()
+        if not btn:IsEnabled() then
+            btn:SetBackdropColor(0.018, 0.035, 0.060, 0.55)
+            btn:SetBackdropBorderColor(0, 0, 0, 0)
+            label:SetTextColor(0.42, 0.46, 0.53)
+            mark:Hide()
+            return
+        end
+        if active then
+            btn:SetBackdropColor(Theme.GOLD[1] * 0.22, Theme.GOLD[2] * 0.22, Theme.GOLD[3] * 0.22, hovering and 0.98 or 0.88)
+            btn:SetBackdropBorderColor(0, 0, 0, 0)
+            label:SetTextColor(unpack(Theme.TEXT))
+            mark:Show()
+        elseif hovering then
+            btn:SetBackdropColor(0.04, 0.11, 0.22, 0.80)
+            btn:SetBackdropBorderColor(0, 0, 0, 0)
+            label:SetTextColor(0.80, 0.88, 1.0)
+            mark:Hide()
+        else
+            btn:SetBackdropColor(0, 0, 0, 0)
+            btn:SetBackdropBorderColor(0, 0, 0, 0)
+            label:SetTextColor(unpack(Theme.TEXT_DIM))
+            mark:Hide()
+        end
+    end
+
+    function btn:SetActive(value)
+        active = value and true or false
+        Apply()
+    end
+    function btn:IsActive()
+        return active
+    end
+
+    btn:SetScript("OnEnter", function() hovering = true; Apply() end)
+    btn:SetScript("OnLeave", function() hovering = false; Apply() end)
+    btn:HookScript("OnEnable", Apply)
+    btn:HookScript("OnDisable", Apply)
+    Apply()
+
+    return btn
 end
 
 function Theme.CreateSectionHeader(parent, text)

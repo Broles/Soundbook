@@ -42,7 +42,19 @@ local ADDON_NAME, SB = ...
 -- scroll thumb - see SB.BuildSettingsPanel) - controls below are sized
 -- against this instead of arbitrary small pixel widths, so they actually
 -- fill the column instead of leaving a big empty strip on the right.
-local CONTENT_W = 450
+-- UI/UX polish pass (explicit requirement, section 8: "the current content
+-- column feels too narrow with too much wasted space around it") - raised
+-- from 450 to use meaningfully more of the available width, while staying
+-- safely inside the scroll child's own real width even at the Main
+-- window's minimum resizable size (560): at that size the scroll child is
+-- ~502px wide (mainWidth - 2*SAFE_INSET - 2 for the panel/scroll region,
+-- minus FitSettingsPanelHeight's own -28 scrollbar/margin reservation) -
+-- 480 leaves a real margin below that ceiling rather than exactly meeting
+-- it. Still a fixed column (not a full-bleed responsive width) so
+-- paragraph-length hint text stays readable at any window size - "keep
+-- readable margins" is an explicit requirement too, not just "use more
+-- width".
+local CONTENT_W = 480
 
 local panel
 local categoryNameBoxes = {}
@@ -753,39 +765,34 @@ end
 -- Tab strip + persistent Help & Information footer
 ------------------------------------------------------------------------
 
+-- UI/UX polish pass (explicit requirement, section 7: "Tabs should use a
+-- shared state system with the rest of the UI: idle, hover, active,
+-- disabled... equalize heights/padding and reduce the cramped feel") -
+-- rebuilt on Theme.CreateTabButton, a genuine 4-state control, instead of
+-- CreateFlatButton (only idle/hover/disabled) with a manually-toggled
+-- underline bolted on: the previous "active" look WAS the same hover fill
+-- CreateFlatButton already used for a transient mouse-over, so hovering a
+-- DIFFERENT, inactive tab rendered identically to the real active one.
 local function BuildTabStrip(parent)
     local tabRow = CreateFrame("Frame", nil, parent)
-    tabRow:SetHeight(22)
+    tabRow:SetHeight(SB.Theme.LAYOUT.TAB_H)
 
     local function ApplySelection()
         for key, btn in pairs(sectionTabButtons) do
-            if key == currentSectionKey then
-                btn.ApplyThemeState("hover")
-                btn.selectedMark:Show()
-            else
-                btn.ApplyThemeState("idle")
-                btn.selectedMark:Hide()
-            end
+            btn:SetActive(key == currentSectionKey)
         end
     end
 
     local prevTab
     for _, entry in ipairs(SECTION_ORDER) do
-        local btn = SB.Theme.CreateFlatButton(tabRow, entry.label, 60, 20)
-        local neededWidth = math.ceil(btn.label:GetStringWidth() or 60) + 16
+        local btn = SB.Theme.CreateTabButton(tabRow, entry.label, 60, SB.Theme.LAYOUT.TAB_H)
+        local neededWidth = math.ceil(btn.label:GetStringWidth() or 60) + 18
         btn:SetWidth(neededWidth)
         if prevTab then
-            btn:SetPoint("LEFT", prevTab, "RIGHT", 4, 0)
+            btn:SetPoint("LEFT", prevTab, "RIGHT", SB.Theme.LAYOUT.GAP_S, 0)
         else
             btn:SetPoint("LEFT", 0, 0)
         end
-        local mark = btn:CreateTexture(nil, "OVERLAY")
-        mark:SetPoint("BOTTOMLEFT", 2, 1)
-        mark:SetPoint("BOTTOMRIGHT", -2, 1)
-        mark:SetHeight(2)
-        mark:SetColorTexture(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 1)
-        mark:Hide()
-        btn.selectedMark = mark
         btn:SetScript("OnClick", function()
             SB:ShowSettingsSection(entry.key)
         end)
@@ -879,14 +886,19 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     if panel.SetClipsChildren then panel:SetClipsChildren(true) end
     panel:Hide()
 
+    -- Same shared spacing system the rest of the polish pass uses (was a
+    -- one-off 8/6/10 here) - "fits cleanly within the available width
+    -- without clipping or colliding with frame elements" (explicit
+    -- requirement, section 7).
+    local L = SB.Theme.LAYOUT
     local tabRow = BuildTabStrip(panel)
-    tabRow:SetPoint("TOPLEFT", 8, -6)
-    tabRow:SetPoint("RIGHT", -8, 0)
+    tabRow:SetPoint("TOPLEFT", L.GAP_S, -L.GAP_S)
+    tabRow:SetPoint("RIGHT", -L.GAP_S, 0)
     panel.tabRow = tabRow
 
     local footer = BuildHelpFooter(panel)
-    footer:SetPoint("BOTTOMLEFT", 8, 8)
-    footer:SetPoint("BOTTOMRIGHT", -10, 8)
+    footer:SetPoint("BOTTOMLEFT", L.GAP_S, L.GAP_S)
+    footer:SetPoint("BOTTOMRIGHT", -(L.GAP_S + 2), L.GAP_S)
     panel.footer = footer
 
     local sf = SB.Theme.CreateScrollFrame(panel)
@@ -901,8 +913,8 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     scroll, scrollChild = sf.scroll, sf.content
     scroll:SetFrameLevel(panel:GetFrameLevel() + 5)
     scrollChild:SetFrameLevel(scroll:GetFrameLevel() + 1)
-    scroll:SetPoint("TOPLEFT", tabRow, "BOTTOMLEFT", 0, -8)
-    scroll:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", -2, 8)
+    scroll:SetPoint("TOPLEFT", tabRow, "BOTTOMLEFT", 0, -L.GAP_M)
+    scroll:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", -2, L.GAP_M)
     -- Provisional, corrected below by FitSettingsPanelHeight once real
     -- geometry is resolvable - same defensive pattern the pre-restructure
     -- single-page panel used (content:SetHeight(2000) "provisional,
