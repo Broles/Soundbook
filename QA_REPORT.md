@@ -1153,3 +1153,199 @@ channel colours read correctly at real UI scale, does a real WoW Ignore
 list round-trip through `GetNumIgnores`/`GetIgnoreName` exactly as
 assumed" pass needs one in-game check, same residual gap every round has
 disclosed.
+
+---
+
+## Round 11 - Regression fixes: empty nav element, Settings position (2nd pass), Output Selector rework, Mini Soundbook sizing/title
+
+A focused regression-correction pass on top of Round 10's own work -
+every item here is a reported regression from that round, not new scope.
+Explicitly scoped: only the empty Main navigation element, Settings
+vertical layout, channel selection/state logic, channel popup click-
+routing, Mini Soundbook sizing access/item width, and the dynamic Mini
+Soundbook title.
+
+### 1. Main: empty navigation element above Settings
+
+Root cause: the shared Admin/Settings utility tab rail
+(`BuildUtilityTabs`, UI.lua) was always sized for two rows
+(`TAB_H * 2`) with Settings permanently anchored one row down, regardless
+of whether Admin was actually visible - hiding the Admin button
+(`adminTabBtn:Hide()`) left its dark backdrop/border box and the
+divider line beneath it fully intact, an empty row for every non-admin
+player. `SB:RefreshAdminTabVisibility` now collapses the whole container
+to one row (and re-anchors Settings to fill it) whenever Admin is
+unavailable, and restores both immediately when it becomes available -
+no empty visual row, no leftover hit area, the real Admin tab is
+completely unaffected when it should show.
+
+### 2. Settings: category strip position, 2nd pass
+
+Round 10's own fix anchored the strip via `SB.LIBRARY_CONTENT_TOP_OFFSET`
+- correct for the Library's first row, but that offset bakes in the
+Library's own Search box + tag-filter row heights (159px), which Settings
+has neither of - reusing it left exactly the reported large empty block.
+Re-anchored directly off the shared header's own bottom edge
+(`mainFrame.header`) instead, skipping the Library-specific offset
+entirely: 30px below the header (target 28-32px), with the selected
+category's content now starting 24px below the strip (was 10px). Header
+itself untouched, as required.
+
+### 3. Main Output Selector - full rework
+
+Five compounding issues in the same control, all traced to their real
+root causes rather than patched around:
+
+- **Toggle-off never worked**: a second click on an already-selected
+  Guild/Raid/Friends row used to only close an already-open submenu, and
+  never actually cleared the selection - a genuinely stuck-on channel. A
+  new shared `IsBucketActive` check now drives both the tab's own active
+  visual and the click decision, so a second click on an active channel
+  deselects it and closes its submenu, in one click, every time.
+- **Group membership gated selectability** (`IsRailBucketAvailable`
+  checked `IsInGuild()`/`IsInGroup()`/reachable-friend-count) - explicitly
+  wrong per this round's requirement. Replaced with `IsChannelSendEnabled`,
+  reading Settings -> Sharing's own "Send" toggle
+  (`SB.db.settings.broadcastModes`) exclusively. A Send-disabled channel
+  stays visible and dimmed but its click now no-ops; turning Send off
+  immediately clears that channel's active selection and repaints the
+  rail live (`SB.RefreshBroadcastTabs`, newly exposed for Settings.lua to
+  call) - even while Settings, not the Library, is the currently-viewed
+  content, since the rail lives in Main's always-visible chrome.
+- **All/Self Only semantics**: `SB.SelectAllBroadcastTargets` now only
+  ever selects Send-enabled channels and is a real toggle (a second click
+  while every Send-enabled channel is already fully selected clears all
+  of them), via a new shared `SB.IsAllBroadcastFullySelected` the tab's
+  own active-state check and the click handler both read from. Fixed a
+  related staleness bug while at it: unchecking a single member out of a
+  full "Entire X" pick left `rail.channelSelected[bucket]` stuck at
+  `true` (it was only ever set by the bulk-select function, never
+  recomputed by an individual toggle) - `SetBroadcastRecipientSelected`
+  now recomputes it from the real resulting selection every time, so a
+  genuinely partial pick can never make "All" read as fully selected.
+- **Highlight sizing**: the active-state "glow" texture was deliberately
+  inset -4/+4px past each tab's own edges for a soft-glow look - since
+  these rows stack with zero gap between them, that overhang visibly
+  bled into whichever row sat directly above/below the active one.
+  Removed entirely; the existing exact-bounds backdrop colour/border/
+  accent strip already satisfy "highlight exactly matches the row" on
+  their own.
+- **Submenu click-routing**: the flyout's fullscreen click-outside
+  catcher (`TOOLTIP` strata, covers the whole screen) used to
+  unconditionally close-and-consume every click it received, including
+  one that visually landed on a *different* selector row sitting
+  underneath it - the row's own `OnClick` never fired, forcing a second
+  click. The catcher now checks `IsMouseOver()` against every selector
+  button first (a pure cursor-position check, unaffected by stacking
+  order) - a hit closes the old submenu **and** runs that row's full
+  click action in the same event, via a new shared
+  `HandleBroadcastTabClick` both paths call identically. A genuine
+  outside click still just closes, as before.
+
+Verified via a new `loader_outputselector.lua` (9 sections): the glow
+field is gone; toggle on/off each complete in one click; a Send-disabled
+channel is dimmed, its click no-ops, and zero eligible members never
+blocks a Send-enabled one; disabling Send immediately clears an active
+selection; All selects only Send-enabled channels and clears on a second
+click while fully selected; a partial pick (including the stale-flag
+case) never reads as fully selected; Self Only exclusivity; Raid-open-
+then-Self-Only and Raid-open-then-Friends both resolve in one routed
+click via the real catcher handler with `IsMouseOver` stubbed true for
+the target row; a genuine outside click still only closes, changing
+nothing.
+
+### 4. Mini Soundbook: size controls + favourite item width
+
+- **Mini Soundbook Size now in the popup too**: the Quick Options popup
+  only ever exposed "Announcer Size" - "Mini Soundbook Size" added
+  directly beneath it, same 50%-200%/step-10% range, writing the exact
+  same `ui.announcer.favScale` field Settings -> Mini's own slider
+  already used (no duplicate SavedVariables) - changing either surface is
+  reflected by the other the next time it's opened.
+- **Favourite item width, 2nd pass**: "Emotional Damage" was still
+  truncated at 100% Mini Soundbook Size after Round 9's first widening.
+  `FAV_COL_W` raised again, 165->205 (2-column) and 130->160
+  (3-column, same ratio preserved) - usable text width (colW minus the
+  fixed icon/padding overhead) goes from 132px to 171px, just over the
+  170px target. Icon size, row height, and every icon<->text/text<->edge
+  gap are unchanged, width only, no font change - the popup's own width
+  is already computed from these values, so it grows to fit with no
+  separate overflow handling needed.
+
+Verified via `loader_favgrid.lua` (corrected to key off `favScale`, the
+field the column-count switch actually reads since Round 10's own scale
+split - it had silently been exercising the wrong field with no
+assertion on the result at all) - both column widths now asserted
+exactly (418/488px).
+
+### 5. Mini Soundbook: dynamic title
+
+Replaces the static "Send sound to X:" header with a live, deduplicated
+computation of who would actually receive the sound right now, reusing
+`SB.ComputeReachablePlayers` (the same live source the Output Rail itself
+reads) rather than building a second, independent recipient model.
+Root-cause fix: the old per-bucket count came straight from the
+selection's own stored length - a frozen snapshot from whenever the
+channel was selected, never re-checked against who was still actually
+online. "Guild selected, then everyone logs off" kept reporting the old
+member count forever instead of falling back to "Play for Yourself:" -
+the exact reported bug. The new `ComputeLiveEffectiveRecipients`
+intersects each selected bucket against the CURRENT live reachable list,
+deduplicated by `SB.PlayerKey` across buckets, and excludes anyone on the
+local player's own Ignore list (the one Ignore direction this client can
+ever determine directly - the reverse is fundamentally undetectable and
+deliberately not guessed at, same protocol-correctness rule the Ignore
+feature itself follows).
+
+New wording: "Play for Yourself:" (zero real recipients right now,
+whatever button is technically active), "Play for Guild/Raid/Friends
+(X):" (exactly one contributing channel), "Play for People (X):" (more
+than one contributing channel, or "All" selected with any real
+recipients at all - even if only one channel happens to currently have
+anyone, since the user's actual intent was "everyone", not one specific
+group).
+
+Live updates, entirely event-driven, no polling: the existing roster
+event frame (Guild/Group/Friends roster changes) now also watches
+`IGNORELIST_UPDATE` and refreshes unconditionally instead of only while
+Main is open (the Mini popup can be, and often is, open on its own); a
+new `KNOWN_USER_CHANGED` event fires the moment a brand-new Soundbook
+presence is discovered (not on the routine per-message `lastSeen`
+refresh an already-known user gets constantly, which would have been
+spammy); Settings' own Send toggle already flows through the existing
+`OUTPUT_SELECTION_CHANGED` chain (Round 10/11's own wiring); a new
+`SOUND_DISPLAY_CHANGED` listener catches a per-sound Default Output
+override changing while the popup is open.
+
+Verified via a new `loader_minititle.lua` (9 sections): the core zero-
+eligible regression (title falls back to "Play for Yourself:" the moment
+a fully-online guild goes offline, popup already open, no re-select); all
+three single-channel wording forms; multi-channel "People" wording;
+All-selected forcing "People" wording even with only one bucket actually
+contributing; a stale cross-bucket selection never over-counting;
+Ignore exclusion; and three separate live-update triggers (a roster
+event, a Settings Send toggle, a brand-new presence discovery) each
+updating an already-open popup with no re-open call. `loader_broadcast.lua`'s
+own header assertions updated to the new wording throughout.
+
+### Verification
+
+All 12 mock regression scripts pass (the 8 pre-Round-10 scripts, Round
+10's own `loader_scalesplit.lua`/`loader_ignore.lua`, and this round's two
+new scripts, `loader_outputselector.lua` and `loader_minititle.lua`).
+
+### Still gated on a live client
+
+Every change this round is either a verified layout/anchor fix (the
+empty nav row, the Settings strip position), a root-caused interaction
+bug (toggle-off, the submenu click-routing swallow, the glow overlap), a
+verified data-correctness fix (the live-recipient title, the stale
+`channelSelected` flag), or a widened but still-approximate pixel target
+(the favourite item width - "roughly 170px" against WoW's real font
+metrics, which this environment cannot render or measure; see the mock's
+own `GetStringWidth` stub, a fixed constant regardless of actual text,
+disclosed rather than papered over). This environment still has no live
+WoW client - the final "does 'Emotional Damage' genuinely fit without a
+pixel to spare, does the click-routing feel instant under a real mouse,
+does the highlight read as flush against the row at real UI scale" pass
+needs one in-game check, same residual gap every round has disclosed.
