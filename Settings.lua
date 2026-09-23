@@ -975,19 +975,31 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     -- requirement, section 7).
     local L = SB.Theme.LAYOUT
     local tabRow = BuildTabStrip(panel)
-    -- Targeted correction round (explicit requirement): the category
-    -- strip's Y position must match exactly where the first Library row
-    -- begins, not just "close to it" - anchored directly off `mainFrame`
-    -- using the SAME already-computed pixel offset the Library's own
-    -- content region uses (SB.LIBRARY_CONTENT_TOP_OFFSET, UI.lua),
-    -- instead of trusting the panel's own multi-hop SetAllPoints chain
-    -- (which runs through the header/Search/filter row - some of them
-    -- Hidden, not just repositioned, while Settings is the active view).
+    -- Regression fix (2nd pass): the previous fix anchored the category
+    -- strip off SB.LIBRARY_CONTENT_TOP_OFFSET, which bakes in the
+    -- Library's OWN Search box + tag-filter row heights (159px total) -
+    -- correct for the first Library row, but Settings has neither of
+    -- those elements, so reusing that offset left exactly the large empty
+    -- block being reported (search+filter-sized dead space with nothing
+    -- in it). Settings' content has no relationship to the Library's
+    -- stack at all - it anchors directly off the shared header's own
+    -- bottom edge instead (`mainFrame.header`, exposed by UI.lua),
+    -- skipping the Library-specific offset entirely. Explicit target:
+    -- ~28-32px between the header's gold divider (the header's own
+    -- bottom edge) and the category strip - 30px, the middle of that
+    -- range. Falls back to the old offset only if the header somehow
+    -- isn't exposed yet (defensive, should not happen in practice).
     -- LEFT/RIGHT still come from `panel` itself (untouched, unaffected -
-    -- panel's horizontal bounds were never in question).
-    local topOffset = (SB.LIBRARY_CONTENT_TOP_OFFSET or 0) + L.GAP_S
+    -- panel's horizontal bounds were never in question). Header itself is
+    -- explicitly out of scope for this fix and stays untouched.
+    local HEADER_TO_TABS_GAP = 30
     tabRow:SetPoint("LEFT", panel, "LEFT", L.GAP_S, 0)
-    tabRow:SetPoint("TOP", mainFrame, "TOP", 0, -topOffset)
+    if mainFrame.header then
+        tabRow:SetPoint("TOP", mainFrame.header, "BOTTOM", 0, -HEADER_TO_TABS_GAP)
+    else
+        local topOffset = (SB.LIBRARY_CONTENT_TOP_OFFSET or 0) + L.GAP_S
+        tabRow:SetPoint("TOP", mainFrame, "TOP", 0, -topOffset)
+    end
     tabRow:SetPoint("RIGHT", panel, "RIGHT", -L.GAP_S, 0)
     panel.tabRow = tabRow
 
@@ -1009,7 +1021,10 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     scroll, scrollChild = sf.scroll, sf.content
     scroll:SetFrameLevel(panel:GetFrameLevel() + 5)
     scrollChild:SetFrameLevel(scroll:GetFrameLevel() + 1)
-    scroll:SetPoint("TOPLEFT", tabRow, "BOTTOMLEFT", 0, -L.GAP_M)
+    -- Explicit target: selected-category content starts ~24px below the
+    -- category strip (was L.GAP_M/10px, too tight against the new,
+    -- higher-up strip position above).
+    scroll:SetPoint("TOPLEFT", tabRow, "BOTTOMLEFT", 0, -24)
     scroll:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -2, L.GAP_S)
     -- Provisional, corrected below by FitSettingsPanelHeight once real
     -- geometry is resolvable - same defensive pattern the pre-restructure

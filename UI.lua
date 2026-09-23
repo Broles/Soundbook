@@ -2502,7 +2502,7 @@ function SB:ToggleKeybindMode()
     SB:RefreshMainWindow()
 end
 
-local adminTabBtn, settingsTabBtn
+local adminTabBtn, settingsTabBtn, utilityRail, utilityDivider
 
 -- Open (showing its panel) is the only "active" state these two have -
 -- unlike a broadcast tab, there's no separate notion of "selected but not
@@ -2513,13 +2513,29 @@ local function RefreshUtilityTabs()
     if settingsTabBtn then ApplyTabVisual(settingsTabBtn, isSettingsOpen, SB.Theme.GOLD) end
 end
 
+-- Regression fix: Admin being unavailable used to only Hide() the button
+-- itself - the shared utilityRail container (its own dark backdrop/
+-- border) stayed permanently sized for TWO rows regardless, leaving an
+-- empty dark box above Settings for every non-admin player. The
+-- container itself now collapses to a single row and Settings moves up
+-- to fill it, rather than leaving a placeholder - no empty visual row, no
+-- leftover hit area (a hidden button already takes no clicks, but the
+-- surrounding box no longer even LOOKS like a control any more either).
 function SB:RefreshAdminTabVisibility()
-    if not adminTabBtn then return end
+    if not adminTabBtn or not utilityRail then return end
     local adminVisible = SB:IsRaidAdmin()
     if adminVisible then
         adminTabBtn:Show()
+        utilityDivider:Show()
+        utilityRail:SetHeight(TAB_H * 2)
+        settingsTabBtn:ClearAllPoints()
+        settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, -TAB_H)
     else
         adminTabBtn:Hide()
+        utilityDivider:Hide()
+        utilityRail:SetHeight(TAB_H)
+        settingsTabBtn:ClearAllPoints()
+        settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, 0)
         if isAdminOpen then
             isAdminOpen = false
             SB:RefreshMainWindow()
@@ -2537,8 +2553,12 @@ end
 -- so the two read as one coherent right-side dock rather than two
 -- different tab styles stacked on top of each other.
 local function BuildUtilityTabs(parent)
-    local utilityRail = SB.CreateFrame("Frame", nil, parent)
-    utilityRail:SetSize(TAB_W, TAB_H * 2)
+    utilityRail = SB.CreateFrame("Frame", nil, parent)
+    -- Starts collapsed to a single row (Admin unknown/unavailable until
+    -- RefreshAdminTabVisibility runs, called right after BuildMainFrame
+    -- finishes below) - never starts at the 2-row size and only shrinks
+    -- later, which would still flash the empty box for a frame.
+    utilityRail:SetSize(TAB_W, TAB_H)
     utilityRail:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30)
     utilityRail:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
     utilityRail:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
@@ -2551,15 +2571,16 @@ local function BuildUtilityTabs(parent)
     adminTabBtn:SetScript("OnClick", ToggleAdmin)
     adminTabBtn:Hide()
 
-    local divider = utilityRail:CreateTexture(nil, "ARTWORK")
-    divider:SetPoint("TOPLEFT", adminTabBtn, "BOTTOMLEFT", 0, 0)
-    divider:SetPoint("TOPRIGHT", adminTabBtn, "BOTTOMRIGHT", 0, 0)
-    divider:SetHeight(1)
-    divider:SetTexture("Interface\\Buttons\\WHITE8X8")
-    divider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
+    utilityDivider = utilityRail:CreateTexture(nil, "ARTWORK")
+    utilityDivider:SetPoint("TOPLEFT", adminTabBtn, "BOTTOMLEFT", 0, 0)
+    utilityDivider:SetPoint("TOPRIGHT", adminTabBtn, "BOTTOMRIGHT", 0, 0)
+    utilityDivider:SetHeight(1)
+    utilityDivider:SetTexture("Interface\\Buttons\\WHITE8X8")
+    utilityDivider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
+    utilityDivider:Hide()
 
     settingsTabBtn = CreateAttachedTab(utilityRail, SB.Theme.GOLD, RefreshUtilityTabs, true)
-    settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, -TAB_H)
+    settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, 0)
     settingsTabBtn.label:SetText("Settings")
     settingsTabBtn:SetScript("OnClick", ToggleSettings)
     main.settingsTabBtn = settingsTabBtn
