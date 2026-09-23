@@ -1349,3 +1349,113 @@ WoW client - the final "does 'Emotional Damage' genuinely fit without a
 pixel to spare, does the click-routing feel instant under a real mouse,
 does the highlight read as flush against the row at real UI scale" pass
 needs one in-game check, same residual gap every round has disclosed.
+
+---
+
+## Round 12 - Mini Soundbook: surface layering, hover-open, proximity auto-close
+
+New feature plus a regression fix: multiple Mini Soundbook-related popups
+could stay visibly stacked over each other, and there was no way to open
+the Mini Soundbook without a click.
+
+### 1. Single-active-transient-surface rule
+
+Three surfaces - the expanded Mini Soundbook (favMenu), Quick Options
+(quickMenu), and the Send-to/context menu (SendMenu.lua) - previously
+had no coordination at all: opening any one of them never closed
+another, leaving overlapping interactive controls. New rule, real
+`Hide()` calls throughout, never a frame-strata change:
+
+- Quick Options and the expanded Mini Soundbook are mutually exclusive -
+  opening either closes the other first (`SB.ShowFavMenu`/
+  `SB.ShowAnnouncerQuickOptions`).
+- Quick Options and the context menu are mutually exclusive the same way
+  (`SB.OpenSendMenu` now closes Quick Options first; opening Quick
+  Options closes the context menu first).
+- The context menu is deliberately exempt from closing the expanded Mini
+  Soundbook - it's opened FROM one of its rows and is meant to coexist
+  with it (unchanged existing `PinFavAlpha` behaviour).
+- `Theme.CreateDropdown` gained `CloseList`/`IsListOpen`/`GetListFrame` -
+  its floating list/catcher are separate top-level frames parented to
+  `UIParent`, not real children of whatever owns the dropdown, so they
+  never auto-hid with their owner before this. Closing Quick Options now
+  also closes its own Popout Direction dropdown list, removing that
+  invisible hit-frame too.
+
+### 2. Mini Soundbook activation mode
+
+New persisted `ui.announcer.openOnHover` (default `false` for fresh
+installs and existing users alike - a plain new field, no migration
+needed since the generic defaults-backfill already covers both cases
+identically). Exposed as "Open Mini Soundbook on Hover" in both Quick
+Options and Settings -> Mini, both editing the exact same field - no
+duplicate value, no extra refresh plumbing, since the icon's own hover
+handler reads it live on every hover regardless of which surface changed
+it.
+
+Hover-open is wired as a native `OnEnter` `HookScript` on the icon -
+edge-triggered (fires once per genuine transition from outside the
+icon's bounds to inside it, never a poll) and gated by both the setting
+and Quick Options' own open state. This turned out to make every
+"reopen-loop" edge case in the spec fall out for free, with no extra
+suppression-flag state machine needed: nothing re-checks hover state
+just because the cursor happens to still be resting on the icon after
+some *other* surface closed elsewhere - a fresh `OnEnter` only ever fires
+after a real `OnLeave` genuinely preceded it. Left-click keeps working
+unchanged regardless of the setting; hovering never opens Quick Options
+(unaffected by this setting entirely - still Shift+Right-click only).
+
+### 3. Proximity-based auto-close
+
+One shared, throttled ~0.1s ticker (`C_Timer.NewTicker`), applied to the
+expanded Mini Soundbook and Quick Options only (the context menu keeps
+its own existing outside-click dismiss, unchanged) - created only while
+either is shown, cancelled the instant both are hidden via a single
+canonical `NoteMiniSurfaceHidden` hook on both frames' own `OnHide`
+(fires correctly no matter which code path actually closed them - a
+row's own click-to-play, the outside-click catcher, or proximity
+closing it itself - rather than needing every individual close call site
+to remember its own "is the other one still open" check).
+
+Combined active area = the icon (always) + favMenu (while shown) +
+quickMenu (while shown) + quickMenu's own open Popout Direction dropdown
+list (while open), +60px tolerance; closes after ~300ms continuously
+outside that area. A shared `proximityActiveInteraction` flag - set by
+the icon's own drag (repositioning the trigger) and by both the
+Announcer Size and Mini Soundbook Size sliders' mouse-down/up inside
+Quick Options - suspends the countdown entirely for as long as the
+interaction lasts and restarts it fresh (not from wherever it left off)
+the moment the interaction ends, exactly as specified ("restart the
+outside-distance timer only after the active interaction ends").
+
+### Verification
+
+All 13 mock regression scripts pass (the 12 from prior rounds plus a new
+`loader_minisurfaces.lua`): default setting value; every single-active-
+surface combination (Quick Options vs. Mini Soundbook, Quick Options vs.
+context menu, context menu legitimately coexisting with the expanded
+Mini Soundbook); hover OFF does nothing while left-click still opens it;
+hover ON opens without any click and never opens Quick Options; Quick
+Options open suppresses hover-open underneath it, and a genuine
+subsequent hover entry after it closes still works normally; and the
+full proximity mechanics - never closes from inside tolerance or a
+single outside sample, an active interaction (simulated via the icon's
+own real drag scripts) suspends closing indefinitely and the countdown
+restarts fresh once it ends, closes after exactly 3 consecutive ~0.1s
+outside samples (~300ms).
+
+### Still gated on a live client
+
+Every change this round is either a root-caused interaction fix (the
+mutual-exclusion rule, the dropdown list's own orphaned hit-frame) or a
+mechanism verified end-to-end through the addon's own real event/script
+handlers in the mock harness, including directly driving the shared
+ticker via the harness's own `TickMockTickers`. This environment still
+has no live WoW client and no real screen geometry (`GetLeft`/`GetRight`/
+`GetTop`/`GetBottom` are fixed mock stubs, not real anchor-resolved
+positions - the proximity test drives them and the cursor position
+directly rather than through real on-screen layout) - the final "does
+hover-open feel instant, does the 60px tolerance genuinely feel natural
+moving between the trigger/Mini Soundbook/Quick Options/its dropdown,
+does 300ms read as deliberate rather than laggy or twitchy" pass needs
+one in-game check, same residual gap every round has disclosed.
