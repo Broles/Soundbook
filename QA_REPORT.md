@@ -1853,3 +1853,77 @@ now clears within ~0.3s of the real audio ending rather than the
 previously-reported 6+. The 0.3s grace margin itself is a carried-
 forward value from this addon's own pre-3.0 precedent, not re-derived
 against real playback latency in this environment.
+
+---
+
+## Round 15 - Mini Soundbook proximity: scale-coordinate-space bug at 3-column size
+
+### Report
+
+Round 14's proximity tuning (wider tolerance, longer delay, opening
+grace) did not fix the underlying bug: at Mini Soundbook Size 120%+
+(the 3-column layout threshold), the Mini Soundbook still closed
+instantly - even with the cursor hovering directly over it.
+
+### Root cause
+
+`Frame:GetLeft()/GetRight()/GetTop()/GetBottom()` return coordinates in
+the frame's OWN local unit space (1 unit = that frame's own effective-
+scale pixels), not pre-normalized to UIParent's scale. `icon` and
+`favMenu` both carry independent `SetScale` values (Announcer Size /
+Mini Soundbook Size) - the proximity system's `AddMiniBounds` read their
+raw Get* values directly and compared them against the cursor position
+(which IS correctly normalized to UIParent's scale), silently skewing
+by exactly the scale ratio. Below ~1.15x the skew stayed inside even the
+old 60px tolerance, masking it entirely; the 3-column threshold (1.15x+)
+compounds a real scale AND a wider raw frame together, reliably
+exceeding even Round 14's widened 150px tolerance. This is the exact
+same class of bug already fixed once for `SB.ResolvePopoutDirection`'s
+own `GetCenter()` call (see that function's own comment) - just never
+applied to the proximity bounds code, which was written later.
+
+### Fix
+
+`AddMiniBounds` now multiplies each frame's raw bounds by
+`frame:GetEffectiveScale() / UIParent:GetEffectiveScale()` before
+merging them into the combined tolerance region - the same
+scale-normalization technique already proven correct elsewhere in this
+file. Applies uniformly to every frame the proximity system already
+considers (icon, favMenu, quickMenu, the Popout Direction dropdown
+list), so this also covers Announcer Size at any value, not just Mini
+Soundbook Size.
+
+### A second bug, in the test harness itself
+
+Verifying this required a REAL scaled mock frame (not the synthetic
+`FakeAnchor` tables `loader_popout.lua` already used specifically to
+route around this exact gap). Doing so surfaced a second, independent
+bug - this time in `mock.lua`: `GetEffectiveScale()` was defined TWICE
+on the same frame table, and the second definition (`return 1`,
+unconditionally) silently shadowed the first (`return f._scale or 1`) -
+meaning `GetEffectiveScale()` on a real mock frame had never once
+actually reflected `SetScale()`, for any test, ever. Fixed by removing
+the stale duplicate. Confirmed harmless everywhere else: every other
+`GetEffectiveScale()` call site in the addon (`UIParent`, `Minimap`,
+scroll frames, `main`) queries a frame that never has `SetScale` called
+on it, so their behavior is unchanged.
+
+### Verification
+
+A new regression test (`loader_minisurfaces.lua`, section 4b) sets Mini
+Soundbook Size to 150% (3-column), places the cursor at the frame's REAL
+on-screen edge (its own raw `GetRight()` times its own current scale),
+and asserts it stays open well past both the opening grace and close
+delay. Confirmed this genuinely reproduces the reported bug: reverted
+against the pre-fix `Announcer.lua`, the same test fails exactly as
+described (closes despite the cursor sitting on the real edge); with
+the fix, it holds. All 14 mock regression scripts pass.
+
+### Still gated on a live client
+
+The mock's `GetLeft/Right/Top/Bottom` remain fixed stubs, not real
+anchor-resolved geometry - this fix is proven correct in the coordinate
+-space math (scale-correction applied, verified against a reproduced
+failure), but the "does 150px feel right at 200% Mini Soundbook Size on
+a real screen" question still needs an in-game check, same disclosed
+limitation as every round's proximity work.

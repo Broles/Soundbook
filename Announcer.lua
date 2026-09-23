@@ -1514,6 +1514,22 @@ local function AddMiniBounds(combined, frame)
     if not frame or not frame.IsShown or not frame:IsShown() then return combined end
     local l, r, t, b = frame:GetLeft(), frame:GetRight(), frame:GetTop(), frame:GetBottom()
     if not (l and r and t and b) then return combined end
+    -- Regression fix (explicit user report: the Mini Soundbook closes
+    -- instantly while the cursor is hovering directly over it, but only
+    -- once Mini Soundbook Size reaches the 3-column layout, ~120%+).
+    -- GetLeft/Right/Top/Bottom are returned in the frame's OWN local unit
+    -- space (1 unit = that frame's own effective-scale pixels) - icon and
+    -- favMenu both carry their own independent SetScale (Announcer Size /
+    -- Mini Soundbook Size), so comparing their raw numbers directly
+    -- against the cursor position (normalized to UIParent's own scale
+    -- below) silently skews by exactly the scale ratio - the same class
+    -- of bug already fixed once for SB.ResolvePopoutDirection's
+    -- GetCenter() call (see that function's own comment). Below ~1.2 the
+    -- skew happened to stay inside the tolerance band, masking it; at 1.2+
+    -- (also a wider frame in raw units, compounding the error) it
+    -- regularly exceeded even a generous tolerance.
+    local scaleRatio = (frame.GetEffectiveScale and frame:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
+    l, r, t, b = l * scaleRatio, r * scaleRatio, t * scaleRatio, b * scaleRatio
     if not combined then
         return { left = l, right = r, top = t, bottom = b }
     end
