@@ -688,3 +688,179 @@ screenshot - but the final "does this actually look premium and
 cohesive" judgment call still needs one in-game pass, at more than one
 window size and UI scale, the same residual gap every prior visual round
 has disclosed.
+
+---
+
+## Round 9 - Targeted corrections: shared header, header controls, resize/popup bugfixes, Settings tabs, New Sounds isolation
+
+A precise, targeted list of corrections, not another broad redesign pass -
+applied literally against each numbered requirement rather than
+re-touching areas not named.
+
+### 1. Shared header (Main / Settings / Keybindings)
+
+Main's title row (previously a small, left-aligned, custom-built label +
+divider) is now `Theme.CreateHeader` itself - the exact same crest/gold-
+divider component Edit Sound's own header already used, at the requested
+~60px height with a new shared `Title` font tier (~24px at normal scale,
+1.5x `GameFontNormalLarge`'s 16px baseline). The label is centred against
+the header's own **full width**, not "whatever space is left" - the back
+button and the utility icons are separate overlays anchored to the
+header's own corners, so neither can pull the title off-centre. Settings
+and Keybindings already shared Main's header via the existing panel-swap
+mechanism (Task #31, an earlier round), so they inherited this
+automatically - opening either now shows the same centred, crested header
+with a `< Soundbook` back button (was `< Library` - there was never a
+destination called "Library").
+
+### 2. Main top-right controls
+
+Quick Audio / Lock / Close, in that order, 24x24 visual size, 6px gaps,
+16px inside the header's own right edge. Each gets a ~28x28 effective
+click target via `SetHitRectInsets` (no separate wrapper frame needed for
+this). Quick Audio's icon changed from a WoW inventory icon
+(`INV_Misc_Bell_01`) to a new `Theme.CreateAudioGlyph` - a monochrome
+speaker-with-slash glyph pulled from Soundbook's own `ControlIcons.tga`
+atlas (verified by rendering the actual texture - the atlas's "mute"
+quadrant literally *is* a speaker icon, not a placeholder). Hover across
+all three now reads as Arcane Cyan instead of gold - gold was previously
+used for both hover AND pressed, making the two indistinguishable; gold
+is now reserved for pressed/active states only.
+
+### 3. Search
+
+Centred in the content area below the header, 66% of available width
+with a 320px minimum (was a fixed-position box anchored to the old
+toolbar's bottom-left, 140px minimum). Uses a single `TOP` anchor plus an
+explicit width recomputed on resize, so changing only the width keeps it
+centred automatically - verified to stay centred at both the Main
+window's minimum (560px) and maximum (720px) width.
+
+### 4. Bugfixes
+
+- **Resize grip**: a plain click (no drag) could visibly expand the
+  window. Root cause: `OnMouseDown` called `main:StartSizing("BOTTOMRIGHT")`
+  unconditionally - WoW's `StartSizing` ties the given corner directly to
+  the *current* cursor position from that instant on, not a delta from
+  where the click started. The grip's own hit region is deliberately
+  larger than (and inset from) the window's true corner (an earlier
+  round's "too small to click" fix), so a click anywhere in that padding
+  made the corner jump to the cursor immediately, even with zero
+  movement afterward. Fixed by switching to
+  `RegisterForDrag`/`OnDragStart`/`OnDragStop` - WoW's own drag detection
+  already requires genuine mouse movement while held before `OnDragStart`
+  fires, so a plain click never reaches it at all. Same pattern `main`
+  itself already used for window-move, just never applied to the grip.
+- **Broadcast/channel popup** used to open LEFT of its trigger by
+  deliberate previous-round design ("toward the screen interior") -
+  directly over the Library/sound list. Now opens RIGHT (outside the
+  Main window, 8px gap) by default, via an explicit
+  `GetRight()`-vs-`GetScreenWidth()` check, flipping left only when the
+  screen genuinely doesn't have room - not left to `SetClampedToScreen`
+  alone, which could slide it back over the Library on a narrow or
+  off-centre screen.
+- **Default Output tabs** (Guild/Raid/Friends) became fully unclickable
+  (`EnableMouse(false)`) whenever the player had zero people in that
+  bucket (not in a guild, no group, no online friends) - silently
+  removing the option instead of just showing "nobody there right now."
+  The flyout's own empty-state message ("Not currently in a guild", etc.)
+  already existed and worked correctly - the only bug was that you could
+  never actually open it. Now always clickable; still dimmed (60% alpha)
+  for information only.
+
+### 5. Mini Soundbook
+
+- Favourite-selection popup's column width raised 10% (150→165px at 2
+  columns, 118→130px at 3) - width only, row height and every interaction
+  unchanged. Verified via the mock harness: popup width now reports
+  338/398 (was 308/362).
+- "Play sound locally" / "Play locally" → "Play for Yourself" everywhere
+  this Mini Soundbook state is shown (the Favourites popup's own summary
+  header, both the "no per-sound overrides" and "override present"
+  phrasings).
+
+### 6. New Sounds preview isolation
+
+Every row click now calls `SB:StopAllSounds()` - the same public stop
+path the Mini Soundbook's own Stop button and `/sb stop` already use -
+immediately before `SB:TriggerSound(soundID, "SELF")`. `SB:PlaySound`
+only self-stops previous audio when the player's "Allow overlapping
+sounds" setting is *off*; this explicit call makes New Sounds behave like
+an exclusive one-at-a-time preview player regardless of that setting,
+without ever touching the saved setting itself. `SB:TriggerSound`'s
+`"SELF"` override already took absolute precedence over both the global
+Default Output and any per-sound "Default Output" override
+(`SB:ResolveOutputTarget` checks the explicit override first) - already
+correct, verified by reading the resolution order rather than assumed.
+
+### 7. Settings
+
+- **Tab labels**: shortened to one word each - Sound / Sharing / Mini /
+  Library / Advanced - underlying section keys and content completely
+  unchanged. Tabs now share the row's live width evenly (recomputed on
+  resize, so five labels never clip even at the Main window's 560px
+  minimum), 8px gap, 28px height.
+- **Tab active state rebuilt**: no filled tile any more. Active = primary
+  text + a 2px underline (width = label width + 12px) in that category's
+  own colour - Sound: Arcane Cyan, Sharing: the existing Guild green,
+  Mini: GOLD, Library: the existing Friends blue, Advanced: the existing
+  Raid/Party orange. Hover (inactive only) tints the text toward that
+  same colour at reduced intensity; inactive stays dim. Verified this
+  doesn't recolour anything outside the tab strip itself.
+- **"Channels" heading**: was a plain small `HighlightSmall` label,
+  visually weaker than "Notifications" right below it despite both being
+  section headings. Now uses the same `Theme.CreateSectionHeader`
+  component (gold text + divider line) both already shared before this
+  fix only applied to one of them.
+- **"Chat Notifications" → "Notifications"**, and the large empty gap
+  above it is gone: the Global Receive Mute info block used to reserve a
+  fixed 54px whether or not a mute was actually active (explicit earlier
+  design intent, since revised) - it now collapses to ~1px when idle and
+  reflows automatically via WoW's own live anchor resolution, so
+  Notifications starts right after Channels with one clean ~24px gap
+  instead of a large reserved blank region. Still expands to the real
+  54px content when a mute genuinely is active.
+- **Footer removed**: the persistent "Help & Information" footer
+  (divider, label, two half-width buttons, version text) is gone
+  entirely - no empty container left in its place. Replay Introduction
+  and Latest Sound Updates moved into Advanced, stacked one-per-row with
+  Run Diagnostics (8px gaps, full content-column width instead of the
+  old cramped half-width pairing) as one three-button action area; the
+  version text moved down with them. Every button's own click action is
+  unchanged.
+
+### Verified already correct (no change needed)
+
+- **Fresh-install two-column layout**: the default `mainWidth` (560,
+  `Core.lua`'s `defaults.ui.mainWidth`) is already below the 3-column
+  threshold (`THREE_COLUMN_WIDTH = 600`), so a genuinely fresh install
+  already renders 2-column without any code change - confirmed by reading
+  both values directly, not by assumption.
+- **Content margins**: the Library's left/right/bottom insets were
+  already effectively symmetric (a 2px difference on the right is
+  reserved for the scrollbar itself, not visible content) from an earlier
+  round's own pass - left untouched rather than introduced a new
+  asymmetry.
+
+### Verification
+
+All 8 mock regression scripts pass (`loader.lua`, `loader2.lua`,
+`loader_broadcast.lua`, `loader_favgrid.lua`, `loader_popout.lua`,
+`loader_raidadmin.lua`, `loader_settings.lua`, `loader_playback.lua`).
+Updated `loader_settings.lua`'s own header-swap test for the new
+`main.header`/`main.header.backBtn` structure (replacing the retired
+`toolbar.mainTitle`/`toolbar.contextTitle` pair), and `loader_broadcast.lua`'s
+Self Only header-text assertion for the new "Play for Yourself:" wording.
+
+### Still gated on a live client
+
+Every change this round is either a verified geometry/anchor-chain fix
+(read against the real formulas, not eyeballed), a root-caused behavioural
+bugfix (resize grip, popup direction, Default Output availability), or a
+verified texture/asset substitution (Quick Audio's speaker glyph,
+confirmed by rendering `ControlIcons.tga` directly rather than guessing
+what a texture atlas quadrant contains). This environment still has no
+live WoW client - the final "does the header actually read as ~60px and
+~24px at a real UI scale, does the resize grip feel right under a real
+mouse" pass needs one in-game check, same residual gap every visual round
+has disclosed.
