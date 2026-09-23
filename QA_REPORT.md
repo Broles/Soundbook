@@ -864,3 +864,292 @@ live WoW client - the final "does the header actually read as ~60px and
 ~24px at a real UI scale, does the resize grip feel right under a real
 mouse" pass needs one in-game check, same residual gap every visual round
 has disclosed.
+
+---
+
+## Round 10 - Settings position, resize/lock rework, Output Rail overhaul, Mini Soundbook fixes, Ignore blocking
+
+Another precise, targeted correction list - Settings' category strip
+position, the Main resize grip's real root cause, Lock semantics, Output
+Rail behaviour, two Mini Soundbook bugs, and a new multiplayer feature
+(Ignore blocking). Explicit instruction honoured: no broad redesign, no
+change to the header itself.
+
+### 1. Settings: category strip position
+
+Re-anchored `Settings.lua`'s tab row directly off `mainFrame` using a
+newly-exposed `SB.LIBRARY_CONTENT_TOP_OFFSET` (the same pixel offset
+UI.lua's Output Rail already computed) instead of the previous indirect
+multi-hop `SetAllPoints` chain through frames (header/search/filter row)
+that are `Hidden`, not just repositioned, while Settings is the active
+view. Static reading of the old chain suggested it should already resolve
+to the same Y as the first Library row (both computed to 159px); this fix
+is robust regardless of whether that was the exact prior cause, since a
+single shared, always-live pixel value can only be more reliable than an
+indirect chain through sometimes-hidden frames, never less.
+
+### 2. Main resize grip - real root cause, second pass
+
+The first round's fix (`RegisterForDrag`/`OnDragStart` instead of
+`OnMouseDown`) stopped a zero-movement *click* from engaging resize, but
+a genuine *drag* could still visibly jump the window the instant it
+crossed WoW's own drag threshold - because the handler still called
+`main:StartSizing(point)`, which ties the given corner directly to the
+cursor's live absolute screen position from the instant it's engaged, not
+a delta from where the drag started. Combined with the grip's own
+deliberately-oversized hit region (an earlier round's own click-ability
+fix), engaging `StartSizing` from anywhere inside that padding jumped the
+window by exactly that offset.
+
+Fixed by abandoning `StartSizing`/`StopMovingOrSizing` entirely: on
+`OnDragStart`, the window's current on-screen `TOPLEFT` is captured
+(`GetLeft()`/`GetTop()`) and re-pinned there, plus the cursor's own
+starting position (`GetCursorPosition()`, scale-corrected via
+`GetEffectiveScale()`); every `OnUpdate` tick then recomputes width/height
+purely from the cursor's own movement *since drag-start* (delta, not
+absolute position), clamped to the existing 560-720/560-760 bounds, and
+applies it via `SetSize()`. Mathematically deterministic regardless of
+where inside the grip the drag began - the "jump" class of bug is no
+longer reachable at all, not just less likely.
+
+Verified via a new mock-harness assertion in `loader.lua`: a plain click
+(no `OnDragStart` ever fires - proven by asserting the old
+`OnMouseDown`/`OnMouseUp` handlers are gone) does nothing; a simulated
+40px cursor delta resizes by exactly 40px, not a jump to some absolute
+position; a simulated 5000px delta clamps to exactly 720x760, never
+exceeds it.
+
+### 3. Lock semantics reworked
+
+Old rule: Lock blocked both moving and resizing Main. New rule (explicit
+requirement): unlocked - movable and resizable, grip visible and
+interactive; locked - **still movable** by dragging the header, **only**
+resizing is disabled, and the grip is completely hidden (`SetShown(false)`)
+and mouse-disabled (`EnableMouse(false)`, `SetHitRectInsets(0,0,0,0)`) so
+no invisible hit area survives. Unlocking restores the grip and manual
+resizing immediately. Mini Soundbook's own, separate lock semantics are
+unchanged. Verified in the same `loader.lua` test: locking hides the grip
+and makes a drag-start on it a no-op (defence in depth, since `IsShown`/
+`EnableMouse` already stop a real click from reaching it), while Main's
+own `OnDragStart` still fires normally throughout.
+
+### 4. Main bottom content spacing
+
+`libraryScroll.scroll`'s bottom anchor gained +10px inset (`SAFE_INSET+10`
+instead of `SAFE_INSET`) between the last sound row/pagination area and
+the inner bottom frame, at the existing left/right insets - no new empty
+footer, scales with window height like every other Library anchor already
+does.
+
+### 5. "Favourites" -> "My Favourites"
+
+Renamed the Main Library section's visible heading only - the tab display
+label and the direct `ConfigureHeader` call both now say "My Favourites";
+underlying section key/data (`"favourites"`) untouched. Mini Soundbook's
+own separate wording was out of this round's scope and left alone.
+
+### 6. Category-header tooltips
+
+Every collapsible category header (a pooled/reused row) now carries a
+dynamic `tooltipTitle`/`tooltipBody` pair (set in `ConfigureHeader`, since
+`Theme.AttachTooltip`'s fixed-text-at-attach-time shape doesn't fit a
+reused row) and a new `OnEnter`/`OnLeave` pair that shows it: **My
+Favourites** - "Click to collapse or expand. Add favourites with Shift +
+Click, or enable Favourite in Edit Sound."; **Hide/Hidden** - "Click to
+collapse or expand. Hide a sound from Edit Sound by enabling Hide."; every
+other category - "Click to collapse or expand this category."
+
+### 7. Main Output/Channel Selector overhaul
+
+- **Always selectable at zero recipients**: All/Raid/Guild/Friends/Self
+  Only remain visible and clickable regardless of group/guild/friend
+  availability - no auto-fallback, no hiding/disabling. A new
+  `rail.channelSelected[bucket]` boolean, set/cleared alongside every
+  member-selection mutation, distinguishes "explicitly selected, zero
+  eligible members" from "never touched" (the member array alone can't
+  tell these apart), driving the tab's active/visual state independent of
+  member count.
+- **"Raid" label always**: the merged Raid/Party target now always
+  displays as "Raid" in this selector (was conditional on `IsInRaid()`/
+  `IsInGroup()`); the underlying Raid/Party transport resolution
+  (`SB.ResolveGroupChannel`) is unchanged.
+- **Exact channel colours**: a new `HexColor(hex)` helper (the standard
+  `tonumber(hex:sub(1,2),16)/255` pattern) implements the exact requested
+  hex values precisely - All `#F2F5FF`, Friends `#B88CF2` (deliberately
+  different from the existing `SB.CHANNEL_COLOR.FRIENDS`, used only
+  elsewhere), Guild `#8CE09E`, Raid `#FAB87A`, Self Only `#7A7A80` - as
+  full-colour active text, a same-colour tinted background, and a
+  same-colour accent border, all visible even with zero recipients
+  (driven by `channelSelected` above, not hover).
+- **Click selects the whole channel AND opens its submenu**: Guild/Raid/
+  Friends now call `SB.SetBroadcastBucketAllSelected(bucket, true)` before
+  opening the flyout, so a single click both selects the whole channel
+  (Friends -> "All Friends", Guild -> "All Guild", Raid -> the whole
+  Raid/Party target) and opens the member submenu with it already shown
+  selected; individual members remain separately selectable underneath.
+  A second click on an already-open bucket still toggles it closed
+  (unchanged). Works identically with zero members (submenu just shows an
+  empty state, channel still counts as selected).
+- **All/Self Only stay hover-only**: no member dropdown for either - only
+  the required hover text ("Play for yourself and send to all enabled
+  Soundbook channels." / "Play only for yourself. Nothing is sent to other
+  players."), now anchored via `ANCHOR_NONE` + an explicit `SetPoint`
+  (not `ANCHOR_LEFT`/`ANCHOR_RIGHT`, which position relative to the
+  *cursor*, not the selector) with an 8px gap from the selector's own
+  right edge, flipping to the left only when there isn't enough on-screen
+  room to the right (`GetRight()` vs `GetScreenWidth()`, the same pattern
+  the broadcast flyout's own left/right flip already used).
+
+Verified via new targeted assertions in both `loader.lua` and
+`loader_broadcast.lua`: Guild/Raid/Friends tabs are found and clickable
+with a live roster; clicking Friends with zero eligible members still
+marks it selected (`channelSelected.FRIENDS == true`) with 0 members
+shown; the Raid tab's label reads "Raid" regardless of group state.
+
+### 8. Mini Soundbook: Announcer Preview trigger bug
+
+Opening the Announcer's Quick Options menu previously called
+`ShowDemoBanner()` unconditionally at the end of
+`SB.ShowAnnouncerQuickOptions`, showing fake preview content coupled to
+the menu's own open state - wrong per explicit requirement ("opening
+options must never show the Preview... do NOT couple preview visibility
+to the options-menu open state"). Removed that entire code path
+(`ShowDemoBanner`/`HideDemoBanner`/`demoBannerActive`, and the Announcer
+Size slider's own `if demoBannerActive then banner:SetScale(...)` live-
+preview hook) rather than patching around it - the Preview is now driven
+exclusively by the icon's own pre-existing, already-correct reposition-
+drag mechanism (`StartIconDragPreview`/`StopIconDragPreview`), completely
+untouched by this fix.
+
+Verified via a rewritten section of `loader_popout.lua`: a full snapshot
+of the banner's observable state (`IsShown`, alpha, `nameText`,
+`soundbookSoundID`) is taken before opening Quick Options, and asserted
+byte-for-byte unchanged after opening, after changing the Announcer Size
+slider, and after closing - `IsShown()`/alpha alone aren't reliable
+signals here (the mock's queued `C_Timer` never actually runs
+`CollapseToIdle`'s deferred `Hide()`), so the test checks that literally
+nothing about the banner changes at all instead. The reposition-drag
+preview itself, and its "a real sound arriving mid-preview must not be
+clobbered" guarantee, are both re-verified working exactly as before,
+just correctly re-anchored to the actual trigger.
+
+### 9. Mini Soundbook: independent Announcer Size / Mini Soundbook Size
+
+A single `ui.announcer.scale` used to drive both the Announcer's own
+visuals (icon/banner `SetScale`) *and*, indirectly, the Favourites
+popup's 2-vs-3 column threshold - resizing one always affected the other,
+with no way to make favourites bigger without also blowing up the
+Announcer. Split into two independent persisted fields:
+
+- `ui.announcer.scale` ("Announcer Size") - Announcer icon/banner/Preview/
+  Now Playing/announcer text only, via the existing `SB:RefreshAnnouncerScale`.
+- `ui.announcer.favScale` ("Mini Soundbook Size", new) - the favourite-area
+  popup only (icons, sound-name text, dropdown/name-area width), via a
+  new `SB:RefreshMiniSoundbookScale()` that `favMenu:SetScale()`s it,
+  called from `SB.ShowFavMenu`. `GetFavMenuColumns`'s 2-vs-3 threshold now
+  keys off `favScale`, not `scale`.
+
+Both: 50%-200%, step 10%, default 100%. `DB_VERSION` bumped 27->28 with a
+migration that seeds `favScale` from whatever the single prior `scale`
+already was (clamped into 0.5-2.0) for upgrading players - never resets
+an existing user to 100%; a fresh install gets 1.0 in both directly from
+the defaults table. Two new sliders added to Settings -> Mini
+("Announcer Size", "Mini Soundbook Size" directly below it); the existing
+Quick Options popup's own Announcer Size slider widened from 70-160 to
+the same 50-200 range.
+
+Verified via a new `loader_scalesplit.lua`: fresh-install defaults (both
+1.0); migration from a pre-split v27 snapshot with `scale = 1.4` (both
+fields end at 1.4, not reset); migration with an out-of-range prior value
+(`9.9`) clamps `favScale` to exactly 2.0; changing one scale via its real
+callback path rescales only its own frame, verified by reading
+`icon:GetScale()`/`favMenu:GetScale()` directly before and after each
+change; both values survive a simulated `/reload` (`PrepareDatabase` run
+again on the resulting SavedVariables snapshot).
+
+### 10. Multiplayer: Friends delivery path - verified, no fix needed
+
+Read `Communication.lua`'s full Friends path end-to-end against the
+requirement list: `SB.ComputeReachablePlayers()` already filters the
+Friends bucket to `SB.db.knownUsers` (confirmed Soundbook installs) for
+every dropdown/submenu; the actual "All Friends" broadcast
+(`SendToFriends`) sends to every currently-connected friend blind (the
+correct, standard presence-discovery approach - a client without the
+addon just silently ignores the unknown prefix); a specific single friend
+send reuses the same `SendToPlayerSilent`/`SB:SendSoundToPlayer` path
+every other Direct target does; de-duplication against Guild/Raid overlap
+already existed (`GetGroupCoveredNames`, and `SB.ComputeReachablePlayers`'s
+own Friends > Raid > Guild priority claim); the ACK reply
+(`SB.SendAddonMessage(...".."ACK"...)`) is only ever sent *after*
+`SB:PlaySound(soundID, "remote")` returns true - never optimistic. No
+code change was needed; this was a verification pass, not a bugfix.
+
+### 11. Multiplayer: Ignore-list blocking (new feature)
+
+Full write-up in this session's commit message
+(`Add Ignore-list enforcement to Soundbook communication`) - summary:
+
+- `SB:IsIgnored(name)` (Core.lua), same enumerate-and-match shape as the
+  existing `SB:IsFriend`.
+- Outbound: `SendToPlayerSilent` (the shared funnel for Default-Output/
+  SUBSET targets) and `SendToFriends` silently skip anyone the sender has
+  ignored, continuing delivery to everyone else; `SB:SendSoundToPlayer`
+  (the explicit single-target SendMenu action) additionally prints
+  "Cannot send to `<Player>`: Soundbook communication is blocked by
+  Ignore." A whole-channel Guild/Raid broadcast can't be filtered
+  per-recipient at send time, so that direction relies entirely on the
+  inbound check.
+- Inbound: `IsPlayableRightNow` (the pre-queue/pre-rate-limit gate, so an
+  ignored sender's message never burns a queue slot or rate-limit credit)
+  and `HandlePlayCommand` (the final redundant safety net for an entry
+  that sat queued, mirroring the existing raid-mute/individual-mute
+  pattern) both reject before playback - never queued, never played,
+  never recorded to History, never given a normal success ACK. Replies
+  with a new `IGNOREACK`, extending the existing ACK/MUTEACK/RXOFFACK
+  protocol.
+- Sender-side aggregate: a new `HandleIgnoreAck` folds `IGNOREACK` replies
+  into the existing debounced receipt summary as "(N blocked by Ignore)",
+  alongside "(N muted)"/"(N receive-off)" - one ignored recipient never
+  hides or aborts the rest of a multi-recipient send's real results.
+- Protocol correctness: Ignore is only ever reported when determined
+  directly (our own ignore list) or explicitly signalled by the remote
+  client (`IGNOREACK`) - never inferred from a bare timeout, which keeps
+  its existing unreachable/no-ACK behaviour (the case where *they* have
+  ignored *us*, and WoW's own whisper suppression means we never even see
+  the send attempt at all).
+
+Verified via a new `loader_ignore.lua`: outbound blocking for a single
+target (no message sent, exact required chat line printed) and for "All
+Friends" (1 of 3 skipped, the other 2 still sent); inbound rejection via
+a real `CHAT_MSG_ADDON` round trip through the addon's own event handler
+(`SoundbookCommFrame`) - zero `SB:PlaySound` calls, zero
+`REMOTE_SOUND_PLAYED` fires (proving no History entry), exactly one
+`IGNOREACK` reply, never a normal `ACK`; a non-ignored sender in the same
+test still plays and ACKs normally (no false positives); and the
+sender-side aggregate line, built from two real `ACK`s plus one
+`IGNOREACK`, reads exactly `"...(Friend received: Alice, Bob) (1 blocked
+by Ignore)"` - the two real recipients stay listed, the blocked one is
+called out separately, nothing is hidden or aborted.
+
+### Verification
+
+All 10 mock regression scripts pass (`loader.lua`, `loader2.lua`,
+`loader_broadcast.lua`, `loader_favgrid.lua`, `loader_popout.lua`,
+`loader_raidadmin.lua`, `loader_settings.lua`, `loader_playback.lua`, and
+this round's two new scripts, `loader_scalesplit.lua` and
+`loader_ignore.lua`).
+
+### Still gated on a live client
+
+Every change this round is either a verified anchor-chain fix (read
+against the real pixel formulas), a root-caused behavioural bugfix
+(resize grip's `StartSizing` jump, the Announcer Preview trigger), a
+verified data/migration change (the scale split, exercised against a
+real pre-split SavedVariables snapshot), or a new protocol extension
+exercised end-to-end through the addon's own real event handler in the
+mock harness. This environment still has no live WoW client - the final
+"does the resize grip feel right under a real mouse, do the exact hex
+channel colours read correctly at real UI scale, does a real WoW Ignore
+list round-trip through `GetNumIgnores`/`GetIgnoreName` exactly as
+assumed" pass needs one in-game check, same residual gap every round has
+disclosed.
