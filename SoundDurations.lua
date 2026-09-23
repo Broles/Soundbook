@@ -19,15 +19,6 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Are you lost"] = 1.515,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Auf Alkohol"] = 6.661,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Awolnation Run"] = 10.318,
-    -- REGENERATED 2026-09-23 - the shipped file measures 1.027s of actual
-    -- MPEG audio (verified by walking every frame header), not the 2.247s
-    -- this used to say. That stale value predates whatever replaced this
-    -- file on disk (it now ends in ~200 bytes of repeated padding, not a
-    -- normal encoder footer - a truncated/corrupted encode, not a shorter
-    -- edit done on purpose). See the 3.0 QA report for the full writeup;
-    -- replace the file with a full-length encode and regenerate this line
-    -- again if/when a correct one is available.
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Bad To The Bone"] = 1.027,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Borat Vagine"] = 7.824,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Cant Touch This"] = 20.193,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Celebration"] = 10.214,
@@ -38,9 +29,10 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Deja Vu"] = 6.296,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dexter Meme"] = 10.71,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Donkey Hee Haw"] = 1.489,
-    -- REGENERATED 2026-09-23 - same class of stale-vs-actual-file mismatch
-    -- as "Bad To The Bone" just above (measured 0.183s, not 0.392s).
-    -- Smaller drift, likely wasn't noticed yet, flagged proactively.
+    -- REGENERATED 2026-09-23 - shipped file measures 0.183s of actual
+    -- MPEG audio (verified by walking every frame header), not the 0.392s
+    -- this used to say. Smaller drift, likely wasn't noticed yet, flagged
+    -- proactively.
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dry Fart"] = 0.183,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Duel of the Fates"] = 15.984,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\El Chombo - Chacarron"] = 9.000,
@@ -72,14 +64,12 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\In The Beginning"] = 1.384,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Indian Song"] = 7.079,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Keyboard Meme"] = 4.467,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Kids Saying Yay"] = 8.202,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Leeroy Jenkins"] = 4.632,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Luge Luge"] = 4.127,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Mein Team"] = 5.042,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Meme End"] = 10.248,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Mir Egal"] = 5.329,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Mir Stinken"] = 1.464,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\More Dots"] = 5.068,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Nani"] = 1.202,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Nein Doch Oh"] = 1.776,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\No"] = 0.444,
@@ -94,11 +84,9 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Pornhub"] = 4.18,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Rick Vu Luvub Dub Dub"] = 1.541,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Rizzbot Laugh"] = 2.429,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Rock And Roll"] = 6.348,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Schoki"] = 3.579,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Sexy"] = 9.117,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Shame"] = 4.336,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Super Mario Death"] = 9.9,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Thats me"] = 7.105,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\To be continued"] = 9.639,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Viel Gluck"] = 4.911,
