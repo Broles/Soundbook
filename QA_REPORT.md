@@ -1927,3 +1927,134 @@ anchor-resolved geometry - this fix is proven correct in the coordinate
 failure), but the "does 150px feel right at 200% Mini Soundbook Size on
 a real screen" question still needs an in-game check, same disclosed
 limitation as every round's proximity work.
+
+## Round 16: Settings two-pane redesign + header gear + Send-to selector
+
+Two coordinated redesigns, implemented from a detailed design
+specification rather than a bug report.
+
+### Settings: 5-tab strip -> two-pane (vertical nav + scrolling content)
+
+The old horizontal 5-tab strip (`BuildTabStrip`) is replaced by a
+fixed-width (~128px) vertical left-hand nav (`BuildSectionNav`,
+`CreateNavRow`) with a restrained active-state (a thin left accent bar +
+soft tinted background, no heavy card/glow) and a normal hover state -
+distinct from `Theme.CreateTabButton`'s underline-tab treatment, which
+doesn't read well stacked vertically. Only the right-hand content pane
+scrolls; `FitSettingsPanelHeight`'s scroll-width computation was
+rederived from the new anchor geometry (nav's own left inset + `NAV_W`
++ `NAV_CONTENT_GAP` + the scroll region's own right inset), since the
+old `panelW - 18` shortcut assumed a full-width single-column scroll
+region that no longer exists. `CONTENT_W` (each section's own fixed
+content-frame width) dropped from 480 to 340 to fit the narrower content
+pane at the Main window's minimum resizable size (560px) - the exact
+figure is derived arithmetically in `Settings.lua`'s own comment, not
+guessed.
+
+Five sections became seven - **General** (minimap button - the one
+genuinely miscellaneous setting), **Playback** (output channel, overlap,
+combat/encounter gates - local click behavior only), **Multiplayer**
+(the Send/Receive channel matrix, Notifications, AND the remote repeat
+cooldown/queueing controls, moved in from the old "Advanced Playback"
+sub-group since both are about received sounds, not local playback),
+**Favourites** (Mini Soundbook window/activation controls only),
+**Appearance** (every Mini Soundbook size/opacity/font control, plus the
+Main Soundbook's own font/scale, moved in from the old Library &
+Appearance section - all pure look-and-feel now lives together),
+**Categories** (library sort order + the per-category icon/name rows),
+and **Advanced** (Diagnostics/Actions, Window Layout reset - moved in
+from Library & Appearance - and a new "Open Sound History" button, the
+one genuinely new element this round, wired to the same
+`SB:ShowHistoryWindow()` Announcer.lua's Quick Options already calls).
+Every relocated control keeps its exact existing SavedVariables key and
+onClick/onChange behavior - this is a presentation/navigation move, not
+a functional rewrite, and needs no SavedVariables migration.
+
+### Main window: Output Rail -> "Send to:" dropdown + header gear
+
+The right-side broadcast tabs/flyouts system (Guild/Raid/Friends
+multi-select, All/Self Only, ~350 lines of `UI.lua`: `BuildBroadcastTabs`,
+`HandleBroadcastTabClick`, `BuildBroadcastFlyout`, `SB.SetBroadcast*`,
+`SB.SelectAllBroadcastTargets`, `SB.SelectSelfOnly`, `SB.
+IsAllBroadcastFullySelected`, and the flyout catcher/click-routing
+machinery around them) is removed entirely. In its place: a single-select
+"Send to: X" dropdown in a new top control row directly below the
+header, alongside Search (Default Output ~190px on the left, Search
+filling the remainder on the right, same row/height). Built on
+`Theme.CreateDropdown` + the SAME canonical `SB.ComputeOutputTargetOptions`/
+`SB.OutputTargetRowFont` machinery `EditWindow.lua`'s own Default
+Output/Macro Output dropdowns and `SendMenu.lua` already use - no
+separately-built player/group list, so Guild/Raid-Party/Friends groups
+always show (even empty/unreachable), reach counts stay live via the
+existing `optionsProvider` re-query on every open, nested players keep
+their realm-aware dedup, and channel colors/Debug Mode version-suffix
+coloring are unchanged. The closed chip relabels only the "All"/"Self"
+display text ("Send to: All" / "Send to: Self Only" instead of the
+dropdown's own longer row text) via a `SetRowFont` wrapper that checks
+`text == dd.label` before rewriting - list rows are untouched.
+
+Settings itself moved from an external "Settings" text tab to a
+24x24 gear icon button at the header's top-left (`Theme.
+CreateSettingsGlyph`, WoW's built-in Trade_Engineering texture 134936,
+desaturated + gold-tinted - no gear quadrant exists in the addon's own
+`ControlIcons.tga` atlas, a binary asset this round couldn't extend).
+The gear stays visible in every view (Library/Settings/Admin/Keybind
+Mode) with an active-state tint while Settings is open; `<
+Soundbook` now sits to the gear's right instead of the header's absolute
+left edge, so the two coexist without overlapping or pulling the
+centred title off-axis (`Theme.CreateHeader` anchors the title to the
+header's own BOTTOM point, independent of either corner overlay). The
+Admin utility tab dock lost its Settings row and collapses to nothing
+(not just an empty box) when Admin is unavailable.
+
+### Default Output routing: restored as the real global default
+
+`SB:ResolveOutputTarget` (`Communication.lua`) previously treated
+`SB.db.settings.defaultOutputTarget` as dead except as the per-sound-
+override "no override" sentinel - the actual global default came from
+the Output Rail's own multi-select data via `SB.ComputeEffectiveRecipients`
+/`"SUBSET"`. This round reverts that: `defaultOutputTarget` is the real,
+single-select global default again, with "All" meaning exactly what
+`SB:BroadcastSound` (the original whole-channel broadcast, driven by
+Settings -> Multiplayer's own Send-matrix checkboxes) already did - this
+mapping was confirmed, not guessed, from `BuildChannelMatrix`'s own
+pre-existing subHint text ("Send defines which channels are included
+when the Main window's Default Output is set to All") and a pre-existing
+code comment describing the same relationship. Routing priority is
+unchanged: explicit override > per-sound override > global default >
+"ALL" fallback. `Core.lua`'s fresh-install block was updated from
+`defaultOutputTarget = "SELF"` to `"ALL"` to match the earlier, more
+recent requirement that a fresh install always lands on All - the old
+"SELF" value would otherwise have silently resurfaced now that this
+field is live again. `SB.db.ui.outputRail`'s data model, sanitization,
+and every manipulation function are left fully intact - no
+SavedVariables migration needed, they simply have no surviving UI.
+
+### Testing
+
+Two mock regression scripts tested the removed Output Rail UI surface
+directly (`loader_broadcast.lua`, `loader_outputselector.lua`) and were
+retired - their entire subject no longer exists. `loader_settings.lua`
+and `loader_minititle.lua` were rewritten against the new architecture:
+header gear open/close and active state, all 7 nav sections switch
+cleanly with no blank/near-zero-height collapse, exactly one nav row
+reports active at a time, the Default Output dropdown's initial value/
+closed-chip text, fresh-install `defaultOutputTarget == "ALL"`, and the
+Mini Soundbook title's live reach computation across Self/single-bucket/
+direct-player/All/zero-eligible/cross-channel-dedup/live-roster-event/
+live-Send-toggle cases (via the new `SB.RefreshDefaultOutputDisplay`).
+All 12 mock regression scripts pass; every changed file parses clean
+under `luac -p`.
+
+### Still gated on a live client
+
+Every layout claim in this round (nav width/row height, the top row's
+Default Output + Search proportions, gear button placement and title
+centering, Settings' two-pane spacing at min/max window size) is
+structurally correct (verified anchor targets, no clipping in the
+mock's frame-tree walk) but **not** pixel-verified - the mock has no
+real layout engine. Needs an in-game check against the task's own
+10-point verify checklist, especially: visual balance of the new top
+row at both 560px and 720px Main window width, the gear icon's actual
+legibility/contrast at 24x24, and the nav's restrained active-state
+actually reading as "selected" rather than just "slightly different."
