@@ -70,6 +70,8 @@ local isAdminOpen = false
 local keybindModePanel
 local isKeybindModeOpen = false
 local lockToolbarBtn
+local mainTitle
+local backToLibraryBtn, contextTitle
 local selectedSoundID
 local playingSoundID
 local playingStateTimer
@@ -2065,12 +2067,25 @@ local RAIL_TOP_OFFSET = SAFE_INSET + TOOLBAR_H + SECTION_GAP + TAG_FILTER_BAR_H 
 
 local TAB_W, TAB_H, TAB_GAP = 108, 28, 3
 
-local function CreateAttachedTab(parent, color, refreshFn)
+-- CreateAttachedTab(parent, color, refreshFn, noOwnBorder) - the broadcast
+-- (Output Rail) tabs pass noOwnBorder=true: they live inside one shared
+-- rail container that draws the single outer border/background (see
+-- BuildBroadcastTabs below), so each individual tile no longer draws its
+-- own edge - explicit report: "still looks like five old-style bordered
+-- rectangles attached outside the window" instead of one coherent
+-- control. The utility (Admin/Settings) tabs below keep their own border
+-- (still two independent, individually-clickable shell controls, not a
+-- segmented group), so they pass nothing here and are unaffected.
+local function CreateAttachedTab(parent, color, refreshFn, noOwnBorder)
     local btn = SB.CreateFrame("Button", nil, parent)
     btn:SetSize(TAB_W, TAB_H)
-    btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    if noOwnBorder then
+        btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+    else
+        btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+        btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+    end
     btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
-    btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
 
     -- Soft ADD-blend glow behind the tile, only shown while active - a
     -- slightly oversized, low-alpha colour wash reads as a gentle glow
@@ -2108,18 +2123,43 @@ local function CreateAttachedTab(parent, color, refreshFn)
     return btn
 end
 
+-- Output Rail: ONE coherent segmented control, not five separately
+-- bordered rectangles bolted onto the window (explicit report). A single
+-- container frame draws the one shared background/border and attaches to
+-- the Soundbook's own outer right edge; each bucket becomes a borderless
+-- segment inside it, separated by a thin 1px divider line rather than a
+-- visible gap, so the whole thing reads as one control with five
+-- selectable zones - closer to a real segmented control than a stack of
+-- independent tiles. Each segment keeps its own left-edge accent strip
+-- and fill/glow for its selected state (ApplyTabVisual, unchanged).
+local outputRailContainer
+
 local function BuildBroadcastTabs(parent)
+    local railH = #BROADCAST_TABS * TAB_H
+    local rail = SB.CreateFrame("Frame", nil, parent)
+    rail:SetSize(TAB_W, railH)
+    rail:SetPoint("TOPLEFT", parent, "TOPRIGHT", -3, -RAIL_TOP_OFFSET)
+    rail:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    rail:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+    rail:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+    outputRailContainer = rail
+    main.outputRailContainer = rail
+
     for i, entry in ipairs(BROADCAST_TABS) do
-        local btn = CreateAttachedTab(parent, entry.color, function() RefreshBroadcastTabs() end)
-        -- Attached directly to the Soundbook's own outer right edge - a
-        -- small negative x-offset overlaps the frame's own border (a
-        -- "bookmark" look) rather than floating with a gap; a fixed
-        -- vertical offset from the very top-right corner (not chained to
-        -- the toolbar/tagFilterBar) clears the frame's own decorative
-        -- corner ornament and keeps every tab's position independent of
-        -- window height, unlike the old rail's anchor chain.
-        btn:SetPoint("TOPLEFT", parent, "TOPRIGHT", -3, -(RAIL_TOP_OFFSET + (i - 1) * (TAB_H + TAB_GAP)))
+        local btn = CreateAttachedTab(rail, entry.color, function() RefreshBroadcastTabs() end, true)
+        -- Stacked with no gap inside the shared container (dividers below
+        -- provide the only visual separation between segments).
+        btn:SetPoint("TOPLEFT", rail, "TOPLEFT", 0, -((i - 1) * TAB_H))
         btn.tabEntry = entry
+
+        if i > 1 then
+            local divider = rail:CreateTexture(nil, "ARTWORK")
+            divider:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+            divider:SetPoint("TOPRIGHT", btn, "TOPRIGHT", 0, 0)
+            divider:SetHeight(1)
+            divider:SetTexture("Interface\\Buttons\\WHITE8X8")
+            divider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
+        end
 
         btn:SetScript("OnClick", function()
             if entry.key == "ALL" then
@@ -2335,6 +2375,7 @@ local function BuildUtilityTabs(parent)
     settingsTabBtn:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30)
     settingsTabBtn.label:SetText("Settings")
     settingsTabBtn:SetScript("OnClick", ToggleSettings)
+    main.settingsTabBtn = settingsTabBtn
 
     RefreshUtilityTabs()
 end
@@ -2423,11 +2464,39 @@ local function BuildMainFrame()
     -- visually collides with the frame's corner ornament, and vertically
     -- centred within its own row rather than pinned flush to the very top.
     local TITLE_ROW_H = 22
+    local titleY = -math.floor((TITLE_ROW_H - (SB.Fonts.NormalLarge.baseSize or 16)) / 2)
     local title = toolbar:CreateFontString(nil, "OVERLAY")
+    mainTitle = title
+    toolbar.mainTitle = title
     title:SetFontObject(SB.Fonts.NormalLarge)
-    title:SetPoint("TOPLEFT", 4, -math.floor((TITLE_ROW_H - (SB.Fonts.NormalLarge.baseSize or 16)) / 2))
+    title:SetPoint("TOPLEFT", 4, titleY)
     title:SetText("Soundbook")
     title:SetTextColor(unpack(SB.Theme.GOLD))
+
+    -- Settings/Admin/Keybind Mode context header (explicit requirement) -
+    -- while any of those own the content area, the product title swaps
+    -- for "< Library" (returns to the Library) plus a label naming the
+    -- active view, in the exact same row/position - Search is hidden at
+    -- the same time (RefreshMainWindow) rather than sitting there doing
+    -- nothing, so the header reads as "you're in Settings now", not "the
+    -- Library header, minus a working search box".
+    backToLibraryBtn = SB.Theme.CreateSecondaryButton(toolbar, "< Library", 88, TITLE_ROW_H - 2)
+    backToLibraryBtn:SetPoint("TOPLEFT", 4, titleY)
+    backToLibraryBtn:SetScript("OnClick", function()
+        isSettingsOpen = false
+        isAdminOpen = false
+        isKeybindModeOpen = false
+        SB:RefreshMainWindow()
+    end)
+    backToLibraryBtn:Hide()
+    toolbar.backToLibraryBtn = backToLibraryBtn
+
+    contextTitle = toolbar:CreateFontString(nil, "OVERLAY")
+    contextTitle:SetFontObject(SB.Fonts.NormalLarge)
+    contextTitle:SetPoint("LEFT", backToLibraryBtn, "RIGHT", 10, 0)
+    contextTitle:SetTextColor(unpack(SB.Theme.TEXT))
+    contextTitle:Hide()
+    toolbar.contextTitle = contextTitle
 
     -- Every header-action icon (Close/Lock/Audio) shares identical
     -- geometry (size, hitbox, padding) via Theme.CreateMiniControlButton's
@@ -2659,6 +2728,12 @@ end
 function SB:RefreshMainWindow()
     if not main then return end
     if isSettingsOpen or isAdminOpen or isKeybindModeOpen then
+        if mainTitle then mainTitle:Hide() end
+        if backToLibraryBtn then backToLibraryBtn:Show() end
+        if contextTitle then
+            contextTitle:SetText(isSettingsOpen and "Settings" or isAdminOpen and "Raid Admin" or "Keybindings")
+            contextTitle:Show()
+        end
         if isSettingsOpen then
             settingsPanel:Show()
             if SB.RefreshChannelMatrix then SB:RefreshChannelMatrix() end
@@ -2679,6 +2754,18 @@ function SB:RefreshMainWindow()
         emptyHint:Hide()
         main.libraryScroll.scroll:Hide()
         main.tagFilterBar:Hide()
+        -- BUGFIX (explicit report): Search and the Output Rail (broadcast
+        -- tabs) are both Library-only controls - "who to search for" and
+        -- "where does a click send a sound" mean nothing while Settings/
+        -- Admin/Keybind Mode owns the content area, but neither was ever
+        -- hidden here, only the Library grid/filter bar were. Search
+        -- staying interactable was actively misleading (typing did
+        -- nothing visible), and the Rail floating next to an unrelated
+        -- view read as broken/disconnected from the Main shell.
+        if searchBox then searchBox:Hide() end
+        if searchPlaceholder then searchPlaceholder:Hide() end
+        if outputRailContainer then outputRailContainer:Hide() end
+        for i = 1, #broadcastTabButtons do broadcastTabButtons[i]:Hide() end
         -- Same reasoning as RefreshLibraryImpl's own pool-recycling loop -
         -- favouriteHover is parented to `main`, not the entry button, so
         -- it needs hiding explicitly here too (switching to Settings/
@@ -2689,6 +2776,18 @@ function SB:RefreshMainWindow()
         end
         for i = 1, #sectionHeaders do sectionHeaders[i]:Hide() end
     else
+        if mainTitle then mainTitle:Show() end
+        if backToLibraryBtn then backToLibraryBtn:Hide() end
+        if contextTitle then contextTitle:Hide() end
+        if searchBox then searchBox:Show() end
+        if searchPlaceholder then searchPlaceholder:SetShown(searchBox:GetText() == "") end
+        -- RefreshBroadcastTabs (unconditionally called at the very end of
+        -- this function, below) only ever adjusts each tab's alpha/colour/
+        -- label - it never Shows() one, so returning to the Library needs
+        -- an explicit Show() for each here, mirroring how they were
+        -- explicitly Hide()n above.
+        if outputRailContainer then outputRailContainer:Show() end
+        for i = 1, #broadcastTabButtons do broadcastTabButtons[i]:Show() end
         settingsPanel:Hide()
         adminPanel:Hide()
         keybindModePanel:Hide()

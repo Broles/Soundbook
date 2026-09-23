@@ -903,11 +903,31 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     scrollChild:SetFrameLevel(scroll:GetFrameLevel() + 1)
     scroll:SetPoint("TOPLEFT", tabRow, "BOTTOMLEFT", 0, -8)
     scroll:SetPoint("BOTTOMRIGHT", footer, "TOPRIGHT", -2, 8)
-    scrollChild:SetSize(1, 1)
+    -- Provisional, corrected below by FitSettingsPanelHeight once real
+    -- geometry is resolvable - same defensive pattern the pre-restructure
+    -- single-page panel used (content:SetHeight(2000) "provisional,
+    -- corrected below"), which this rewrite had dropped. ROOT CAUSE of a
+    -- reported blank/empty Settings content area: SB:ShowSettingsSection
+    -- runs once at the end of this very function, while `main` (and this
+    -- panel, anchored to its content region) has never actually been
+    -- shown/laid out yet - GetTop()/GetBottom() can legitimately return
+    -- nil at that point, which made FitSettingsPanelHeight's own
+    -- `if top and bottom then` guard silently skip ever calling SetHeight
+    -- at all, leaving both scrollChild and every section's `content`
+    -- frame at a brand-new frame's default height (effectively 0) -
+    -- Shown was correctly true and every control inside was positioned
+    -- correctly, but a zero-height frame inside a ScrollFrame renders as
+    -- a blank page regardless. A generous provisional height here means
+    -- the panel is never degenerate even if that first correction attempt
+    -- can't resolve real geometry yet; the OnShow handler re-runs the fit
+    -- (twice) once the panel is actually visible, when geometry reliably
+    -- resolves, correcting it to the real content height.
+    scrollChild:SetSize(1, 2000)
 
     for _, entry in ipairs(SECTION_ORDER) do
         local content = CreateFrame("Frame", nil, scrollChild)
         content:SetWidth(CONTENT_W)
+        content:SetHeight(2000) -- provisional, see scrollChild's own comment above
         -- Same "+5" bias-cancel as the pre-restructure panel - scrollChild
         -- is deliberately 10px narrower than `scroll` (reserved for the
         -- thumb), which alone would leave content sitting ~5px left of
@@ -960,7 +980,12 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
         local top = content:GetTop()
         local bottom = bottomEl:GetBottom()
         if top and bottom then
-            local h = (top - bottom) + 24
+            -- Floored, not just computed directly - a transient bad
+            -- reading (e.g. mid-layout-pass) producing a tiny/negative
+            -- value must never shrink the panel to near-nothing; worst
+            -- case is it stays too tall until the next correction, never
+            -- too short to show its own content.
+            local h = math.max(60, (top - bottom) + 24)
             content:SetHeight(h)
             scrollChild:SetHeight(h)
         end
