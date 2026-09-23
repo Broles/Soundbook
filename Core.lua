@@ -776,6 +776,17 @@ local function GetDefaultDB()
                 -- this field once by MigrateDB (v27->v28) instead, so
                 -- nobody's favourites silently change size on upgrade.
                 favScale = 1.0,
+                -- Mini Soundbook activation mode (explicit requirement):
+                -- false (default, fresh installs AND existing users
+                -- missing the key - ApplyDefaults' own generic backfill
+                -- already handles both cases identically, no separate
+                -- migration block needed) = the expanded Mini Soundbook
+                -- (favMenu) only ever opens via the existing left-click
+                -- interaction; true = hovering the icon opens it too, no
+                -- click required. Shared verbatim between Quick Options'
+                -- own checkbox and Settings -> Mini's - both read/write
+                -- this exact field, never a separate copy.
+                openOnHover = false,
             },
             -- Global layout lock (3.0 shell) - separate concept from the
             -- Announcer's own `locked` above (that one only ever existed as

@@ -1387,6 +1387,25 @@ function Theme.CreateDropdown(parent, width, height, maxVisibleRows)
         return selectedValue
     end
 
+    -- Exposed for callers that need to manage this dropdown's list as part
+    -- of a larger popup's own lifecycle (e.g. Announcer.lua's Quick
+    -- Options closing its Popout Direction dropdown too, and including
+    -- the open list's bounds in a proximity-dismiss check) - `list` and
+    -- `catcher` are separate top-level frames parented to UIParent, not
+    -- real children of `button`, so hiding the dropdown's owner does NOT
+    -- cascade to hide these on its own.
+    function dd:CloseList()
+        CloseList()
+    end
+
+    function dd:IsListOpen()
+        return list:IsShown()
+    end
+
+    function dd:GetListFrame()
+        return list
+    end
+
     return dd
 end
 

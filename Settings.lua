@@ -99,6 +99,7 @@ local CHECKBOX_HELP = {
     ["Show blocked/muted sound attempts"] = "Report attempts to play a sound that you muted locally.",
     ["Show delivery confirmations"] = "Show delivery confirmations returned by friends.",
     ["Show Mini Soundbook"] = "Show or hide the Mini Soundbook.",
+    ["Open Mini Soundbook on Hover"] = "Open the Mini Soundbook by hovering its icon, no click needed. Off by default - the icon only opens it on left-click.",
     ["Lock position and size"] = "Prevent moving and resizing the Main Soundbook and the Mini Soundbook.",
     ["Debug Mode"] = "Print additional diagnostic information to chat.",
 }
@@ -642,6 +643,18 @@ local function BuildMiniSoundbookSection(content, topAnchor)
     end)
     lockCheck:SetChecked(SB.db.ui.layoutLocked)
 
+    -- Mini Soundbook activation mode (explicit requirement) - shared
+    -- verbatim with the exact same checkbox in the Mini Soundbook's own
+    -- Quick Options popup (Announcer.lua's SB.ShowAnnouncerQuickOptions) -
+    -- both simply read/write SB.db.ui.announcer.openOnHover directly, no
+    -- separate value, no extra refresh call needed: the icon's own
+    -- OnEnter handler reads this field live every time it fires, so
+    -- toggling it here takes effect on the very next hover.
+    local hoverCheck = Checkbox(content, "Open Mini Soundbook on Hover", lockCheck, 0, -2, function(checked)
+        SB.db.ui.announcer.openOnHover = checked and true or false
+    end)
+    hoverCheck:SetChecked(SB.db.ui.announcer.openOnHover)
+
     -- Two independent scales (targeted correction round, explicit
     -- requirement): Announcer Size affects ONLY the Announcer itself
     -- (Preview, Now Playing/Last Sound, announcer text); Mini Soundbook
@@ -652,7 +665,7 @@ local function BuildMiniSoundbookSection(content, topAnchor)
     -- their own frames. See Core.lua's `announcer.scale`/`announcer.
     -- favScale` defaults and the v27->v28 migration that seeds favScale
     -- from a pre-split installation's single prior scale.
-    local sizeHeader = Section(content, "Size", lockCheck, -16)
+    local sizeHeader = Section(content, "Size", hoverCheck, -16)
     local announcerSizeLabel = content:CreateFontString(nil, "OVERLAY")
     announcerSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
     announcerSizeLabel:SetPoint("TOPLEFT", sizeHeader, "BOTTOMLEFT", 0, -8)

@@ -1379,7 +1379,23 @@ end
 -- load time; only actually invoked later, on a real click, by which time
 -- this assignment has long since run (same pattern SB.ShowAnnouncerQuickOptions
 -- already used successfully here).
+-- Regression fix: single-active-transient-surface rule. Reuses favMenu's
+-- OWN existing OnHide handler (already hides its catcher) rather than
+-- duplicating that lifecycle here - "return to its normal closed state
+-- using the existing lifecycle" (explicit requirement). A real Hide(),
+-- never a strata change, so the frame genuinely stops taking clicks.
+function SB.CloseFavMenu()
+    if favMenu then favMenu:Hide() end
+end
+
 function SB.ShowFavMenu(anchor)
+    -- Single-active-transient-surface rule (explicit requirement): Quick
+    -- Options never coexists with the expanded Mini Soundbook - closed
+    -- first if it was open ("Quick Options -> Mini Soundbook: close Quick
+    -- Options, then open Mini Soundbook"). The context/send menu is
+    -- deliberately left alone here - it's opened FROM a favMenu row and
+    -- is meant to coexist with it.
+    if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
     BuildFavMenu()
     SB:RefreshMiniSoundbookScale()
     PopulateFavMenu()
@@ -1419,11 +1435,30 @@ SB:On("SOUND_DISPLAY_CHANGED", function()
     if favMenu and favMenu:IsShown() then PopulateFavMenu() end
 end)
 
+-- Regression fix: single-active-transient-surface rule. Also closes the
+-- Popout Direction dropdown's own floating list, which is a SEPARATE
+-- top-level frame (Theme.CreateDropdown - parented to UIParent, not a
+-- real child of quickMenu) and would otherwise survive quickMenu's own
+-- Hide() untouched, left floating with its own live hitbox.
+function SB.CloseAnnouncerQuickOptions()
+    if quickMenu then
+        if quickMenu.dirDropdown then quickMenu.dirDropdown:CloseList() end
+        quickMenu:Hide()
+    end
+end
+
 function SB.ShowAnnouncerQuickOptions(anchor)
     if quickMenu and quickMenu:IsShown() then
-        quickMenu:Hide()
+        SB.CloseAnnouncerQuickOptions()
         return
     end
+    -- Single-active-transient-surface rule (explicit requirement): close
+    -- the expanded Mini Soundbook and any open context/send menu first -
+    -- "Mini Soundbook -> Quick Options: collapse/close Mini Soundbook
+    -- transient state, then open Quick Options" / "Context menu -> Quick
+    -- Options: close context menu first."
+    if SB.CloseFavMenu then SB.CloseFavMenu() end
+    if SB.CloseSendMenu then SB.CloseSendMenu() end
     if not quickMenu then
         quickMenu = SB.CreateFrame("Frame", "SoundbookAnnouncerQuickOptions", UIParent)
         quickMenu:SetFrameStrata("DIALOG")
@@ -1491,6 +1526,19 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             SB:Fire("TOGGLE_MAIN_UI")
         end)
 
+        -- Mini Soundbook activation mode (explicit requirement) - the
+        -- exact same checkbox component and the exact same persisted
+        -- field (SB.db.ui.announcer.openOnHover) Settings -> Mini's own
+        -- copy uses, never a separate value. No extra refresh needed
+        -- either way - the icon's own OnEnter handler reads this field
+        -- live on every hover, so a change here or in Settings takes
+        -- effect on the very next hover regardless of which one changed it.
+        local hoverCheck = Theme.CreateCheckbox(quickMenu, "Open Mini Soundbook on Hover", function(checked)
+            SB.db.ui.announcer.openOnHover = checked and true or false
+        end)
+        hoverCheck:SetPoint("TOP", rows[#rows], "BOTTOM", -8, -10)
+        quickMenu.hoverCheck = hoverCheck
+
         -- Popout Direction - explicit request: one shared setting for
         -- every surface that opens off the icon (this menu, Favourites,
         -- the Announcer banner itself and its previews - see
@@ -1500,7 +1548,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- where the icon sits.
         local dirLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         dirLabel:SetFontObject(SB.Fonts.HighlightSmall)
-        dirLabel:SetPoint("TOP", rows[#rows], "BOTTOM", 0, -12)
+        dirLabel:SetPoint("TOP", hoverCheck, "BOTTOM", 8, -12)
         dirLabel:SetText("Popout Direction")
         dirLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
@@ -1567,12 +1615,14 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         miniSizeSlider:SetPoint("TOP", miniSizeLabel, "BOTTOM", -14, -8)
         quickMenu.miniSizeSlider = miniSizeSlider
 
-        quickMenu:SetSize(184, #rows * 26 + 66 + 58 + 44)
+        -- +24 for the new "Open Mini Soundbook on Hover" checkbox row.
+        quickMenu:SetSize(184, #rows * 26 + 66 + 58 + 44 + 24)
     end
 
     quickMenu.sizeSlider:SetValue(math.floor((SB.db.ui.announcer.scale or 1.0) * 100 + 0.5))
     quickMenu.miniSizeSlider:SetValue(math.floor((SB.db.ui.announcer.favScale or 1.0) * 100 + 0.5))
     quickMenu.dirDropdown:SetValue(SB.db.ui.popoutDirection or "AUTO")
+    quickMenu.hoverCheck:SetChecked(SB.db.ui.announcer.openOnHover)
 
     quickMenu.muteBtn.label:SetText(SB:IsReceiveMuted() and "Unmute Incoming" or "Mute Incoming")
     quickMenu.lockBtn.label:SetText(SB.db.ui.layoutLocked and "Unlock Interface" or "Lock Interface")

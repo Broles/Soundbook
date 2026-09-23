@@ -92,6 +92,16 @@ local function CloseMenu()
     pinnedZoomSlot = nil
 end
 
+-- Exposed so Announcer.lua's single-active-transient-surface rule (Mini
+-- Soundbook regression fix) can close this menu when Quick Options opens
+-- ("Context menu -> Quick Options: close context menu first"), and check
+-- whether it's currently open without duplicating this module's own
+-- `menu`/`catcher` state.
+SB.CloseSendMenu = CloseMenu
+function SB.IsSendMenuOpen()
+    return menu ~= nil and menu:IsShown()
+end
+
 local function ClearRows()
     for _, row in ipairs(rows) do
         row:Hide()
@@ -381,6 +391,14 @@ end
 -- state instead of the whole window's alpha.
 function SB.OpenSendMenu(soundID, pinFavWindow, sourceSlot)
     if not soundID or not SB.registry[soundID] then return end
+    -- Single-active-transient-surface rule (explicit requirement): Quick
+    -- Options and the context menu never coexist - opening this one
+    -- closes Quick Options first if it was open, a real Hide() (via
+    -- Announcer.lua's own close function), not a strata change. The
+    -- expanded Mini Soundbook (favMenu) itself is deliberately left
+    -- alone here - the context menu is opened FROM one of its rows and
+    -- is meant to coexist with it (see pinFavWindow/PinFavAlpha above).
+    if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
     -- Stale presence pruning happens inside SB.ComputeReachablePlayers
     -- itself now (BuildMenu -> BuildGroups below), not duplicated here.
     EnsureMenu()
