@@ -290,3 +290,156 @@ Same boundary as every round above - the exact visual balance of the new
 tab strip, the Keybinding Mode grid's real-world row layout at different
 window sizes, and genuine key-capture (`OnKeyDown` behavior, override
 binding precedence against other addons/UI) all need one in-game pass.
+
+---
+
+## Soundbook 3.0 QA continuation - playback-state + hover-clip investigation (2026-09-23)
+
+Additive, same as every round above. Triggered by two fresh reports
+("Kids Saying Yay" staying highlighted as playing for several seconds
+after its audio genuinely ended; "Bad To The Bone" still stopping around
+1s) used as entry points for a systemic re-investigation, plus a Main
+window hover-clipping report, per an explicit "do not implement sound-
+specific timing workarounds before determining the underlying cause"
+instruction.
+
+### Root cause #1 (real bug, fixed): the Library grid's own highlight
+
+The Library grid's gold "now playing" highlight (`UI.lua`'s
+`playingSoundID`/`SetPlayingState`) was driven **entirely** by
+`SB.db.settings.announceDuration`'s fixed timer, with no connection to
+the real playback handle at all. Whenever that setting (now player-
+configurable up to 15s, see the Settings-restructure round above) was set
+longer than a given sound's actual length, the highlight necessarily
+outlived the real audio by the difference - exactly "Kids Saying Yay"'s
+report. Confirmed this is what was happening, not a duration-metadata
+problem: "Kids Saying Yay"'s registered duration (8.202s) matches its
+shipped file's measured duration to five decimal places - there was
+nothing wrong with its data at all.
+
+Fixed by making real handle state authoritative whenever it's available:
+a new `SB:GetPrimaryPlaybackHandle()` (`SoundPlayer.lua`) lets `UI.lua`
+correlate the handle-less `LOCAL_SOUND_PLAYED`/`REMOTE_SOUND_PLAYED`
+events to the specific instance that was just started, and a new
+`PLAYBACK_PROGRESS_ENDED` listener clears the highlight the instant that
+**exact handle's** real audio ends - scoped by handle, not soundID, so a
+stale/older or unrelated instance can never clear a newer one, and
+retriggering the same sound before the previous instance finished keeps
+the highlight up until the new instance's own end. `announceDuration`'s
+timer stays as a safety-net ceiling only (whichever of the two fires
+first wins) - unchanged behaviour for a client without handle tracking,
+and for the common case where the setting is already shorter than the
+sound. Announcer.lua's own "is this sound still playing" state was
+already correctly handle-scoped (`activeDisplays`/`PLAYBACK_PROGRESS_
+ENDED` match `entry.handle == state.handle`) - this bug was specific to
+the Library grid's separate highlight mechanism.
+
+### Root cause #2 (data, not code - already fixed, now with harder proof)
+
+Full re-investigation against the task's explicit checklist - fixed-timer
+vs. real handle, duration/lifetime coupling, precomputed-vs-physical
+duration, learned-duration staleness, `IsPlaying` polling/cleanup,
+cross-instance timer interference, non-overlap `StopSound` timing,
+wrong-handle invalidation, same-sound retrigger races, local-vs-remote
+paths, encoding/sample-rate outliers, and duration-as-artificial-stop-
+time - found nothing wrong in the playback code for "Bad To The Bone".
+`StopSound` has exactly one call site in the entire addon
+(`StopAllOwnSounds`), reached only via disabled-overlap logic (which
+probes file existence before ever stopping an older handle) or an
+explicit user Stop - both already correctly scoped to the addon's own
+handles, and neither is duration-driven.
+
+New, stronger evidence this is a corrupted source asset, not a WoW-side
+encoding-compatibility problem: both "Bad To The Bone" and "Dry Fart"'s
+own embedded LAME/Xing header **declares more MPEG frames than the file's
+actual byte length can hold** - "Bad To The Bone" declares 42 frames,
+only 20 are physically present; "Dry Fart" declares 14, only 7 are
+present. That is the encoder's own record of how long the clip was
+*supposed* to be (42 frames at 11025Hz ~= 2.19s, matching what "should be
+around 2 seconds" expects), proving the file shipped in this repository
+is missing real audio data, not that it was authored short. This
+environment has no audio decode/encode tooling, and the missing frames
+aren't recoverable from anything else in the repository - re-encoding
+"to a conventional WoW-safe format" isn't possible here because there's
+no complete source to re-encode from. A replacement recording is needed
+if the original ~2.2s/~0.4s clips are wanted; until then, `SoundDurations.
+lua`'s entries for both (set in an earlier round) correctly reflect what's
+actually playable today, so the UI no longer promises more than the
+shipped audio can deliver.
+
+Re-ran the full library-wide audit (see the new tool below) against all
+79 other shipped `.mp3` files: **zero** further duration mismatches
+(tolerance 0.05s) and zero further sample-rate/MPEG-version outliers -
+this is not a systemic library problem, just these two already-known,
+already-flagged files.
+
+### New developer tool - `tools/audit_sound_durations.py`
+
+A standalone Python 3 script (standard library only, never loaded by the
+`.toc`, adds no runtime addon complexity) that walks every shipped
+`.mp3`'s real MPEG frames, compares the measured duration against
+`SoundDurations.lua`, and flags: missing files, duration drift beyond a
+configurable tolerance, sample-rate/MPEG-version outliers, and - the
+specific signature that caught both known-corrupted files - a Xing/Info
+header declaring more frames than the file's actual length can hold.
+Never auto-edits anything; exits non-zero on any finding so it can gate
+CI. Reproduces this round's manual findings exactly when run against the
+current repository.
+
+### Hover-clip fix (Main Soundbook, first row)
+
+Root cause: the enlarged hover decoration on a Library entry
+(`favouriteHover` - shown on every row on hover, not just Favourites) was
+parented to the entry button itself, which lives inside the Library's own
+`ScrollFrame` content. WoW clips anything nested under a `ScrollFrame`'s
+content to that `ScrollFrame`'s own viewport **by ancestry**, regardless
+of `FrameLevel` - raising the decoration's level (the pre-existing code
+already tried `btn:GetFrameLevel()+30`) cannot escape that. On the first
+visible row, the decoration's top edge (150% of the icon, deliberately
+larger than its row) could extend above the viewport's own top edge and
+get clipped there - worse with the tag filter bar visible, since that
+shrinks the available viewport height further.
+
+Fixed by reparenting the decoration to `main` directly (outside the
+`ScrollFrame`'s clipped ancestry, per the task's own suggested approach)
+while keeping its anchor point on the icon slot **inside** the scroll
+content as the layout anchor - its on-screen position still tracks the
+real icon exactly, including while scrolled, since WoW anchor resolution
+doesn't require common ancestry. Since `Hide()` no longer cascades from
+the entry button to a decoration that's no longer its child, added
+explicit companion `Hide()` calls at both places entry buttons are bulk-
+hidden (pool recycling in `RefreshLibraryImpl`, and the Settings/Admin/
+Keybind-Mode panel-swap in `RefreshMainWindow`) so a row hovered right
+when it's hidden/recycled can never leave an orphaned decoration floating
+on screen.
+
+### Verification
+
+Upgraded the mock WoW API harness first - no existing test had ever
+driven a real start -> playing -> natural-end cycle through
+`SoundPlayer.lua`'s poll loop (`PlaySoundFile` always returned the fixed
+handle `1`, `C_Sound.IsPlaying` always returned `false`, and
+`C_Timer.NewTicker` never actually fired). `PlaySoundFile` now returns
+unique incrementing handles, `C_Sound.IsPlaying` is controllable per
+handle (`SetMockSoundPlaying`), and tickers are queued and advanceable on
+demand (`TickMockTickers`), all opt-in so no existing test's behaviour
+changed. New `loader_playback.lua` directly reproduces the reported bug
+(`announceDuration=15s`, a sound's real playback ending well before that)
+and confirms the highlight now clears promptly; also covers a stale/
+unrelated handle's end event being ignored, same-sound retrigger
+instance-scoping, several different sounds triggered in succession with
+overlap disabled, and overlap-enabled never calling `StopSound`. All 7
+pre-existing regression scripts stayed green throughout every change
+this round.
+
+### Still gated on a live client
+
+The hover-clip fix's real-world correctness (the enlarged decoration
+actually renders above the tag filter bar's own row and every other
+Library element, with no z-order surprises against WoW's real rendering,
+which a Lua-only mock cannot verify) needs one in-game pass, both with
+and without the tag filter bar visible. The playback-state fix's
+behaviour with a genuinely unreliable `C_Sound.IsPlaying` on some client
+build (the scenario `MAX_TRACKED_LIFETIME`/`NEVER_STARTED_TIMEOUT` exist
+to bound) is logically covered but not something this environment can
+reproduce against a real client either.
