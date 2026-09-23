@@ -1080,71 +1080,69 @@ local favMenu
 
 local BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid", FRIENDS = "Friends" }
 
--- Regression fix: the actual per-bucket "(N)" count used to come straight
--- from rail.selected[bucket]'s own STORED length - a frozen snapshot from
--- whenever the channel was selected, never re-checked against who's
--- actually still online/known/reachable RIGHT NOW. "Guild selected, then
--- everyone logs off" kept reporting the old member count forever
--- (explicit bug report: "the title must reflect real delivery outcome,
--- not just the selected button"). This recomputes it live every call by
--- intersecting the stored selection with SB.ComputeReachablePlayers'
--- current live list (the exact same "known Soundbook + currently
--- reachable" source the Output Rail's own tabs already read) - a name
--- only counts if it was BOTH selected AND is still actually reachable
--- right now, deduplicated across buckets by SB.PlayerKey (never double-
--- counting someone selected via two channels at once), and additionally
--- excludes anyone on the LOCAL player's own Ignore list (SB:IsIgnored) -
--- the one Ignore direction this client can ever determine directly (see
--- Communication.lua's Ignore-blocking - the reverse direction, them
--- having us ignored, is fundamentally undetectable and deliberately never
--- guessed at here either, same protocol-correctness rule).
--- @return total (int), perBucket ({GUILD=n, RAID=n, FRIENDS=n})
-local function ComputeLiveEffectiveRecipients()
-    local rail = SB.db.ui.outputRail
-    if rail.selfOnly then return 0, {} end
+-- Main Soundbook redesign: the title now describes exactly what the
+-- SAME single-select Default Output SB:ResolveOutputTarget/
+-- SB:DispatchDefaultOutput would actually use for a normal click
+-- (SB.db.settings.defaultOutputTarget - the Main window's own "Send to:"
+-- control, see UI.lua) - never a separately-computed guess. The old
+-- right-side broadcast tabs' own multi-select outputRail state has no
+-- surviving UI to drive it any more; this reads live reachable-player
+-- counts (SB.ComputeReachablePlayers, the same source used everywhere
+-- else in the addon) instead.
+-- @return total (int), perBucket ({GUILD=n, RAID=n, FRIENDS=n}),
+--         isLocal (bool), directName (string or nil), isAllTarget (bool)
+local function ComputeLiveTargetCounts()
+    local target = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
     local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers() or { GUILD = {}, RAID = {}, FRIENDS = {} }
-    local seen, perBucket, total = {}, {}, 0
-    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        local selected = (rail.selected and rail.selected[bucket]) or {}
-        if #selected > 0 then
-            local eligibleKeys = {}
-            for _, name in ipairs(reachable[bucket] or {}) do
-                local key = SB.PlayerKey and SB.PlayerKey(name)
-                if key then eligibleKeys[key] = true end
-            end
-            for _, name in ipairs(selected) do
-                local key = SB.PlayerKey and SB.PlayerKey(name)
-                if key and eligibleKeys[key] and not seen[key]
-                    and not (SB.IsIgnored and SB:IsIgnored(name)) then
-                    seen[key] = true
-                    total = total + 1
-                    perBucket[bucket] = (perBucket[bucket] or 0) + 1
-                end
-            end
+    local modes = (SB.db.settings and SB.db.settings.broadcastModes) or {}
+    local perBucket, total = {}, 0
+    local function CountBucket(bucket)
+        local n = #(reachable[bucket] or {})
+        if n > 0 then
+            perBucket[bucket] = n
+            total = total + n
         end
     end
-    return total, perBucket
+
+    if target == "SELF" then
+        return 0, {}, true, nil, false
+    end
+    local playerName = type(target) == "string" and target:match("^PLAYER:(.+)$")
+    if playerName then
+        local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(playerName)) or playerName
+        return 1, {}, false, displayName, false
+    end
+    if target == "GUILD" or target == "RAID" or target == "FRIENDS" then
+        CountBucket(target)
+        return total, perBucket, total == 0, nil, false
+    end
+    -- "ALL" (default/fallback) - every currently Send-enabled channel,
+    -- exactly matching SB:BroadcastSound's own modes-driven fan-out.
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        if modes[bucket] then CountBucket(bucket) end
+    end
+    return total, perBucket, total == 0, nil, true
 end
 
--- Describes the right-side broadcast tabs' CURRENT effective selection as
--- a short phrase ("Guild (10)", "People (6)", ...) plus an optional
--- secondary breakdown line ("Guild (4)  -  Friends (2)") for the
--- multi-source case - explicit requirement, preferred over one long
--- "Guild and Friends and Raid..." sentence. `isLocal` is true for Self
--- Only, "nothing selected at all", AND "selected but zero real
--- recipients right now" (explicit requirement: zero actual remote
--- recipients always reads as "Play for Yourself", regardless of which
--- button is technically active) - see SB:ResolveOutputTarget's own
--- step-4 fallback, Communication.lua, for the equivalent send-side rule.
+-- Describes the CURRENT Default Output target as a short phrase
+-- ("Guild (10)", "People (6)", "Bob", ...) plus an optional secondary
+-- breakdown line ("Guild (4)  -  Friends (2)") for the multi-source "All"
+-- case - explicit requirement, preferred over one long "Guild and Friends
+-- and Raid..." sentence. `isLocal` is true for Self Only AND "selected
+-- but zero real recipients right now" (explicit requirement: zero actual
+-- remote recipients always reads as "Play for Yourself", regardless of
+-- which target is technically active) - see SB:ResolveOutputTarget's own
+-- fallback, Communication.lua, for the equivalent send-side rule.
 -- "People" (never "N people" or a per-channel label) is used whenever
--- MORE than one channel actually contributes a real recipient, or when
--- every currently Send-enabled channel is selected ("All") and there is
--- at least one real recipient - explicit requirement, even if only one
--- of those channels happens to have anyone reachable at this instant,
--- since the user's actual intent was "everyone", not one specific group.
+-- MORE than one channel actually contributes a real recipient under
+-- "All", or when "All" is the target at all (isAllTarget) even if only
+-- one channel happens to have anyone reachable at this instant - explicit
+-- requirement, since the user's actual intent was "everyone", not one
+-- specific group.
 local function DescribeEffectiveTargetPhrase()
-    local total, perBucket = ComputeLiveEffectiveRecipients()
-    if total == 0 then return "locally", nil, true end
+    local total, perBucket, isLocal, directName, isAllTarget = ComputeLiveTargetCounts()
+    if directName then return directName, nil, false end
+    if isLocal or total == 0 then return "locally", nil, true end
 
     local contributing, onlyBucket = 0, nil
     for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
@@ -1154,8 +1152,7 @@ local function DescribeEffectiveTargetPhrase()
         end
     end
 
-    local isAllSelected = SB.IsAllBroadcastFullySelected and SB.IsAllBroadcastFullySelected() or false
-    if not isAllSelected and contributing <= 1 and onlyBucket then
+    if not isAllTarget and contributing <= 1 and onlyBucket then
         return string.format("%s (%d)", BUCKET_LABEL[onlyBucket], perBucket[onlyBucket]), nil, false
     end
 

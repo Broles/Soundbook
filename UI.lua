@@ -64,7 +64,7 @@ local entryButtons = {}
 local sectionHeaders = {}
 local searchBox
 local searchPlaceholder
-local broadcastTabButtons = {}
+local defaultOutputDD
 local emptyHint
 local emptyHintClear
 local settingsPanel
@@ -1672,456 +1672,22 @@ RefreshLibrary = function()
 end
 
 ------------------------------------------------------------------------
--- Right-side broadcast tabs - explicit redesign: attached to the Main
--- Soundbook's own outer RIGHT edge (like the pre-3.0 2.7.x book's side
--- tabs), never inside the Library content area. Upper group = broadcast
--- destinations (All/Guild/Raid-Party/Friends/Self Only); Guild/Raid/
--- Friends are an independent MULTI-select (any combination may be active
--- at once - SB.db.ui.outputRail.selected, one array per bucket), not a
--- single-choice radio group any more. Lower group = utility/navigation
--- (Admin/Settings), built right after this section (BuildUtilityTabs).
+-- Main Soundbook redesign (this round): the right-side broadcast tabs/
+-- flyouts (Guild/Raid/Friends multi-select, All/Self Only) that used to
+-- live here are gone - replaced by a single-select "Send to:" dropdown
+-- inside the top control row (see BuildDefaultOutputControl further
+-- below), driven by SB.db.settings.defaultOutputTarget via the SAME
+-- canonical SB.ComputeOutputTargetOptions/SB:ResolveOutputTarget
+-- machinery EditWindow.lua's own Default Output dropdown already used.
+-- SB.db.ui.outputRail's underlying multi-select data model, and every
+-- function that reads/writes it, is deliberately left fully intact (no
+-- SavedVariables migration needed) - it simply has no surviving UI here
+-- any more. ApplyTabVisual/CreateAttachedTab just below are still shared
+-- with the utility (Admin) tab below this section.
 ------------------------------------------------------------------------
 
--- Targeted correction round (explicit requirement): exact colours for
--- this ONE selector, given as hex - #F2F5FF/#B88CF2 are specific to this
--- control (All's near-white and Friends' colour here are NOT the same as
--- SB.CHANNEL_COLOR.FRIENDS - explicit choice, not a mistake); Guild/Raid/
--- Self Only happen to already match SB.CHANNEL_COLOR exactly, spelled out
--- here too so this table is the one place that fully defines this
--- control's own palette rather than partly deferring to a different
--- context's colours.
-local function HexColor(hex)
-    return { tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255 }
-end
-
-local BROADCAST_TABS = {
-    { key = "ALL", label = "All", tooltip = "Play for yourself and send to all enabled Soundbook channels.",
-      color = HexColor("F2F5FF") },
-    { key = "GUILD", label = "Guild", bucket = "GUILD",
-      color = HexColor("8CE09E") },
-    { key = "RAID", label = "Raid", bucket = "RAID",
-      color = HexColor("FAB87A") },
-    { key = "FRIENDS", label = "Friends", bucket = "FRIENDS",
-      color = HexColor("B88CF2") },
-    { key = "SELF", label = "Self Only", tooltip = "Play only for yourself. Nothing is sent to other players.",
-      color = HexColor("7A7A80") },
-}
-
--- Regression fix: selectability used to be driven by GROUP MEMBERSHIP
--- (in a guild / in a group-or-raid / has an online Soundbook friend) -
--- explicitly wrong per this round's requirement: "Settings Send state is
--- authoritative... Group membership does not control selectability." A
--- channel with Send enabled but zero current members (solo, no guild, no
--- eligible friends) must still be selectable, showing zero recipients -
--- not disabled. Settings -> Sharing's own "Send" toggle
--- (SB.db.settings.broadcastModes[bucket]) is the only thing that gates
--- selectability now.
-local function IsChannelSendEnabled(bucket)
-    local modes = SB.db.settings.broadcastModes
-    return modes and modes[bucket] and true or false
-end
-
-local function RailGroupLabel(bucket)
-    if bucket == "RAID" then
-        return IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid / Party")
-    end
-    if bucket == "GUILD" then return "Guild" end
-    if bucket == "FRIENDS" then return "Friends" end
-    return bucket
-end
-
--- Eligible = SB.ComputeReachablePlayers' own live list for that bucket;
--- Selected = however many of those the player has actually checked
--- (SB.db.ui.outputRail.selected[bucket]). Deliberately two separate,
--- always-live queries - never cached - so a roster change is reflected
--- the next time anything asks, with no separate invalidation to forget.
-local function EligibleNames(bucket)
-    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
-    return (reachable and reachable[bucket]) or {}
-end
-
-local function SelectedNames(bucket)
-    local rail = SB.db.ui.outputRail
-    return (rail.selected and rail.selected[bucket]) or {}
-end
-
--- A bucket is "active" purely because it has >=1 selected recipient right
--- now (explicit requirement, section 11) - it doesn't matter whether that
--- selection came from the derived "Entire X" row or picking individuals
--- by hand; the actual selected set is the only source of truth.
-local function SelectedCount(bucket)
-    return #SelectedNames(bucket)
-end
-
--- Explicit requirement: selecting ANY real recipient anywhere always
--- clears Self Only - the two states are mutually exclusive at all times.
-local function ClearSelfOnly()
-    SB.db.ui.outputRail.selfOnly = false
-end
-
--- Toggles ONE person's selection within a bucket - the one place this
--- actually happens, called both by an individual flyout row's checkbox
--- and (indirectly, via SB.SetBroadcastBucketAllSelected below) by the
--- derived "Entire X" row. Exposed on SB (not a plain local) since it's
--- the natural, reusable "select this person" primitive, same reasoning
--- as SB.ResolvePopoutDirection/SB.PositionRelativeToIcon in Announcer.lua.
-function SB.SetBroadcastRecipientSelected(bucket, name, selected)
-    local rail = SB.db.ui.outputRail
-    local list = rail.selected[bucket]
-    local key = SB.PlayerKey and SB.PlayerKey(name)
-    for idx = #list, 1, -1 do
-        if key and SB.PlayerKey(list[idx]) == key then table.remove(list, idx) end
-    end
-    if selected then
-        table.insert(list, name)
-        ClearSelfOnly()
-    end
-    -- Regression fix: rail.channelSelected[bucket] (the "explicitly
-    -- selected the whole channel" flag - see SetBroadcastBucketAllSelected
-    -- below) used to only ever be set by that function, never re-derived
-    -- here - so unchecking a single member out of a full "Entire Guild"
-    -- selection left the flag stuck at true, making "All" (which ORs this
-    -- flag in) still read as fully selected despite the actual member set
-    -- now being a strict subset (explicit requirement: "partial remote
-    -- selection must not make All appear fully selected"). Recomputed from
-    -- the real resulting state every time an individual pick changes - an
-    -- individual row can only ever be toggled from a bucket that already
-    -- has eligible members, so EligibleNames here is never the "zero
-    -- eligible, explicitly selected anyway" case SetBroadcastBucketAllSelected
-    -- itself still has to special-case.
-    local eligible = EligibleNames(bucket)
-    rail.channelSelected = rail.channelSelected or {}
-    rail.channelSelected[bucket] = (#list > 0 and #list == #eligible) or false
-    -- Fired at the true point of mutation (not just wherever a redraw
-    -- happens to be called) so nothing that changes this data can ever
-    -- forget to notify listeners - explicit requirement, section 19: the
-    -- Favourites popup's summary (Announcer.lua) must live-update the
-    -- instant the selection actually changes.
-    SB:Fire("OUTPUT_SELECTION_CHANGED")
-end
-
--- The derived "Entire Guild"/"All Friends"/"Entire Raid" row's own
--- select-all/deselect-all action for ONE bucket - explicit requirement:
--- this is a convenience action over the SAME selected-list storage
--- individual picks use, never a separate stored "whole channel" mode.
-function SB.SetBroadcastBucketAllSelected(bucket, allSelected)
-    local rail = SB.db.ui.outputRail
-    if allSelected then
-        local names = EligibleNames(bucket)
-        local copy = {}
-        for i, n in ipairs(names) do copy[i] = n end
-        rail.selected[bucket] = copy
-        ClearSelfOnly()
-    else
-        rail.selected[bucket] = {}
-    end
-    -- Explicit requirement: the channel tab must read as selected even
-    -- with zero eligible recipients ("zero recipients means zero remote
-    -- recipients, do not auto-fallback" - it's still the chosen output).
-    -- rail.selected[bucket] being an empty array can't distinguish
-    -- "explicitly selected, nobody eligible" from "never touched", so a
-    -- small separate flag carries that intent instead.
-    rail.channelSelected = rail.channelSelected or {}
-    rail.channelSelected[bucket] = allSelected and true or false
-    SB:Fire("OUTPUT_SELECTION_CHANGED")
-end
-
 ------------------------------------------------------------------------
--- Broadcast flyout - Guild/Raid-Party/Friends' CLICK-opened multi-select
--- (explicit requirement: a straightforward checkbox list, never a radio
--- between "entire group" and "selected members" - those are the same
--- list, just with a derived select-all row at the top). Opens toward the
--- LEFT (screen interior) since the tabs themselves live on the right
--- edge - same click-to-open/click-outside-to-close shape as every other
--- flyout in this addon (Theme.CreateDropdown, Announcer.lua's Favourites/
--- Quick Options menus).
-------------------------------------------------------------------------
-
-local broadcastFlyout
--- Forward-declared here (before BuildBroadcastFlyout) - its catcher's
--- click-routing fix, defined inside that function below, needs to call
--- this as an upvalue, but the function itself isn't actually assigned
--- until much later in the file (BuildBroadcastTabs' own section).
-local HandleBroadcastTabClick
-
-local function CloseBroadcastFlyout()
-    if broadcastFlyout then
-        broadcastFlyout:Hide()
-        broadcastFlyout.catcher:Hide()
-        broadcastFlyout.__bucket = nil
-    end
-end
-
-local function BuildBroadcastFlyout()
-    if broadcastFlyout then return broadcastFlyout end
-    local f = SB.CreateFrame("Frame", nil, UIParent)
-    f:SetFrameStrata("TOOLTIP")
-    f:SetWidth(190)
-    f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-    f:SetBackdropColor(unpack(SB.Theme.BG_RAISED))
-    f:SetBackdropBorderColor(SB.Theme.GOLD_DIM[1], SB.Theme.GOLD_DIM[2], SB.Theme.GOLD_DIM[3], 0.8)
-    f:SetClampedToScreen(true)
-    f:EnableMouse(true)
-    f:Hide()
-
-    local catcher = CreateFrame("Button", nil, UIParent)
-    catcher:SetAllPoints(UIParent)
-    catcher:SetFrameStrata("TOOLTIP")
-    catcher:SetFrameLevel(math.max(1, f:GetFrameLevel() - 1))
-    catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-    catcher:Hide()
-    -- Click-routing fix (explicit requirement): this fullscreen catcher
-    -- used to unconditionally close the flyout and consume the click,
-    -- which meant a click on a DIFFERENT selector row (All/Guild/Raid/
-    -- Friends/Self Only - all real frames sitting UNDER this TOOLTIP-
-    -- strata catcher) only ever closed the popup; the row's own OnClick
-    -- never fired, forcing a second click. IsMouseOver() is a pure cursor-
-    -- position-vs-frame-rect check, unaffected by stacking order, so it
-    -- still correctly reports true for a row sitting under this catcher -
-    -- close the old flyout AND run that row's full click action in this
-    -- SAME event, never a synthesized/delayed second click. A genuine
-    -- click outside both the flyout and every selector row still just
-    -- closes it, same as before.
-    catcher:SetScript("OnClick", function()
-        for _, btn in ipairs(broadcastTabButtons) do
-            if btn:IsShown() and btn:IsMouseOver() then
-                local entry = btn.tabEntry
-                CloseBroadcastFlyout()
-                HandleBroadcastTabClick(entry, btn)
-                return
-            end
-        end
-        CloseBroadcastFlyout()
-    end)
-    f.catcher = catcher
-    f:SetScript("OnHide", function() catcher:Hide() end)
-
-    f.title = f:CreateFontString(nil, "OVERLAY")
-    f.title:SetFontObject(SB.Fonts.Highlight)
-    f.title:SetPoint("TOPLEFT", 10, -8)
-    f.title:SetTextColor(unpack(SB.Theme.GOLD))
-
-    f.unavailableText = f:CreateFontString(nil, "OVERLAY")
-    f.unavailableText:SetFontObject(SB.Fonts.DisableSmall)
-    f.unavailableText:SetPoint("TOPLEFT", 10, -28)
-    f.unavailableText:SetPoint("RIGHT", -10, 0)
-    f.unavailableText:SetJustifyH("LEFT")
-    f.unavailableText:SetWordWrap(true)
-    f.unavailableText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-    f.unavailableText:Hide()
-
-    -- "Entire Guild (10)"/"All Friends (5)"/"Entire Raid (24)" - a
-    -- select-all ACTION whose own checked state is always DERIVED
-    -- (SelectedCount(bucket) == #EligibleNames(bucket)), never a stored
-    -- flag - see PopulateBroadcastFlyout below.
-    f.allRow = CreateFrame("Button", nil, f)
-    f.allRow:SetHeight(20)
-    local hl = f.allRow:CreateTexture(nil, "HIGHLIGHT")
-    hl:SetAllPoints()
-    hl:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.15)
-    local allCheck = SB.Theme.CreateToggleTile(f.allRow, 14)
-    allCheck:SetPoint("LEFT", 8, 0)
-    f.allRow.check = allCheck
-    f.allRow.text = f.allRow:CreateFontString(nil, "OVERLAY")
-    f.allRow.text:SetFontObject(SB.Fonts.Highlight)
-    f.allRow.text:SetPoint("LEFT", allCheck, "RIGHT", 6, 0)
-    f.allRow:Hide()
-
-    f.rows = {}
-    broadcastFlyout = f
-    -- Exposed for test/harness reachability only (this frame has no
-    -- name, so it never registers a _G global) - same pattern already
-    -- used for main.lockBtn/main.resizeGrip/main.header elsewhere in this
-    -- file, not read by any production code path.
-    SB.__outputBroadcastFlyout = f
-    return f
-end
-
-local function GetOrCreateFlyoutRow(f, index)
-    if f.rows[index] then return f.rows[index] end
-    local row = CreateFrame("Button", nil, f)
-    row:SetHeight(20)
-    local hl = row:CreateTexture(nil, "HIGHLIGHT")
-    hl:SetAllPoints()
-    hl:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.10)
-    local check = SB.Theme.CreateToggleTile(row, 14)
-    check:SetPoint("LEFT", 8, 0)
-    row.check = check
-    local text = row:CreateFontString(nil, "OVERLAY")
-    text:SetFontObject(SB.Fonts.HighlightSmall)
-    text:SetPoint("LEFT", check, "RIGHT", 6, 0)
-    text:SetPoint("RIGHT", -6, 0)
-    text:SetJustifyH("LEFT")
-    text:SetWordWrap(false)
-    row.text = text
-    f.rows[index] = row
-    return row
-end
-
-local RefreshBroadcastTabs -- forward-declared, PopulateBroadcastFlyout needs it as an upvalue before its own definition below
-
--- `bucket` is one of SB.ComputeReachablePlayers' own keys (GUILD/RAID/
--- FRIENDS). Every row here is an independent checkbox - explicit
--- requirement: no separate "entire channel" vs "selected members" MODE,
--- just individuals plus one derived select-all row toggling all of them
--- at once. Fans out through the existing Direct/whisper transport
--- (Communication.lua's SB:DispatchDefaultOutput SUBSET branch reading
--- SB.ComputeEffectiveRecipients), never a new wire command.
-local function PopulateBroadcastFlyout(bucket)
-    local f = BuildBroadcastFlyout()
-    f.__bucket = bucket
-    local groupLabel = RailGroupLabel(bucket)
-    f.title:SetText(groupLabel)
-
-    local names = EligibleNames(bucket)
-    local rail = SB.db.ui.outputRail
-    local y = -28
-
-    if #names == 0 then
-        f.allRow:Hide()
-        for _, row in ipairs(f.rows) do row:Hide() end
-        local reason
-        if bucket == "GUILD" then reason = "Not currently in a guild"
-        elseif bucket == "RAID" then reason = "Not currently in a party or raid"
-        else reason = "No online Soundbook friends detected" end
-        f.unavailableText:ClearAllPoints()
-        f.unavailableText:SetPoint("TOPLEFT", 10, y)
-        f.unavailableText:SetPoint("RIGHT", -10, 0)
-        f.unavailableText:SetText(reason)
-        f.unavailableText:Show()
-        y = y - 32
-    else
-        f.unavailableText:Hide()
-
-        local function RefreshAllRowChecked()
-            f.allRow.check:SetChecked(#rail.selected[bucket] == #names and #names > 0)
-        end
-
-        f.allRow:ClearAllPoints()
-        f.allRow:SetPoint("TOPLEFT", 0, y)
-        f.allRow:SetPoint("RIGHT", 0, 0)
-        local allWord = (bucket == "FRIENDS") and "All" or "Entire"
-        f.allRow.text:SetText(string.format("%s %s (%d)", allWord, groupLabel, #names))
-        RefreshAllRowChecked()
-        f.allRow.check:SetScript("OnClick", function(self)
-            SB.SetBroadcastBucketAllSelected(bucket, self:GetChecked() and true or false)
-            RefreshBroadcastTabs()
-            PopulateBroadcastFlyout(bucket)
-        end)
-        f.allRow:Show()
-        y = y - 22
-
-        for i, name in ipairs(names) do
-            local row = GetOrCreateFlyoutRow(f, i)
-            row:ClearAllPoints()
-            row:SetPoint("TOPLEFT", 0, y)
-            row:SetPoint("RIGHT", 0, 0)
-            row.text:SetText(SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name) or name)
-            local key = SB.PlayerKey and SB.PlayerKey(name)
-            local checked = false
-            for _, n in ipairs(rail.selected[bucket]) do
-                if key and SB.PlayerKey and SB.PlayerKey(n) == key then checked = true break end
-            end
-            row.check:SetChecked(checked)
-            row.check:SetScript("OnClick", function(self)
-                SB.SetBroadcastRecipientSelected(bucket, name, self:GetChecked() and true or false)
-                RefreshBroadcastTabs()
-                RefreshAllRowChecked()
-            end)
-            row:Show()
-            y = y - 22
-        end
-        for i = #names + 1, #f.rows do f.rows[i]:Hide() end
-    end
-
-    f:SetHeight(math.abs(y) + 10)
-end
-
--- BUGFIX (explicit report): previously opened LEFT of its trigger by
--- design ("toward the screen interior, away from the outer edge the tabs
--- are attached to") - directly over the Library/sound list, exactly what
--- this round's report flags ("must not cover the Soundbook content").
--- Now opens to the RIGHT (outside the Main window, ~8px clear of its
--- trigger) by default, and only flips back to the left when the screen
--- genuinely doesn't have room on the right - an explicit GetRight()-vs-
--- GetScreenWidth() check, not left to SetClampedToScreen alone (clamping
--- would just slide it back left over the Library on a narrow/off-centre
--- screen, reintroducing the exact problem being fixed).
-local function OpenBroadcastFlyout(anchorBtn, bucket)
-    GameTooltip:Hide()
-    PopulateBroadcastFlyout(bucket)
-    broadcastFlyout:ClearAllPoints()
-    local gap = 8
-    local screenW = (type(GetScreenWidth) == "function" and GetScreenWidth()) or 1024
-    local anchorRight = anchorBtn:GetRight() or 0
-    local flyoutW = broadcastFlyout:GetWidth() or 190
-    if anchorRight + gap + flyoutW <= screenW then
-        broadcastFlyout:SetPoint("TOPLEFT", anchorBtn, "TOPRIGHT", gap, 0)
-    else
-        broadcastFlyout:SetPoint("TOPRIGHT", anchorBtn, "TOPLEFT", -gap, 0)
-    end
-    broadcastFlyout.catcher:Show()
-    broadcastFlyout:Show()
-end
-
--- Explicit requirement (section 15): "All" is a convenience select-all
--- across every Send-ENABLED Guild/Raid/Friends channel at once, using the
--- exact same selection storage individual picks use - never a separate,
--- independently-dispatched "send mode" (SB:DispatchDefaultOutput only
--- ever sees the one resulting SUBSET, deduplicated, regardless of how it
--- was built). Regression fix: a Send-DISABLED channel must never be
--- selected by All (it stays untouched/deselected), and this is a real
--- TOGGLE now, not an always-select action - see IsAllBroadcastFullySelected
--- below, which both RefreshBroadcastTabs (for the button's own active
--- state) and this toggle's own "already fully selected -> clear instead"
--- branch share, so the two can never disagree about what "fully selected"
--- means.
-function SB.IsAllBroadcastFullySelected()
-    local rail = SB.db.ui.outputRail
-    local anyEnabled, allSelected = false, true
-    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        if IsChannelSendEnabled(bucket) then
-            anyEnabled = true
-            local eligible = #EligibleNames(bucket)
-            local isSelected = (eligible > 0 and SelectedCount(bucket) == eligible)
-                or (rail.channelSelected and rail.channelSelected[bucket]) or false
-            if not isSelected then allSelected = false end
-        end
-    end
-    return (not rail.selfOnly) and anyEnabled and allSelected
-end
-
-function SB.SelectAllBroadcastTargets()
-    if SB.IsAllBroadcastFullySelected() then
-        -- Every Send-enabled channel is already fully selected - a second
-        -- click on All clears all remote channel selections (explicit
-        -- requirement), same as toggling each one off individually.
-        for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-            SB.SetBroadcastBucketAllSelected(bucket, false)
-        end
-        return
-    end
-    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        if IsChannelSendEnabled(bucket) then
-            SB.SetBroadcastBucketAllSelected(bucket, true)
-        end
-    end
-end
-
--- Explicit requirement (section 16): exclusive - selecting this clears
--- every selected network recipient outright, not just "shown as inactive".
-function SB.SelectSelfOnly()
-    local rail = SB.db.ui.outputRail
-    rail.selfOnly = true
-    rail.selected.GUILD, rail.selected.RAID, rail.selected.FRIENDS = {}, {}, {}
-    if rail.channelSelected then
-        rail.channelSelected.GUILD, rail.channelSelected.RAID, rail.channelSelected.FRIENDS = false, false, false
-    end
-    SB:Fire("OUTPUT_SELECTION_CHANGED")
-end
-
-------------------------------------------------------------------------
--- Active/inactive/disabled tab visuals (section 4/5) - explicit report on
+-- Active/inactive/disabled tab visuals - explicit report on
 -- the OLD single-select rail carries over here: a border-colour change
 -- alone isn't enough, active needs a stronger combined state (filled
 -- Arcane background + brighter text + a full-strength accent edge as the
@@ -2167,95 +1733,13 @@ local function ApplyTabVisual(btn, active, color)
     end
 end
 
--- Shared "is this bucket currently selected" truth - used both by
--- RefreshBroadcastTabs (for the tab's own active visual) and by the
--- click handler below (to decide select vs. deselect on the SAME click
--- logic a second click needs) so the two can never disagree about what
--- "currently selected" means. A Send-disabled channel is never active,
--- regardless of stale selection data (see IsChannelSendEnabled above).
-local function IsBucketActive(bucket)
-    if not IsChannelSendEnabled(bucket) then return false end
-    local rail = SB.db.ui.outputRail
-    return SelectedCount(bucket) > 0 or (rail.channelSelected and rail.channelSelected[bucket]) or false
-end
-
-RefreshBroadcastTabs = function()
-    local rail = SB.db.ui.outputRail
-    -- "All" itself is active exactly when every Send-ENABLED channel is
-    -- currently selected (and at least one channel actually has Send
-    -- enabled) - a derived state, same principle as each bucket's own
-    -- "Entire X" row, never a stored flag. Shared with SB.SelectAllBroadcastTargets'
-    -- own "already fully selected -> clear instead" check, so the two can
-    -- never disagree about what "fully selected" means.
-    local allActive = SB.IsAllBroadcastFullySelected()
-
-    for _, btn in ipairs(broadcastTabButtons) do
-        local entry = btn.tabEntry
-        local active, count, available = false, nil, true
-        if entry.key == "SELF" then
-            active = rail.selfOnly and true or false
-        elseif entry.key == "ALL" then
-            active = allActive
-        else
-            -- Regression fix: availability (and therefore selectability)
-            -- is now driven purely by Settings -> Sharing's own "Send"
-            -- toggle, never by group/guild/friend membership (explicit
-            -- requirement - "Group membership does not control
-            -- selectability"). A Send-disabled channel can never be
-            -- active, whatever rail.selected/channelSelected happen to
-            -- still hold (they're cleared the moment Send is turned off -
-            -- see Settings.lua's own sendTile handler - this is just a
-            -- defensive second guard).
-            available = IsChannelSendEnabled(entry.bucket)
-            count = SelectedCount(entry.bucket)
-            -- Explicit requirement: the channel stays visibly selected
-            -- even with zero eligible recipients - count alone can't
-            -- distinguish "explicitly selected, nobody eligible" from
-            -- "never touched" (both leave rail.selected[bucket] empty),
-            -- so rail.channelSelected (set by SB.SetBroadcastBucketAllSelected)
-            -- covers that case. "Do not rely on hover alone."
-            active = IsBucketActive(entry.bucket)
-        end
-
-        -- Explicit requirement: always "Raid" in this selector, never
-        -- "Party" or "Raid / Party" - the underlying Raid/Party transport
-        -- semantics (Communication.lua's SB.ResolveGroupChannel) are
-        -- completely unaffected, this only simplifies the displayed word.
-        local label = (entry.key == "RAID") and "Raid" or entry.label
-        if count and count > 0 then
-            label = label .. " (" .. count .. ")"
-        end
-        btn.label:SetText(label)
-
-        ApplyTabVisual(btn, active, entry.color)
-        -- Regression fix: dimming/disabling now reflects Settings ->
-        -- Sharing's "Send" toggle, not group/guild/friend membership -
-        -- "Guild Send ON + no guild -> Guild still selectable, currently
-        -- zero recipients" (membership never disables a Send-enabled
-        -- channel) vs. "Send OFF -> clearly disabled/dimmed, cannot be
-        -- selected, clicking it does nothing" (the OnClick handler below
-        -- checks IsChannelSendEnabled itself and no-ops when it's false -
-        -- EnableMouse stays true regardless so hover/click-routing still
-        -- see this button at all, see the flyout catcher's own reasoning
-        -- further below). All/Self Only are never gated by Send at all.
-        btn:SetAlpha(available and 1 or 0.60)
-        btn:EnableMouse(true)
-    end
-
-    -- This is called right after every real selection change (select-all,
-    -- Self Only, an individual flyout checkbox) AND after roster-driven
-    -- refreshes - firing here once, rather than at each individual
-    -- mutation call-site, means the Favourites popup's live summary
-    -- (Announcer.lua, section 19) can never miss one.
-    SB:Fire("OUTPUT_SELECTION_CHANGED")
-end
-
--- Exposed so Settings.lua's own Sharing -> Send toggle can refresh the
--- Output Rail's visuals immediately when Send changes (the rail lives in
--- Main's always-visible chrome, alongside the Library/Settings content
--- swap, not inside either of those views - so a Send change made while
--- Settings is the active view must still repaint it live).
-SB.RefreshBroadcastTabs = function() RefreshBroadcastTabs() end
+-- IsBucketActive/RefreshBroadcastTabs/SB.RefreshBroadcastTabs (the Output
+-- Rail's own per-bucket active-state computation and repaint) are gone
+-- along with the rail itself. Live display refresh for the new "Send to:"
+-- selector is handled by SB.RefreshDefaultOutputDisplay further below,
+-- which fires the same SB:Fire("OUTPUT_SELECTION_CHANGED") event so
+-- Announcer.lua's existing listener (Favourites popup summary, Mini
+-- Soundbook title) keeps working unchanged.
 
 ------------------------------------------------------------------------
 -- Shared Main-shell layout metrics (3.0 QA round, sections 5-10; UI/UX
@@ -2290,13 +1774,11 @@ local SEARCH_GAP_BOTTOM = LAYOUT.GAP_M -- Search -> filter row: same, on the oth
 local SECTION_GAP = LAYOUT.GAP_M -- vertical gap between major sections (filters -> library)
 local SEARCH_MIN_W = 320 -- explicit requirement: "a sensible minimum around 320px rather than a fixed narrow width"
 local TAG_FILTER_BAR_H = 22
--- Output Rail's own top offset (broadcast tabs) - the exact vertical
--- position Library content starts at, derived arithmetically from the
--- same header -> Search -> filter-row anchor chain used below (rather
--- than a separately-maintained guess) so it can never silently drift out
--- of sync with the real layout - explicit requirement, section 10:
--- "vertically aligned with Library content".
-local RAIL_TOP_OFFSET = HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP + SEARCH_H + SEARCH_GAP_BOTTOM + TAG_FILTER_BAR_H + SECTION_GAP
+-- The exact vertical position Library content (and Settings' own content
+-- pane) starts at, derived arithmetically from the header -> Search ->
+-- filter-row anchor chain below (rather than a separately-maintained
+-- guess) so it can never silently drift out of sync with the real layout.
+local CONTENT_TOP_OFFSET = HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP + SEARCH_H + SEARCH_GAP_BOTTOM + TAG_FILTER_BAR_H + SECTION_GAP
 
 -- Targeted correction round (explicit requirement): Settings' own category
 -- strip must sit at the exact same Y position the first Library row does,
@@ -2309,25 +1791,19 @@ local RAIL_TOP_OFFSET = HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP + SEARCH_H 
 -- content area). Exposing the same already-computed pixel value directly
 -- removes any dependency on that chain resolving through hidden
 -- intermediate frames, rather than trusting it implicitly.
-SB.LIBRARY_CONTENT_TOP_OFFSET = RAIL_TOP_OFFSET
+SB.LIBRARY_CONTENT_TOP_OFFSET = CONTENT_TOP_OFFSET
 
 ------------------------------------------------------------------------
--- Shared "attached tab" button builder - used for BOTH the upper
--- broadcast tabs and the lower utility (Admin/Settings) tabs below, so
--- they read as one visual family while their own colour/behaviour differ.
+-- Shared "attached tab" button builder - originally shared between the
+-- (now-removed) broadcast tabs and the lower utility (Admin) tab; kept
+-- for the Admin tab, which still uses it.
 ------------------------------------------------------------------------
 
 local TAB_W, TAB_H = 108, 28
 
--- CreateAttachedTab(parent, color, refreshFn, noOwnBorder) - the broadcast
--- (Output Rail) tabs pass noOwnBorder=true: they live inside one shared
--- rail container that draws the single outer border/background (see
--- BuildBroadcastTabs below), so each individual tile no longer draws its
--- own edge - explicit report: "still looks like five old-style bordered
--- rectangles attached outside the window" instead of one coherent
--- control. The utility (Admin/Settings) tabs below keep their own border
--- (still two independent, individually-clickable shell controls, not a
--- segmented group), so they pass nothing here and are unaffected.
+-- CreateAttachedTab(parent, color, refreshFn, noOwnBorder) - the utility
+-- (Admin) tab below keeps its own border (an independent, individually-
+-- clickable shell control), so it passes nothing for noOwnBorder.
 local function CreateAttachedTab(parent, color, refreshFn, noOwnBorder)
     local btn = SB.CreateFrame("Button", nil, parent)
     btn:SetSize(TAB_W, TAB_H)
@@ -2371,121 +1847,6 @@ local function CreateAttachedTab(parent, color, refreshFn, noOwnBorder)
     btn:SetScript("OnLeave", function(self) if refreshFn then refreshFn() end end)
 
     return btn
-end
-
--- Output Rail: ONE coherent segmented control, not five separately
--- bordered rectangles bolted onto the window (explicit report). A single
--- container frame draws the one shared background/border and attaches to
--- the Soundbook's own outer right edge; each bucket becomes a borderless
--- segment inside it, separated by a thin 1px divider line rather than a
--- visible gap, so the whole thing reads as one control with five
--- selectable zones - closer to a real segmented control than a stack of
--- independent tiles. Each segment keeps its own left-edge accent strip
--- and fill/glow for its selected state (ApplyTabVisual, unchanged).
-local outputRailContainer
-
--- Single shared click-processing function for every selector row (All/
--- Guild/Raid/Friends/Self Only) - used both by each button's own OnClick
--- AND by the flyout catcher's click-routing fix below, so "click this
--- row" always means exactly the same thing regardless of which one
--- dispatched it, and a row switch never needs a synthesized second click.
-HandleBroadcastTabClick = function(entry, btn)
-    if entry.key == "ALL" then
-        SB.SelectAllBroadcastTargets()
-        CloseBroadcastFlyout()
-        RefreshBroadcastTabs()
-    elseif entry.key == "SELF" then
-        SB.SelectSelfOnly()
-        CloseBroadcastFlyout()
-        RefreshBroadcastTabs()
-    else
-        -- Settings Send is authoritative (explicit requirement): a
-        -- Send-disabled channel does nothing on click, full stop.
-        if not IsChannelSendEnabled(entry.bucket) then return end
-        if IsBucketActive(entry.bucket) then
-            -- Second click on an already-selected channel: deselect it
-            -- and close its submenu if it was open (explicit requirement:
-            -- "a selected channel must always be deselectable by clicking
-            -- the same row again").
-            SB.SetBroadcastBucketAllSelected(entry.bucket, false)
-            if broadcastFlyout and broadcastFlyout:IsShown() and broadcastFlyout.__bucket == entry.bucket then
-                CloseBroadcastFlyout()
-            end
-            RefreshBroadcastTabs()
-        else
-            -- First click: select the whole channel as current output AND
-            -- open/refresh its member submenu, already showing it
-            -- selected - OpenBroadcastFlyout repopulates+repositions the
-            -- ONE shared flyout frame, so switching from a different
-            -- bucket's open submenu to this one needs no separate close.
-            SB.SetBroadcastBucketAllSelected(entry.bucket, true)
-            RefreshBroadcastTabs()
-            OpenBroadcastFlyout(btn, entry.bucket)
-        end
-    end
-end
-
-local function BuildBroadcastTabs(parent)
-    local railH = #BROADCAST_TABS * TAB_H
-    local rail = SB.CreateFrame("Frame", nil, parent)
-    rail:SetSize(TAB_W, railH)
-    rail:SetPoint("TOPLEFT", parent, "TOPRIGHT", -3, -RAIL_TOP_OFFSET)
-    rail:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
-    rail:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
-    rail:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
-    outputRailContainer = rail
-    main.outputRailContainer = rail
-
-    for i, entry in ipairs(BROADCAST_TABS) do
-        local btn = CreateAttachedTab(rail, entry.color, function() RefreshBroadcastTabs() end, true)
-        -- Stacked with no gap inside the shared container (dividers below
-        -- provide the only visual separation between segments).
-        btn:SetPoint("TOPLEFT", rail, "TOPLEFT", 0, -((i - 1) * TAB_H))
-        btn.tabEntry = entry
-
-        if i > 1 then
-            local divider = rail:CreateTexture(nil, "ARTWORK")
-            divider:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
-            divider:SetPoint("TOPRIGHT", btn, "TOPRIGHT", 0, 0)
-            divider:SetHeight(1)
-            divider:SetTexture("Interface\\Buttons\\WHITE8X8")
-            divider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
-        end
-
-        btn:SetScript("OnClick", function() HandleBroadcastTabClick(entry, btn) end)
-        btn:HookScript("OnEnter", function(self)
-            -- Only All/Self Only (no flyout of their own) get a plain
-            -- tooltip - a bucket tab's explanation lives inside its own
-            -- flyout instead, so hovering never produces tooltip+flyout
-            -- at once (explicit requirement).
-            if entry.tooltip then
-                -- Explicit requirement: appears to the RIGHT of the
-                -- selector (anchored from its own right edge, ~8px gap),
-                -- never covering the Library when there's room - the
-                -- previous ANCHOR_LEFT constant positions relative to
-                -- the CURSOR, not this button, and could show the
-                -- tooltip back over the Library content on the right-
-                -- edge-attached Output Rail. Flips left only when the
-                -- screen genuinely has no room on the right, same
-                -- GetRight()-vs-GetScreenWidth() pattern OpenBroadcastFlyout
-                -- already uses for the exact same reason.
-                GameTooltip:SetOwner(self, "ANCHOR_NONE")
-                GameTooltip:SetText(entry.label, 1, 1, 1)
-                GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
-                local screenW = (type(GetScreenWidth) == "function" and GetScreenWidth()) or 1024
-                local selfRight = self:GetRight() or 0
-                GameTooltip:ClearAllPoints()
-                if selfRight + 8 + (GameTooltip:GetWidth() or 200) <= screenW then
-                    GameTooltip:SetPoint("TOPLEFT", self, "TOPRIGHT", 8, 0)
-                else
-                    GameTooltip:SetPoint("TOPRIGHT", self, "TOPLEFT", -8, 0)
-                end
-                GameTooltip:Show()
-            end
-        end)
-
-        broadcastTabButtons[i] = btn
-    end
 end
 
 ------------------------------------------------------------------------
@@ -2633,40 +1994,35 @@ function SB:ToggleKeybindMode()
     SB:RefreshMainWindow()
 end
 
-local adminTabBtn, settingsTabBtn, utilityRail, utilityDivider
+local adminTabBtn, utilityRail
+local settingsGearBtn
 
--- Open (showing its panel) is the only "active" state these two have -
+-- Open (showing its panel) is the only "active" state the Admin tab has -
 -- unlike a broadcast tab, there's no separate notion of "selected but not
 -- currently viewing". Library being open falsely marks neither (explicit
--- requirement, section 28).
+-- requirement, section 28). Settings' own active state now lives on the
+-- header gear button (settingsGearBtn:SetActive), refreshed alongside this.
 local function RefreshUtilityTabs()
     if adminTabBtn then ApplyTabVisual(adminTabBtn, isAdminOpen, SB.Theme.GOLD) end
-    if settingsTabBtn then ApplyTabVisual(settingsTabBtn, isSettingsOpen, SB.Theme.GOLD) end
+    if settingsGearBtn then settingsGearBtn:SetActive(isSettingsOpen) end
 end
 
--- Regression fix: Admin being unavailable used to only Hide() the button
--- itself - the shared utilityRail container (its own dark backdrop/
--- border) stayed permanently sized for TWO rows regardless, leaving an
--- empty dark box above Settings for every non-admin player. The
--- container itself now collapses to a single row and Settings moves up
--- to fill it, rather than leaving a placeholder - no empty visual row, no
--- leftover hit area (a hidden button already takes no clicks, but the
--- surrounding box no longer even LOOKS like a control any more either).
+-- Regression fix (still applies with only one tab left): Admin being
+-- unavailable used to only Hide() the button itself - the shared
+-- utilityRail container (its own dark backdrop/border) stayed permanently
+-- sized regardless, leaving an empty dark box for every non-admin player.
+-- The whole container now hides entirely when Admin is unavailable -
+-- Settings moved out to the header gear and no longer shares this rail at
+-- all, so there is nothing left in it once Admin is off.
 function SB:RefreshAdminTabVisibility()
     if not adminTabBtn or not utilityRail then return end
     local adminVisible = SB:IsRaidAdmin()
     if adminVisible then
+        utilityRail:Show()
         adminTabBtn:Show()
-        utilityDivider:Show()
-        utilityRail:SetHeight(TAB_H * 2)
-        settingsTabBtn:ClearAllPoints()
-        settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, -TAB_H)
     else
+        utilityRail:Hide()
         adminTabBtn:Hide()
-        utilityDivider:Hide()
-        utilityRail:SetHeight(TAB_H)
-        settingsTabBtn:ClearAllPoints()
-        settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, 0)
         if isAdminOpen then
             isAdminOpen = false
             SB:RefreshMainWindow()
@@ -2674,26 +2030,19 @@ function SB:RefreshAdminTabVisibility()
     end
 end
 
--- Same "one shared container, borderless segments, thin dividers" treatment
--- Output Rail's own BuildBroadcastTabs uses (explicit requirement, section
--- 6: "consistent widths, gaps, padding and state styling... belong to the
--- same design language as the rest of the addon") - a separate container
--- from the Output Rail above it (Admin/Settings navigate views, the rail
--- above picks a send target - different functions, kept visually distinct
--- groups), but built from the exact same TAB_W/TAB_H and border language
--- so the two read as one coherent right-side dock rather than two
--- different tab styles stacked on top of each other.
+-- Utility (Admin) tab dock - now a single-row container since Settings
+-- moved to the header gear button. Kept as its own bordered/backed
+-- container (rather than a bare button) so it still reads as attached
+-- dock chrome consistent with the rest of the window, even with just one
+-- row inside it.
 local function BuildUtilityTabs(parent)
     utilityRail = SB.CreateFrame("Frame", nil, parent)
-    -- Starts collapsed to a single row (Admin unknown/unavailable until
-    -- RefreshAdminTabVisibility runs, called right after BuildMainFrame
-    -- finishes below) - never starts at the 2-row size and only shrinks
-    -- later, which would still flash the empty box for a frame.
     utilityRail:SetSize(TAB_W, TAB_H)
     utilityRail:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30)
     utilityRail:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
     utilityRail:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
     utilityRail:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+    utilityRail:Hide()
     main.utilityRail = utilityRail
 
     adminTabBtn = CreateAttachedTab(utilityRail, SB.Theme.GOLD, RefreshUtilityTabs, true)
@@ -2701,20 +2050,6 @@ local function BuildUtilityTabs(parent)
     adminTabBtn.label:SetText("Admin")
     adminTabBtn:SetScript("OnClick", ToggleAdmin)
     adminTabBtn:Hide()
-
-    utilityDivider = utilityRail:CreateTexture(nil, "ARTWORK")
-    utilityDivider:SetPoint("TOPLEFT", adminTabBtn, "BOTTOMLEFT", 0, 0)
-    utilityDivider:SetPoint("TOPRIGHT", adminTabBtn, "BOTTOMRIGHT", 0, 0)
-    utilityDivider:SetHeight(1)
-    utilityDivider:SetTexture("Interface\\Buttons\\WHITE8X8")
-    utilityDivider:SetVertexColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.7)
-    utilityDivider:Hide()
-
-    settingsTabBtn = CreateAttachedTab(utilityRail, SB.Theme.GOLD, RefreshUtilityTabs, true)
-    settingsTabBtn:SetPoint("TOPLEFT", utilityRail, "TOPLEFT", 0, 0)
-    settingsTabBtn.label:SetText("Settings")
-    settingsTabBtn:SetScript("OnClick", ToggleSettings)
-    main.settingsTabBtn = settingsTabBtn
 
     RefreshUtilityTabs()
 end
@@ -2817,10 +2152,41 @@ local function BuildMainFrame()
     -- on the SAME title label (RefreshMainWindow) rather than a second
     -- competing label - the title stays ONE element, always centred,
     -- completely independent of whether the back button is shown.
-    -- Explicit requirement: "< Soundbook", not "< Library" - there is no
-    -- user-facing destination called "Library".
+    -- Shared header-icon metrics (needed by the gear button below, so
+    -- declared before it rather than down with the close/lock/audio zone
+    -- that also uses them). One shared chrome family (Theme.CreateMiniControlButton)
+    -- - identical 24x24 visual size, each padded to an effective ~28x28
+    -- hitbox via SetHitRectInsets (visual stays compact; the actual click
+    -- target is comfortably bigger).
+    local HEADER_ICON_SIZE = LAYOUT.ICON_BTN
+    local HEADER_ICON_HIT_PAD = 2 -- 24 + 2*2 = 28px effective hitbox
+    local HEADER_ICON_INSET = 16
+    local function ExpandHitbox(btn)
+        btn:SetHitRectInsets(-HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD)
+    end
+
+    -- Settings gear (top-left, explicit requirement: a compact gear icon
+    -- button replacing the old external "Settings" text tab). Always
+    -- visible regardless of which view (Library/Settings/Admin/Keybind
+    -- Mode) currently owns the content area, so Settings stays reachable
+    -- - and its own open state visible via the active gold tint - from
+    -- anywhere in the Main window. Theme.CreateHeader anchors the title
+    -- to the header's own BOTTOM point, independent of this or any other
+    -- corner overlay, so adding this can't pull "Soundbook" off-centre.
+    settingsGearBtn = SB.Theme.CreateSettingsGlyph(mainHeader, HEADER_ICON_SIZE)
+    settingsGearBtn:SetPoint("TOPLEFT", 12, -12)
+    ExpandHitbox(settingsGearBtn)
+    settingsGearBtn:SetScript("OnClick", ToggleSettings)
+    SB.Theme.AttachTooltip(settingsGearBtn, "Settings")
+    main.settingsGearBtn = settingsGearBtn
+
+    -- "< Soundbook" back button - sits directly to the right of the gear
+    -- (rather than the header's own absolute left edge) so the two can
+    -- coexist without overlapping. Explicit requirement: "< Soundbook",
+    -- not "< Library" - there is no user-facing destination called
+    -- "Library".
     backToLibraryBtn = SB.Theme.CreateSecondaryButton(mainHeader, "< Soundbook", 108, 22)
-    backToLibraryBtn:SetPoint("TOPLEFT", 12, -12)
+    backToLibraryBtn:SetPoint("LEFT", settingsGearBtn, "RIGHT", LAYOUT.GAP_S, 0)
     backToLibraryBtn:SetScript("OnClick", function()
         isSettingsOpen = false
         isAdminOpen = false
@@ -2832,21 +2198,10 @@ local function BuildMainFrame()
 
     -- Utility zone (top-right, inside the header's own safe padding, at
     -- least 16px clear of the header's own right edge): Quick Audio ->
-    -- Lock -> Close, left to right (explicit order requirement). One
-    -- shared chrome family (Theme.CreateMiniControlButton) - identical
-    -- 24x24 visual size and 6px gaps, each padded to an effective ~28x28
-    -- hitbox via SetHitRectInsets (visual stays compact; the actual click
-    -- target is comfortably bigger - explicit requirement, without a
-    -- second wrapper frame per button). Close keeps its own distinct
-    -- destructive hover tint (red) so it still reads as "this one closes
-    -- the window", not just another utility icon.
-    local HEADER_ICON_SIZE = LAYOUT.ICON_BTN
-    local HEADER_ICON_HIT_PAD = 2 -- 24 + 2*2 = 28px effective hitbox
-    local HEADER_ICON_INSET = 16
-    local function ExpandHitbox(btn)
-        btn:SetHitRectInsets(-HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD)
-    end
-
+    -- Lock -> Close, left to right (explicit order requirement). Close
+    -- keeps its own distinct destructive hover tint (red) so it still
+    -- reads as "this one closes the window", not just another utility
+    -- icon.
     local closeBtn = SB.Theme.CreateCloseGlyph(mainHeader, HEADER_ICON_SIZE)
     closeBtn:SetPoint("TOPRIGHT", -HEADER_ICON_INSET, -12)
     ExpandHitbox(closeBtn)
@@ -2882,15 +2237,62 @@ local function BuildMainFrame()
     main.audioBtn = audioBtn
 
     ------------------------------------------------------------------
-    -- Search - the Main window's primary interaction, centred in the
-    -- content area (explicit requirement: "center the search field
-    -- horizontally... roughly 66% of available content width, with a
-    -- sensible minimum around 320px") instead of left-anchored. Its own
-    -- row below the header's gold divider, with real vertical separation
-    -- both from the header above and the filter row/Library below.
+    -- Top control row (redesign): "Send to: X" Default Output selector
+    -- on the LEFT, Search filling the remaining width on the RIGHT - same
+    -- row, same height, directly below the header's gold divider. Both
+    -- stay fully inside the normal content inset (SAFE_INSET), same as
+    -- the tag filter row and Library below - nothing protrudes past the
+    -- Soundbook's own frame. Replaces the old externally-attached
+    -- broadcast tabs (Output Rail) and the independently-centred search
+    -- box.
     ------------------------------------------------------------------
+    local DEFAULT_OUTPUT_DD_W = 190
+    local TOP_ROW_GAP = LAYOUT.GAP_S
+
+    -- "All"/"Self only (no send)" read as verbose sentences in a compact
+    -- closed chip ("checked in Settings"/"(no send)" make sense as a
+    -- dropdown row, not as the always-visible label) - relabelled for
+    -- display only, same values/behaviour as SB.ComputeOutputTargetOptions
+    -- everywhere else (EditWindow's two dropdowns, SendMenu) already use.
+    local function MainOutputOptions()
+        local opts = SB.ComputeOutputTargetOptions()
+        if opts[1] and opts[1].value == "ALL" then opts[1].text = "All" end
+        local lastOpt = opts[#opts]
+        if lastOpt and lastOpt.value == "SELF" then lastOpt.text = "Self Only" end
+        return opts
+    end
+
+    defaultOutputDD = SB.Theme.CreateDropdown(main, DEFAULT_OUTPUT_DD_W, SEARCH_H, 14)
+    defaultOutputDD.button:SetPoint("TOPLEFT", main, "TOPLEFT", SAFE_INSET, 0)
+    defaultOutputDD.button:SetPoint("TOP", mainHeader, "BOTTOM", 0, -SEARCH_GAP_TOP)
+    defaultOutputDD:SetOptions(MainOutputOptions())
+    defaultOutputDD:SetOptionsProvider(MainOutputOptions)
+    -- Prefixes the closed chip's own label with "Send to: " without
+    -- touching the dropdown LIST rows (dd.label is the one fontstring
+    -- this runs on that IS the closed button's own label - see
+    -- Theme.CreateDropdown). SB.OutputTargetRowFont already applies the
+    -- shared channel-colour/font rules everywhere else this option set
+    -- is used; this only adds the "Send to:" prefix on top.
+    defaultOutputDD:SetRowFont(function(text, opt)
+        SB.OutputTargetRowFont(text, opt)
+        if text == defaultOutputDD.label then
+            text:SetText("Send to: " .. text:GetText())
+        end
+    end)
+    defaultOutputDD:SetValue((SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL")
+    defaultOutputDD:SetOnChange(function(value)
+        SB.db.settings.defaultOutputTarget = value
+        SB:Fire("OUTPUT_SELECTION_CHANGED")
+    end)
+    SB.Theme.AttachTooltip(defaultOutputDD.button, "Send to",
+        "Where a regular click sends a sound by default. A sound's own per-sound Default Output (Edit Sound) overrides this when set.")
+    main.defaultOutputDD = defaultOutputDD
+
     searchBox = SB.Theme.CreateInputBox(main, SEARCH_MIN_W, SEARCH_H)
-    searchBox:SetPoint("TOP", mainHeader, "BOTTOM", 0, -SEARCH_GAP_TOP)
+    searchBox:SetPoint("LEFT", defaultOutputDD.button, "RIGHT", TOP_ROW_GAP, 0)
+    searchBox:SetPoint("RIGHT", main, "RIGHT", -SAFE_INSET, 0)
+    searchBox:SetPoint("TOP", defaultOutputDD.button, "TOP", 0, 0)
+    searchBox:SetHeight(SEARCH_H)
     searchBox:SetTextInsets(10, 8, 0, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -2901,30 +2303,16 @@ local function BuildMainFrame()
     end)
     main.searchBox = searchBox
 
-    -- Responsive width (explicit requirement) - a single TOP anchor (no
-    -- LEFT/RIGHT points) means changing only the WIDTH keeps the box
-    -- centred automatically, so it "remains centered as the window is
-    -- resized" for free. Recomputed from main's OnSizeChanged (main.lua's
-    -- shared handler, near the resize grip below, calls this directly -
-    -- see ResizeSearchBox's own forward reference there) rather than a
-    -- second competing OnSizeChanged handler on the same frame.
-    local function ResizeSearchBox()
-        local contentW = math.max(0, (main:GetWidth() or 0) - 2 * SAFE_INSET)
-        searchBox:SetWidth(math.max(SEARCH_MIN_W, math.min(contentW, contentW * 0.66)))
-    end
-    main.ResizeSearchBox = ResizeSearchBox
-    ResizeSearchBox()
-
     searchPlaceholder = searchBox:CreateFontString(nil, "OVERLAY")
     searchPlaceholder:SetFontObject(SB.Fonts.DisableSmall)
     searchPlaceholder:SetPoint("LEFT", 10, 0)
     searchPlaceholder:SetText("Find a sound...")
 
     ------------------------------------------------------------------
-    -- Tag filter row, directly under Search - explicit hierarchy:
-    -- current view -> header -> Search -> filters -> Library, so filters
-    -- sit visually BELOW Search with a clear, consistent SECTION_GAP
-    -- rather than crowding the same row.
+    -- Tag filter row, directly under the top control row - explicit
+    -- hierarchy: current view -> header -> top row -> filters -> Library,
+    -- so filters sit visually BELOW it with a clear, consistent
+    -- SECTION_GAP rather than crowding the same row.
     ------------------------------------------------------------------
     local tagFilterBar = BuildTagFilterBar(main)
     tagFilterBar:SetPoint("TOP", searchBox, "BOTTOM", 0, -SEARCH_GAP_BOTTOM)
@@ -2932,13 +2320,11 @@ local function BuildMainFrame()
     tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -SAFE_INSET, 0)
 
     ------------------------------------------------------------------
-    -- Right-side attached tabs (outside the content area entirely - see
-    -- BuildBroadcastTabs/BuildUtilityTabs above) + full-width scrolling
-    -- Library content. The Library no longer loses width to a left-side
-    -- rail - explicit redesign moved that whole column out to the right
-    -- edge, outside the frame.
+    -- Utility (Admin) tab dock (outside the content area, right edge) +
+    -- full-width scrolling Library content. The Library no longer loses
+    -- width to a left-side rail, and the right-side dock now carries only
+    -- the Admin tab (Settings moved to the header gear above).
     ------------------------------------------------------------------
-    BuildBroadcastTabs(main)
     BuildUtilityTabs(main)
 
     local libraryScroll = SB.Theme.CreateScrollFrame(main)
@@ -3089,11 +2475,10 @@ local function BuildMainFrame()
     mainResizeGrip = resizeGrip
     main:SetScript("OnSizeChanged", function()
         if not main.content then return end
-        -- Search's own centred width is cheap to recompute (no layout
-        -- pass), so it tracks every resize tick immediately rather than
-        -- waiting on the debounced Library reflow below - explicit
-        -- requirement: "must remain centered as the window is resized".
-        ResizeSearchBox()
+        -- Search box now has both LEFT and RIGHT anchors (redesign - it
+        -- fills the remaining top-row width next to the Default Output
+        -- selector), so it resizes with the frame automatically with no
+        -- code needed here any more.
         if main.layoutRefreshTimer then main.layoutRefreshTimer:Cancel() end
         main.layoutRefreshTimer = C_Timer.NewTimer(0.05, function()
             main.layoutRefreshTimer = nil
@@ -3173,8 +2558,7 @@ function SB:RefreshMainWindow()
         -- view read as broken/disconnected from the Main shell.
         if searchBox then searchBox:Hide() end
         if searchPlaceholder then searchPlaceholder:Hide() end
-        if outputRailContainer then outputRailContainer:Hide() end
-        for i = 1, #broadcastTabButtons do broadcastTabButtons[i]:Hide() end
+        if defaultOutputDD then defaultOutputDD.button:Hide() end
         -- Same reasoning as RefreshLibraryImpl's own pool-recycling loop -
         -- favouriteHover is parented to `main`, not the entry button, so
         -- it needs hiding explicitly here too (switching to Settings/
@@ -3189,13 +2573,7 @@ function SB:RefreshMainWindow()
         if backToLibraryBtn then backToLibraryBtn:Hide() end
         if searchBox then searchBox:Show() end
         if searchPlaceholder then searchPlaceholder:SetShown(searchBox:GetText() == "") end
-        -- RefreshBroadcastTabs (unconditionally called at the very end of
-        -- this function, below) only ever adjusts each tab's alpha/colour/
-        -- label - it never Shows() one, so returning to the Library needs
-        -- an explicit Show() for each here, mirroring how they were
-        -- explicitly Hide()n above.
-        if outputRailContainer then outputRailContainer:Show() end
-        for i = 1, #broadcastTabButtons do broadcastTabButtons[i]:Show() end
+        if defaultOutputDD then defaultOutputDD.button:Show() end
         settingsPanel:Hide()
         adminPanel:Hide()
         keybindModePanel:Hide()
@@ -3203,12 +2581,10 @@ function SB:RefreshMainWindow()
         main.tagFilterBar:Show()
         RefreshLibrary()
     end
-    -- The right-side tabs (both groups) stay visible/usable regardless of
-    -- which internal view is showing - explicit requirement: Settings/
-    -- Admin's own tabs must always be clickable to get back to the
-    -- Library, and "who do I send to" is a persistent global choice that
-    -- isn't tied to which panel happens to be open.
-    RefreshBroadcastTabs()
+    -- The header gear and the Admin dock both stay visible/usable
+    -- regardless of which internal view is showing - explicit
+    -- requirement: Settings/Admin must always be reachable to get back to
+    -- the Library.
     RefreshUtilityTabs()
 end
 
@@ -3363,26 +2739,27 @@ SB:On("CATEGORY_CHANGED", function()
     if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
 end)
 
+-- Live refresh hook for the Default Output selector's downstream
+-- consumers - the dropdown's own closed-chip text never depends on
+-- roster state (a bucket target like "Raid" always just reads "Raid",
+-- whatever its current reach), but the Mini Soundbook's live title and
+-- the Favourites popup summary (Announcer.lua's own
+-- ComputeLiveTargetCounts/DescribeEffectiveTargetPhrase) DO depend on it
+-- - they recompute live reach every time this event fires. The dropdown's
+-- OWN list of options (including each group header's live "(N)" reach
+-- count) is recomputed fresh via its optionsProvider every time the list
+-- is opened, so it never goes stale either.
+SB.RefreshDefaultOutputDisplay = function()
+    SB:Fire("OUTPUT_SELECTION_CHANGED")
+end
+
 -- Keeps the Admin tab's own visibility in sync with the player's current
 -- role (a Raid Lead can hand off lead, an Assist can be demoted, or the
 -- player can simply leave the group entirely, all mid-session), and the
--- broadcast tabs' own eligible/selected counts fresh - explicit
--- requirement: recompute on Guild roster update, Party/Raid update,
--- Friends state update, and Ignore list update (IGNORELIST_UPDATE - a
--- standard WoW event, fires on every /ignore or /unignore), event-driven
--- only, never a permanent poll. RefreshBroadcastTabs itself fires
--- OUTPUT_SELECTION_CHANGED at its own end, which is what actually
--- propagates this on to the Mini Soundbook's own live title
--- (Announcer.lua's own OUTPUT_SELECTION_CHANGED listener).
---
--- Regression fix: this used to be gated behind `main and main:IsShown()`
--- - correct for the Output Rail itself (nothing to repaint if Main is
--- closed), but wrong for the Mini Soundbook's live title, which can be
--- open on its own with Main closed entirely. RefreshBroadcastTabs is
--- cheap and safe to call unconditionally (broadcastTabButtons is simply
--- empty before Main has ever been built, or updates hidden buttons
--- harmlessly otherwise) - always called now so the Mini title stays live
--- regardless of whether Main happens to be open.
+-- Mini Soundbook's live title fresh - explicit requirement: recompute on
+-- Guild roster update, Party/Raid update, Friends state update, and
+-- Ignore list update (IGNORELIST_UPDATE - a standard WoW event, fires on
+-- every /ignore or /unignore), event-driven only, never a permanent poll.
 local rosterEventFrame = CreateFrame("Frame")
 rosterEventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 rosterEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
@@ -3390,24 +2767,8 @@ rosterEventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
 rosterEventFrame:RegisterEvent("FRIENDLIST_UPDATE")
 rosterEventFrame:RegisterEvent("IGNORELIST_UPDATE")
 rosterEventFrame:SetScript("OnEvent", function()
-    -- Explicit requirement: a fresh install defaults the Output Rail to
-    -- "All" and must never have nothing selected. Database.lua's
-    -- SanitizeDatabase sets this one-time flag only for a genuinely fresh
-    -- install (never for an upgrading player's real, possibly-deliberate
-    -- choice); consumed exactly once, on whichever of this frame's events
-    -- fires first after login - by that point at least Send-enabled state
-    -- is always valid, even if a given roster is itself still empty (the
-    -- same "explicitly selected, zero eligible" state already treated as
-    -- legitimate everywhere else - see SetBroadcastBucketAllSelected).
-    -- Reuses the exact same SB.SelectAllBroadcastTargets() a real "All"
-    -- click performs, never a separate ad-hoc selection path.
-    local rail = SB.db and SB.db.ui and SB.db.ui.outputRail
-    if rail and rail.needsDefaultAll then
-        rail.needsDefaultAll = nil
-        SB.SelectAllBroadcastTargets()
-    end
     SB:RefreshAdminTabVisibility()
-    RefreshBroadcastTabs()
+    SB.RefreshDefaultOutputDisplay()
 end)
 
 -- Exposed for test/harness reachability only (the mock WoW API's
@@ -3421,5 +2782,5 @@ SB.__EmitRosterEvent = function() rosterEventFrame:GetScript("OnEvent")() end
 -- previously "zero eligible" bucket into a real recipient, which the
 -- Mini Soundbook title must reflect live too.
 SB:On("KNOWN_USER_CHANGED", function()
-    RefreshBroadcastTabs()
+    SB.RefreshDefaultOutputDisplay()
 end)

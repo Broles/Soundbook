@@ -891,6 +891,37 @@ function Theme.CreateAudioGlyph(parent, size)
     return btn
 end
 
+-- Settings gear (Main window header, top-left) - explicit requirement:
+-- a compact gear icon button replacing the old external "Settings" text
+-- tab. No gear quadrant exists in the addon's own control-icon atlas
+-- (Assets/ControlIcons.tga is a binary asset that can't be extended from
+-- here), so this reuses WoW's own built-in Trade_Engineering icon -
+-- universally read as "settings/gear" across the WoW addon ecosystem -
+-- desaturated and gold-tinted to match every other header glyph here
+-- rather than showing as full-color game art.
+function Theme.CreateSettingsGlyph(parent, size)
+    size = size or 16
+    local btn = Theme.CreateMiniControlButton(parent, size)
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetPoint("TOPLEFT", 3, -3)
+    icon:SetPoint("BOTTOMRIGHT", -3, 3)
+    icon:SetTexture(134936) -- Trade_Engineering
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    if icon.SetDesaturated then icon:SetDesaturated(true) end
+    btn.icon = icon
+    -- Same idle/active language as CreateLockGlyph's :SetLocked() - muted
+    -- gold at rest, brighter gold while Settings is the open view.
+    function btn:SetActive(active)
+        if active then
+            icon:SetVertexColor(1, 0.82, 0.38, 1)
+        else
+            icon:SetVertexColor(0.72, 0.66, 0.50, 0.85)
+        end
+    end
+    btn:SetActive(false)
+    return btn
+end
+
 local function CreateCheckCore(parent, size)
     local check = SB.CreateFrame("CheckButton", nil, parent)
     check:SetSize(size or 16, size or 16)

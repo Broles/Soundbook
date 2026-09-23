@@ -585,22 +585,32 @@ end
 ---      saved.outputOverride) - distinct from the existing "Macro Output"
 ---      field, which only ever affects the copied macro text, never a
 ---      normal click. "ALL" (or unset) counts as "no override" here.
----   3. The right-side broadcast tabs' current selection
----      (SB.db.ui.outputRail - see SB.ComputeEffectiveRecipients above).
----      "ALL"/a single channel/etc no longer come from
----      SB.db.settings.defaultOutputTarget - that field is now ONLY the
----      per-sound/macro override vocabulary's "no override" sentinel and
----      is otherwise unused for the global default.
----   4. "SELF" (local-only) as the last-resort fallback - nothing
----      selected on the tabs behaves exactly like Self Only.
+---   3. Main Soundbook redesign: restored as the actual GLOBAL default -
+---      SB.db.settings.defaultOutputTarget (the Main window's own
+---      single-select "Send to:" control, see UI.lua) - "ALL" means
+---      exactly what SB.ComputeOutputTargetOptions' own "All (checked in
+---      Settings)" label already promises: SB:BroadcastSound below, fanned
+---      out to whichever channels Settings -> Multiplayer's Send matrix
+---      currently has enabled - never SB.ComputeEffectiveRecipients'
+---      per-player SUBSET (that mechanism - the old right-side broadcast
+---      tabs' individual-player picks - has no surviving UI to populate it
+---      any more, but is left fully intact/reachable for any explicit
+---      override or SB.db.ui.outputRail data a player already has saved;
+---      see UI.lua's Default Output redesign for the full reasoning).
+---   4. "ALL" itself as the last-resort fallback (matches
+---      defaults.settings.defaultOutputTarget - see Core.lua) - never
+---      "nothing selected".
 function SB:ResolveOutputTarget(soundID, explicitOverride)
     if explicitOverride and SB.IsValidOutputTarget(explicitOverride) then return explicitOverride end
     local saved = soundID and SB.db and SB.db.sounds and SB.db.sounds[soundID]
     if saved and saved.outputOverride and saved.outputOverride ~= "ALL" and SB.IsValidOutputTarget(saved.outputOverride) then
         return saved.outputOverride
     end
-    if #SB.ComputeEffectiveRecipients() > 0 then return "SUBSET" end
-    return "SELF"
+    local default = SB.db and SB.db.settings and SB.db.settings.defaultOutputTarget
+    if default and default ~= "ALL" and SB.IsValidOutputTarget(default) then
+        return default
+    end
+    return "ALL"
 end
 
 --- The SB.CHANNEL_COLOR entry matching `soundID`'s OWN per-sound "Default
