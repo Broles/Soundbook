@@ -2486,6 +2486,16 @@ function SB:NoteKnownUser(sender, version)
         version = version or (existing and existing.version) or nil,
         playerName = sender,
     }
+    -- Regression fix: fired ONLY on a brand-new discovery (never on the
+    -- routine lastSeen refresh an already-known user gets on every single
+    -- recognized message - that would fire many times a second during
+    -- normal raid traffic). This is the one moment a previously-
+    -- ineligible player can newly become an eligible Soundbook recipient,
+    -- which the Mini Soundbook title needs to reflect live ("known
+    -- Soundbook presence changes" - explicit requirement).
+    if not existing then
+        SB:Fire("KNOWN_USER_CHANGED")
+    end
 end
 
 -- How long a presence entry is trusted without a fresh HELLO/HELLOACK (or

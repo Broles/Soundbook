@@ -987,48 +987,102 @@ end
 
 local favMenu
 
--- Describes the right-side broadcast tabs' CURRENT effective selection as
--- a short phrase ("Guild (10)", "selected Guild members (4)", "6 people",
--- ...) plus an optional secondary breakdown line ("Guild (4) - Friends
--- (2)") for the multi-source case - explicit requirement, preferred over
--- one long "Guild and Friends and Raid..." sentence. `isLocal` is true for
--- Self Only AND for "nothing selected at all" (same practical effect -
--- see SB:ResolveOutputTarget's own step-4 fallback, Communication.lua).
-local function DescribeEffectiveTargetPhrase()
+local BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid", FRIENDS = "Friends" }
+
+-- Regression fix: the actual per-bucket "(N)" count used to come straight
+-- from rail.selected[bucket]'s own STORED length - a frozen snapshot from
+-- whenever the channel was selected, never re-checked against who's
+-- actually still online/known/reachable RIGHT NOW. "Guild selected, then
+-- everyone logs off" kept reporting the old member count forever
+-- (explicit bug report: "the title must reflect real delivery outcome,
+-- not just the selected button"). This recomputes it live every call by
+-- intersecting the stored selection with SB.ComputeReachablePlayers'
+-- current live list (the exact same "known Soundbook + currently
+-- reachable" source the Output Rail's own tabs already read) - a name
+-- only counts if it was BOTH selected AND is still actually reachable
+-- right now, deduplicated across buckets by SB.PlayerKey (never double-
+-- counting someone selected via two channels at once), and additionally
+-- excludes anyone on the LOCAL player's own Ignore list (SB:IsIgnored) -
+-- the one Ignore direction this client can ever determine directly (see
+-- Communication.lua's Ignore-blocking - the reverse direction, them
+-- having us ignored, is fundamentally undetectable and deliberately never
+-- guessed at here either, same protocol-correctness rule).
+-- @return total (int), perBucket ({GUILD=n, RAID=n, FRIENDS=n})
+local function ComputeLiveEffectiveRecipients()
     local rail = SB.db.ui.outputRail
-    if rail.selfOnly then return "locally", nil, true end
-
+    if rail.selfOnly then return 0, {} end
     local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers() or { GUILD = {}, RAID = {}, FRIENDS = {} }
-    local buckets = {}
-    for _, key in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        local sel = (rail.selected and rail.selected[key]) or {}
-        if #sel > 0 then
-            local label = (key == "RAID") and (IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party"))
-                or (key == "GUILD" and "Guild") or "Friends"
-            buckets[#buckets + 1] = { label = label, count = #sel, eligible = #(reachable[key] or {}) }
+    local seen, perBucket, total = {}, {}, 0
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        local selected = (rail.selected and rail.selected[bucket]) or {}
+        if #selected > 0 then
+            local eligibleKeys = {}
+            for _, name in ipairs(reachable[bucket] or {}) do
+                local key = SB.PlayerKey and SB.PlayerKey(name)
+                if key then eligibleKeys[key] = true end
+            end
+            for _, name in ipairs(selected) do
+                local key = SB.PlayerKey and SB.PlayerKey(name)
+                if key and eligibleKeys[key] and not seen[key]
+                    and not (SB.IsIgnored and SB:IsIgnored(name)) then
+                    seen[key] = true
+                    total = total + 1
+                    perBucket[bucket] = (perBucket[bucket] or 0) + 1
+                end
+            end
         end
     end
-    if #buckets == 0 then return "locally", nil, true end
+    return total, perBucket
+end
 
-    if #buckets == 1 then
-        local b = buckets[1]
-        if b.count == b.eligible then
-            return string.format("%s (%d)", b.label, b.count), nil, false
+-- Describes the right-side broadcast tabs' CURRENT effective selection as
+-- a short phrase ("Guild (10)", "People (6)", ...) plus an optional
+-- secondary breakdown line ("Guild (4)  -  Friends (2)") for the
+-- multi-source case - explicit requirement, preferred over one long
+-- "Guild and Friends and Raid..." sentence. `isLocal` is true for Self
+-- Only, "nothing selected at all", AND "selected but zero real
+-- recipients right now" (explicit requirement: zero actual remote
+-- recipients always reads as "Play for Yourself", regardless of which
+-- button is technically active) - see SB:ResolveOutputTarget's own
+-- step-4 fallback, Communication.lua, for the equivalent send-side rule.
+-- "People" (never "N people" or a per-channel label) is used whenever
+-- MORE than one channel actually contributes a real recipient, or when
+-- every currently Send-enabled channel is selected ("All") and there is
+-- at least one real recipient - explicit requirement, even if only one
+-- of those channels happens to have anyone reachable at this instant,
+-- since the user's actual intent was "everyone", not one specific group.
+local function DescribeEffectiveTargetPhrase()
+    local total, perBucket = ComputeLiveEffectiveRecipients()
+    if total == 0 then return "locally", nil, true end
+
+    local contributing, onlyBucket = 0, nil
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        if (perBucket[bucket] or 0) > 0 then
+            contributing = contributing + 1
+            onlyBucket = bucket
         end
-        return string.format("selected %s members (%d)", b.label, b.count), nil, false
     end
 
-    local total = #(SB.ComputeEffectiveRecipients and SB.ComputeEffectiveRecipients() or {})
+    local isAllSelected = SB.IsAllBroadcastFullySelected and SB.IsAllBroadcastFullySelected() or false
+    if not isAllSelected and contributing <= 1 and onlyBucket then
+        return string.format("%s (%d)", BUCKET_LABEL[onlyBucket], perBucket[onlyBucket]), nil, false
+    end
+
     local parts = {}
-    for _, b in ipairs(buckets) do parts[#parts + 1] = string.format("%s (%d)", b.label, b.count) end
-    -- Plain ASCII separator, not a Unicode middle dot - see this file's
-    -- other glyph-safety comments (WoW's bundled fonts don't reliably
-    -- cover every codepoint).
-    return string.format("%d people", total), table.concat(parts, "  -  "), false
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        if (perBucket[bucket] or 0) > 0 then
+            parts[#parts + 1] = string.format("%s (%d)", BUCKET_LABEL[bucket], perBucket[bucket])
+        end
+    end
+    -- No breakdown line at all when only one bucket actually contributed
+    -- (the "All selected, only Guild has anyone" case) - a one-item
+    -- breakdown would just repeat the primary line for no benefit.
+    local secondary = (#parts > 1) and table.concat(parts, "  -  ") or nil
+    return string.format("People (%d)", total), secondary, false
 end
 
 -- Section 20: a per-sound "Default Output" override on one of the
--- VISIBLE Favourites would make a header promising "Send sound to X:"
+-- VISIBLE Favourites would make a header promising "Play for X:"
 -- actively misleading for that one sound - it won't actually go there.
 -- Switches to "Default destination: X" (describing what applies to
 -- everything WITHOUT its own override) whenever at least one visible
@@ -1059,7 +1113,11 @@ local function GetFavMenuHeaderText()
     if overridesPresent then
         primary = isLocal and "Default destination: Play for Yourself" or ("Default destination: " .. phrase)
     else
-        primary = isLocal and "Play for Yourself:" or ("Send sound to " .. phrase .. ":")
+        -- Regression fix: "Play for Guild/Raid/Friends (X):" / "Play for
+        -- People (X):" (was "Send sound to X:") - matches the wording
+        -- DescribeEffectiveTargetPhrase's own phrase fragments are built
+        -- for now ("Guild (10)", "People (6)", ...).
+        primary = isLocal and "Play for Yourself:" or ("Play for " .. phrase .. ":")
     end
     return primary, secondary
 end
@@ -1349,6 +1407,15 @@ end
 -- change to SB.db.ui.outputRail (select-all, Self Only, individual
 -- flyout checkboxes).
 SB:On("OUTPUT_SELECTION_CHANGED", function()
+    if favMenu and favMenu:IsShown() then PopulateFavMenu() end
+end)
+
+-- Regression fix (explicit requirement - live title updates): a per-sound
+-- "Default Output" override changing (Edit Sound) can flip
+-- AnyVisibleFavouriteHasOverride's result, which changes whether the
+-- header reads the plain live phrase or the "Default destination: X"
+-- variant - refresh the same way OUTPUT_SELECTION_CHANGED already does.
+SB:On("SOUND_DISPLAY_CHANGED", function()
     if favMenu and favMenu:IsShown() then PopulateFavMenu() end
 end)
 

@@ -3367,14 +3367,37 @@ end)
 -- role (a Raid Lead can hand off lead, an Assist can be demoted, or the
 -- player can simply leave the group entirely, all mid-session), and the
 -- broadcast tabs' own eligible/selected counts fresh - explicit
--- requirement: recompute on Guild roster update, Party/Raid update and
--- Friends state update, event-driven only, never a permanent poll.
+-- requirement: recompute on Guild roster update, Party/Raid update,
+-- Friends state update, and Ignore list update (IGNORELIST_UPDATE - a
+-- standard WoW event, fires on every /ignore or /unignore), event-driven
+-- only, never a permanent poll. RefreshBroadcastTabs itself fires
+-- OUTPUT_SELECTION_CHANGED at its own end, which is what actually
+-- propagates this on to the Mini Soundbook's own live title
+-- (Announcer.lua's own OUTPUT_SELECTION_CHANGED listener).
+--
+-- Regression fix: this used to be gated behind `main and main:IsShown()`
+-- - correct for the Output Rail itself (nothing to repaint if Main is
+-- closed), but wrong for the Mini Soundbook's live title, which can be
+-- open on its own with Main closed entirely. RefreshBroadcastTabs is
+-- cheap and safe to call unconditionally (broadcastTabButtons is simply
+-- empty before Main has ever been built, or updates hidden buttons
+-- harmlessly otherwise) - always called now so the Mini title stays live
+-- regardless of whether Main happens to be open.
 local rosterEventFrame = CreateFrame("Frame")
 rosterEventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
 rosterEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 rosterEventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
 rosterEventFrame:RegisterEvent("FRIENDLIST_UPDATE")
+rosterEventFrame:RegisterEvent("IGNORELIST_UPDATE")
 rosterEventFrame:SetScript("OnEvent", function()
     SB:RefreshAdminTabVisibility()
-    if main and main:IsShown() then RefreshBroadcastTabs() end
+    RefreshBroadcastTabs()
+end)
+
+-- Same reasoning as the roster events above - a newly-discovered
+-- Soundbook presence (Communication.lua's SB:NoteKnownUser) can turn a
+-- previously "zero eligible" bucket into a real recipient, which the
+-- Mini Soundbook title must reflect live too.
+SB:On("KNOWN_USER_CHANGED", function()
+    RefreshBroadcastTabs()
 end)
