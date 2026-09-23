@@ -1079,18 +1079,24 @@ local FAV_MENU_ROW_H = 24
 -- too) - favScale is the independent scale that owns the favourite-area
 -- UI exclusively. 1.15 is the same relative midpoint as before, just
 -- against the new field.
--- Widened 10% (explicit requirement: "increase its usable width by 10%
--- relative to the current build... give the sound-name text the
--- additional width... existing names that fit within the enlarged
--- control must no longer be unnecessarily truncated") - width only, not
--- font size; row height (FAV_MENU_ROW_H) and every interaction below are
--- unchanged. GetOrCreateFavMenuRow's own name text already derives its
--- available width from this column width (colW - icon - gaps), so
--- widening it here is the one change that actually grows the text. The
--- whole favMenu frame is additionally SetScale'd by favScale (see
--- SB:RefreshMiniSoundbookScale below) for the continuous 50%-200% range -
--- these fixed base widths are what that scale multiplies from.
-local FAV_COL_W = { [2] = 165, [3] = 130 }
+-- Widened again, 2nd pass (explicit requirement: "Emotional Damage" is
+-- still truncated at 100% Mini Soundbook Size - increase the base width
+-- ~20%, target roughly 170px minimum usable text/name width after icon/
+-- padding") - width only, not font size; row height (FAV_MENU_ROW_H),
+-- the icon's own size, and the icon<->text/text<->edge gaps below are
+-- all unchanged, exactly as required ("retain normal icon/text
+-- spacing"). Usable text width = colW - 33 (4px icon inset + 20px icon +
+-- 5px icon->text gap + 4px text->edge gap, GetOrCreateFavMenuRow below) -
+-- 205 for the 2-column case lands at exactly 171px, just over the 170px
+-- target; the 3-column width is scaled by the same ~1.23x this round
+-- applied to the 2-column one, keeping their existing 165:130 ratio
+-- rather than picking an unrelated new number for it. PopulateFavMenu's
+-- own favMenu:SetWidth(columns * colW + 8) already grows the whole popup
+-- to fit - no separate overflow handling needed. The whole favMenu frame
+-- is additionally SetScale'd by favScale (see SB:RefreshMiniSoundbookScale
+-- below) for the continuous 50%-200% range - these fixed base widths are
+-- what that scale multiplies from.
+local FAV_COL_W = { [2] = 205, [3] = 160 }
 -- `count` (optional - the number of Favourites about to be laid out) adds
 -- an adaptive safety net on top of the scale-based choice above (3.0 QA
 -- round, section 4): now that the popup never scrolls and always shows
@@ -1471,10 +1477,34 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
         quickMenu.sizeSlider = sizeSlider
 
-        quickMenu:SetSize(184, #rows * 26 + 66 + 58)
+        -- Regression fix (explicit requirement): "Both Settings -> Mini
+        -- and the Mini options popup must expose the same two persisted
+        -- values" - this popup only ever had Announcer Size. Mini
+        -- Soundbook Size added directly underneath it, same 50-200%/
+        -- step-10% range, writing the SAME ui.announcer.favScale field
+        -- Settings -> Mini's own slider uses (see Settings.lua's
+        -- BuildMiniSoundbookSection) - there is only ever one persisted
+        -- value per size, never a separate popup-local copy, so changing
+        -- either location updates the other's next display automatically
+        -- (both simply read the live field when shown/opened).
+        local miniSizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
+        miniSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
+        miniSizeLabel:SetPoint("TOP", sizeSlider, "BOTTOM", 14, -12)
+        miniSizeLabel:SetText("Mini Soundbook Size")
+        miniSizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
+
+        local miniSizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
+            SB.db.ui.announcer.favScale = value / 100
+        end)
+        miniSizeSlider:SetScript("OnMouseUp", function() SB:RefreshMiniSoundbookScale() end)
+        miniSizeSlider:SetPoint("TOP", miniSizeLabel, "BOTTOM", -14, -8)
+        quickMenu.miniSizeSlider = miniSizeSlider
+
+        quickMenu:SetSize(184, #rows * 26 + 66 + 58 + 44)
     end
 
     quickMenu.sizeSlider:SetValue(math.floor((SB.db.ui.announcer.scale or 1.0) * 100 + 0.5))
+    quickMenu.miniSizeSlider:SetValue(math.floor((SB.db.ui.announcer.favScale or 1.0) * 100 + 0.5))
     quickMenu.dirDropdown:SetValue(SB.db.ui.popoutDirection or "AUTO")
 
     quickMenu.muteBtn.label:SetText(SB:IsReceiveMuted() and "Unmute Incoming" or "Mute Incoming")
