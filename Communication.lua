@@ -240,6 +240,15 @@ local ACK_CLAIM_WINDOW = 15 -- seconds an ACK can still be matched to a broadcas
 function SB:BroadcastSound(soundID)
     local modes = SB.db.settings.broadcastModes
     if not modes then return end
+    -- Shared outbound boundary (explicit requirement): every caller that
+    -- reaches this already checks SB:IsSendBlockedByRaid() itself first
+    -- (DispatchDefaultOutput, SendSoundUsingDefaultBroadcast, ...), but
+    -- this is the actual wire-sending function for Guild/Raid/Party/
+    -- Friends all at once - re-checking HERE too means a future caller
+    -- that forgets its own check still can't bypass a Raid Admin mute.
+    -- See SB:IsSendBlockedByRaid's own section for why this already
+    -- covers Guild, not just Raid/Party.
+    if SB:IsSendBlockedByRaid() then return end
 
     local text = SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID
     recentBroadcasts[soundID] = GetTime()
@@ -274,13 +283,26 @@ end
 -- deliberate, explicitly-confirmed SendMenu action.
 ------------------------------------------------------------------------
 
+-- This is THE shared outbound boundary for a whole-channel Guild/Raid/
+-- Party send (explicit requirement) - every current caller
+-- (DispatchDefaultOutput, SendSoundToChannel) already checks
+-- SB:IsSendBlockedByRaid() first too, but re-checking at this lowest
+-- level means a future/alternate send path can't bypass a Raid Admin
+-- mute just by calling this function directly. No friend exemption here
+-- - a whole-channel send was never eligible for it (that only ever
+-- applies to a single direct/whisper target, see SendToPlayerSilent's
+-- own callers).
 local function SendToSingleChannelSilent(soundID, channel)
     if channel ~= "GUILD" and channel ~= "PARTY" and channel ~= "RAID" then return end
+    if SB:IsSendBlockedByRaid() then return end
     recentBroadcasts[soundID] = GetTime()
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID, channel)
 end
 
+-- Same shared-boundary reasoning as SendToSingleChannelSilent above -
+-- every current caller already checks first, this is just the backstop.
 local function SendToAllFriendsSilent(soundID)
+    if SB:IsSendBlockedByRaid() then return end
     recentBroadcasts[soundID] = GetTime()
     local text = SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID
     SendToFriends(text, {})
@@ -1770,6 +1792,144 @@ local function ApplyRaidOverride(kind, durationCode, source)
     return true
 end
 
+local function AdminBroadcastChannel()
+    if IsInRaid() then return "RAID" elseif IsInGroup() then return "PARTY" end
+    return nil
+end
+
+------------------------------------------------------------------------
+-- Admin state sync (explicit requirement, this iteration) - lets every
+-- CURRENT Raid Admin (Lead/Assist/Party Lead) see the same raid
+-- moderation state without reopening their panel, and without any
+-- permanent polling. The TARGET's own client (SB.raidOverride) is the
+-- one source of truth - it self-reports every change (ADMINSTATE) to the
+-- raid/party at large, and answers a fresh snapshot request
+-- (ADMINSTATEQUERY) whenever an admin's panel needs to reconstruct
+-- ground truth (opening it, gaining Lead/Assist, /reload, or joining an
+-- already-running raid). An admin ALSO relays their own just-issued
+-- command as a lightweight "pending" notice (ADMINPENDING) so other
+-- admins can show the same pending -> confirmed transition, not just the
+-- one who clicked. All of this is session-only, exactly like
+-- SB.raidOverride itself - nothing here ever touches SavedVariables.
+------------------------------------------------------------------------
+
+-- Explicit requirement ("avoid permanent polling... respect existing
+-- transport/rate-limit constraints"): several admins opening their panels
+-- within a few seconds of each other must not each independently provoke
+-- a fresh broadcast from every single raid member. Only guards QUERY-
+-- triggered replies - a genuine state CHANGE (see the RAID_OVERRIDE_CHANGED
+-- listener below) always announces immediately regardless.
+local ADMIN_STATE_REPLY_DEBOUNCE = 4
+local lastStateAnnounceAt = 0
+
+--- Broadcasts THIS client's own current SB.raidOverride (or its absence)
+--- to the raid/party - the one function both a spontaneous change and a
+--- query reply funnel through, so every receiver only ever needs to parse
+--- one payload shape. `force` bypasses the debounce (used for a genuine
+--- change - see RAID_OVERRIDE_CHANGED below); a query reply passes false.
+local function AnnounceMyRaidAdminState(force)
+    local channel = AdminBroadcastChannel()
+    if not channel then return end
+    local now = GetTime()
+    if not force and (now - lastStateAnnounceAt) < ADMIN_STATE_REPLY_DEBOUNCE then return end
+    lastStateAnnounceAt = now
+
+    local ov = SB.raidOverride
+    if not ov then
+        SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINSTATE" .. SEP .. "CLEAR", channel)
+        return
+    end
+    -- Relative remaining seconds, NOT the absolute GetTime()-based
+    -- expiresAt - GetTime() is each client's own local uptime clock,
+    -- never comparable across two different players. The receiver
+    -- (AdminPanel.lua) computes its own local expiresAt from this
+    -- relative value instead.
+    local remaining = ov.expiresAt and math.max(0, ov.expiresAt - now) or nil
+    local kind = ov.mutedAll and "all" or "send"
+    local payload = table.concat({
+        "SET", kind, ov.durationCode,
+        remaining and string.format("%.0f", remaining) or "-",
+        ov.source or "-",
+    }, SEP)
+    SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINSTATE" .. SEP .. payload, channel)
+end
+SB.AnnounceMyRaidAdminState = AnnounceMyRaidAdminState
+
+--- Parses an incoming ADMINSTATE payload ("CLEAR" or
+--- "SET|kind|durationCode|remainingSeconds|source") into the shape
+--- AdminPanel.lua wants, and fires ADMIN_STATE_SYNCED with it. This is a
+--- SELF-report of the sender's own state, not a command that changes
+--- anything here - no sender-authority check needed (same trust level as
+--- any other self-reported presence data in this addon, e.g. HELLO).
+--- Only ever acted on by a receiver that's itself a current Raid Admin;
+--- everyone else has no admin UI to update.
+local function HandleAdminState(payload, sender)
+    if not SB:IsRaidAdmin() then return end
+    local name = NormalizeName(sender) or sender
+    if payload == "CLEAR" then
+        SB:Fire("ADMIN_STATE_SYNCED", name, nil)
+        return
+    end
+    local kind, code, remainingText, source = payload:match("^SET|([^|]+)|([^|]+)|([^|]+)|(.+)$")
+    if not kind or (kind ~= "send" and kind ~= "all") or not VALID_ADMIN_DURATION[code] then return end
+    local remaining = tonumber(remainingText)
+    SB:Fire("ADMIN_STATE_SYNCED", name, {
+        mutedAll = (kind == "all"),
+        durationCode = code,
+        expiresAt = remaining and (GetTime() + remaining) or nil,
+        source = (source ~= "-") and source or nil,
+    })
+end
+
+--- Sent by an Admin Panel that needs to (re)learn the raid's actual
+--- current moderation state - see AnnounceMyRaidAdminState's own comment
+--- for when. Every receiving client just re-announces its own state in
+--- reply (debounced); no authority check needed on the query itself -
+--- it has no side effect beyond that harmless, already-public reply.
+local function HandleAdminStateQuery()
+    AnnounceMyRaidAdminState(false)
+end
+
+function SB:SendAdminStateQuery()
+    local channel = AdminBroadcastChannel()
+    if not channel then return end
+    SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINSTATEQUERY" .. SEP, channel)
+end
+
+--- Relays "I just sent an admin command" to the other current admins, so
+--- THEIR panels can also show pending (not just the one who clicked) -
+--- explicit requirement. `kind` is "mute"/"unmute"/"muteall"/"unmuteall";
+--- `targetName` is "*" for the *all variants (everyone but the admins).
+function SB:SendAdminPending(targetName, kind, durationCode)
+    if not SB:IsRaidAdmin() then return end
+    local channel = AdminBroadcastChannel()
+    if not channel then return end
+    local payload = table.concat({ targetName or "*", kind, durationCode or "-" }, SEP)
+    SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINPENDING" .. SEP .. payload, channel)
+end
+
+local function HandleAdminPending(payload, sender)
+    if not SB:IsRaidAdmin() then return end
+    local target, kind, code = payload:match("^([^|]*)|([^|]+)|(.+)$")
+    if not kind then return end
+    -- Same spoof-resistant authority check the real commands use -
+    -- independently verified against MY OWN roster, never trusted from
+    -- the message itself. The *all variants require the current leader,
+    -- matching HandleAdminMuteAll/HandleAdminUnmuteAll's own rule.
+    local isAllKind = (kind == "muteall" or kind == "unmuteall")
+    local authorized = isAllKind and IsSenderCurrentLeader(sender) or IsSenderAuthorizedAdmin(sender)
+    if not authorized then return end
+    SB:Fire("ADMIN_PENDING_SYNCED", NormalizeName(sender) or sender, target, kind, code ~= "-" and code or nil)
+end
+
+-- The one place every state CHANGE (set, clear, expiry, combat-end,
+-- encounter-end, an admin lifting it, leaving the group, the source
+-- losing their role) already funnels through - ClearRaidOverride and
+-- ApplyRaidOverride both fire this unconditionally, so subscribing here
+-- once covers every transition for free instead of needing a matching
+-- announce call at each individual call site.
+SB:On("RAID_OVERRIDE_CHANGED", function() AnnounceMyRaidAdminState(true) end)
+
 -- Sends a small confirmation reply for an admin command actually applied
 -- on THIS client - explicit requirement: the sender must only ever show a
 -- command as successful once the target's own client confirms it, never
@@ -1785,6 +1945,20 @@ local function HandleAdminMute(payload, sender)
     if not VALID_ADMIN_DURATION[payload] then return end
     if not IsSenderAuthorizedAdmin(sender) then
         SB:Debug("Ignoring ADMINMUTE from %s - not a raid/party leader or assist.", sender)
+        return
+    end
+    -- Explicit requirement: Raid Lead/Assist/Party Lead must never become
+    -- restricted, through Mute All OR an individually-targeted mute - this
+    -- used to only be checked in HandleAdminMuteAll below, leaving a real
+    -- gap where one admin could individually ADMINMUTE another admin
+    -- (or even themselves being muted by a fellow assistant). Same
+    -- notification shape as Mute All's own EXEMPT case - still a real,
+    -- confirmable outcome, just not an actual restriction.
+    if SB:IsRaidAdmin() then
+        SB:Print(string.format(
+            "|cffaaaaaaA Soundbook mute attempt from %s was ignored - you're exempt as Raid Lead/Assist/Party Lead.|r",
+            NormalizeName(sender) or sender))
+        SendAdminAck("EXEMPT", sender)
         return
     end
     -- Explicit requirement: a lower-privilege admin must not be able to
@@ -1848,11 +2022,6 @@ local function HandleAdminUnmuteAll(sender)
     SendAdminAck("UNMUTEALL", sender)
 end
 
-local function AdminBroadcastChannel()
-    if IsInRaid() then return "RAID" elseif IsInGroup() then return "PARTY" end
-    return nil
-end
-
 -- Sending side - called from AdminPanel.lua. Each also checks
 -- SB:IsRaidAdmin() itself (belt-and-suspenders; AdminPanel.lua's own icon
 -- is already hidden for non-admins) - the REAL enforcement is always the
@@ -1863,11 +2032,15 @@ function SB:SendAdminMute(targetName, durationCode)
     durationCode = durationCode or "F"
     if not VALID_ADMIN_DURATION[durationCode] then return end
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINMUTE" .. SEP .. durationCode, "WHISPER", targetName)
+    -- Explicit requirement: other current admins see the same pending ->
+    -- confirmed transition, not just the one who clicked.
+    SB:SendAdminPending(targetName, "mute", durationCode)
 end
 
 function SB:SendAdminUnmute(targetName)
     if not SB:IsRaidAdmin() or not targetName or targetName == "" then return end
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINUNMUTE" .. SEP, "WHISPER", targetName)
+    SB:SendAdminPending(targetName, "unmute")
 end
 
 function SB:SendAdminMuteAll(durationCode)
@@ -1881,6 +2054,7 @@ function SB:SendAdminMuteAll(durationCode)
     durationCode = durationCode or "F"
     if not VALID_ADMIN_DURATION[durationCode] then return end
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINMUTEALL" .. SEP .. durationCode, channel)
+    SB:SendAdminPending("*", "muteall", durationCode)
 end
 
 function SB:SendAdminUnmuteAll()
@@ -1888,6 +2062,7 @@ function SB:SendAdminUnmuteAll()
     local channel = AdminBroadcastChannel()
     if not channel then return end
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINUNMUTEALL" .. SEP, channel)
+    SB:SendAdminPending("*", "unmuteall")
 end
 
 -- "Next Boss" duration - clears itself the moment the tracked boss
@@ -1959,6 +2134,9 @@ local COMMAND_CHANNELS = {
     ADMINMUTE = { WHISPER = true }, ADMINUNMUTE = { WHISPER = true }, ADMINACK = { WHISPER = true },
     ADMINMUTEALL = { PARTY = true, RAID = true, RAID_LEADER = true },
     ADMINUNMUTEALL = { PARTY = true, RAID = true, RAID_LEADER = true },
+    ADMINSTATE = { PARTY = true, RAID = true, RAID_LEADER = true },
+    ADMINSTATEQUERY = { PARTY = true, RAID = true, RAID_LEADER = true },
+    ADMINPENDING = { PARTY = true, RAID = true, RAID_LEADER = true },
 }
 local VALID_ADMIN_ACK = { MUTE = true, UNMUTE = true, MUTEALL = true, UNMUTEALL = true, EXEMPT = true }
 
@@ -2131,13 +2309,24 @@ local function OnAddonMessage(prefix, message, channel, sender)
         if VALID_ADMIN_ACK[payload] then
             SB:Fire("ADMIN_ACK_RECEIVED", NormalizeName(sender) or sender, payload)
         end
+    elseif cmd == "ADMINSTATE" then
+        -- The sender's own current raidOverride (or its absence) - see
+        -- the Admin state sync section above.
+        HandleAdminState(payload, sender)
+    elseif cmd == "ADMINSTATEQUERY" then
+        HandleAdminStateQuery()
+    elseif cmd == "ADMINPENDING" then
+        HandleAdminPending(payload, sender)
     else
         -- Unknown/future command: ignore silently, never execute arbitrary content.
         SB:Debug("Ignoring unknown addon command '%s' from %s", tostring(cmd), tostring(sender))
     end
 end
 
-local commFrame = CreateFrame("Frame")
+-- Named (not anonymous) purely so the mock harness used in this
+-- codebase's own pre-flight testing can reach it (no other addon code
+-- ever needs to) - see the scratchpad mock's global frame auto-registration.
+local commFrame = CreateFrame("Frame", "SoundbookCommFrame")
 commFrame:RegisterEvent("CHAT_MSG_ADDON")
 commFrame:SetScript("OnEvent", function(_, event, prefix, message, channel, sender)
     if event == "CHAT_MSG_ADDON" then

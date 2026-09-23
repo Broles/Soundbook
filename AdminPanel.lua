@@ -7,6 +7,14 @@
 -- "Raid Admin" section for the protocol/enforcement side; this file is only
 -- ever the UI on top of SB:SendAdminMute/SendAdminUnmute/SendAdminMuteAll/
 -- SendAdminUnmuteAll.
+--
+-- Explicit requirement (this iteration): every current Raid Admin sees the
+-- SAME moderation state, not just their own clicks - see the "Synced raid-
+-- wide state" section below and Communication.lua's ADMINSTATE/
+-- ADMINSTATEQUERY/ADMINPENDING protocol. Raid Lead/Assist/Party Lead are
+-- also now always exempt from an individual mute too, not just Mute All
+-- (Communication.lua's HandleAdminMute) - their rows here reflect that
+-- instead of presenting them as normal mutable members.
 
 local ADDON_NAME, SB = ...
 
@@ -33,40 +41,56 @@ local DURATION_OPTIONS = {
 }
 -- Short tag text shown next to a muted name in the list (e.g. "[mute: 30
 -- min]") - built from DURATION_OPTIONS' own text so there's only one place
--- these labels are written out.
-local DURATION_TAG = {}
+-- these labels are written out. Semantic (not the safety-net countdown) for
+-- F/B/R - explicit requirement.
+local DURATION_TAG = {
+    F = "Until fight ends", B = "Until boss ends", R = "Until raid ends",
+}
 for _, opt in ipairs(DURATION_OPTIONS) do
-    DURATION_TAG[opt.value] = "[mute: " .. opt.text .. "]"
+    if not DURATION_TAG[opt.value] then DURATION_TAG[opt.value] = opt.text end
 end
 
--- Per-player bookkeeping of what this admin has clicked this session -
--- [name] = { duration = code, status = "pending"|"confirmed"|"failed",
--- sentAt = GetTime() }. Explicit requirement: a command is only ever shown
--- as successful once the TARGET's own client confirms it (ADMINACK, see
--- Communication.lua's SendAdminAck/SB:Fire("ADMIN_ACK_RECEIVED", ...)
--- below) - "pending" right after the click, "confirmed" once the ack
--- arrives, "failed" if none arrives within ACK_TIMEOUT_SECONDS (covers
--- both a real rejection - e.g. a stronger restriction already active - and
--- a target with no current Soundbook presence at all, who can never ack).
--- Reset whenever the panel rebuilds against a different roster (see
--- RefreshList) so a stale name from a previous raid never lingers.
+------------------------------------------------------------------------
+-- State layers - rendered with this precedence, per roster member:
+--   1. raidAdminState  - CONFIRMED fact, from anyone (this admin's own
+--      ACK, another admin's action, or a plain resync) - always the
+--      target's own self-reported SB.raidOverride, never trusted from a
+--      relaying admin alone (Communication.lua's ADMINSTATE).
+--   2. mutedByMe        - THIS admin's own just-clicked, not yet
+--      confirmed/failed action.
+--   3. pendingFromOthers - another admin's just-clicked, not yet
+--      confirmed action, relayed via ADMINPENDING so it shows here too.
+--   4. otherwise not muted.
+-- All three are session-only, exactly like SB.raidOverride itself -
+-- nothing here is ever written to SavedVariables, and everything is
+-- dropped/rebuilt whenever the roster changes (see RefreshList).
+------------------------------------------------------------------------
+
+-- [name] = { mutedAll, durationCode, expiresAt (GetTime()-based, LOCAL to
+-- THIS client - see Communication.lua's ADMINSTATE payload for why it's
+-- sent as a relative remaining-seconds value, never the sender's own
+-- absolute GetTime()), source } - or nil (confirmed NOT muted, once a
+-- CLEAR has actually been seen; simply absent means "unknown yet").
+local raidAdminState = {}
+
+-- [name] = { duration = code, status = "pending"|"failed", sentAt =
+-- GetTime() } - THIS admin's own in-flight click, cleared the moment
+-- raidAdminState (above) reflects the outcome, or marked "failed" after
+-- ACK_TIMEOUT_SECONDS with nothing.
 local mutedByMe = {}
 local ACK_TIMEOUT_SECONDS = 6
--- [name] = GetTime() this admin's OWN estimate of when that mute expires -
--- only set for the two USER-FACING timed durations (30/60 min). "Until raid
--- ends" has no expiry at all; "Next Fight"/"Next Boss" are intentionally
--- excluded here too even though Communication.lua's own SB.DurationSecondsFor
--- now returns a number for both - that's an internal 90-minute SAFETY NET in
--- case the real trigger (next combat end / next encounter end) never fires,
--- not a duration meant to be shown as a live countdown - a "89:58 remaining"
--- tag would wrongly suggest a fixed timer instead of "clears whenever the
--- fight/boss ends (usually much sooner), or in 90 min at the latest if that
--- somehow never happens". All three stay a plain static tag - see
--- RefreshList/DisplayDurationSeconds.
-local mutedExpiresAt = {}
+
+-- [name] = { kind, duration, byAdmin, sentAt } - ANOTHER admin's
+-- in-flight click (Communication.lua's ADMINPENDING) - same timeout
+-- rule as mutedByMe, just silently dropped rather than shown "failed"
+-- (only the admin who actually clicked needs that detail).
+local pendingFromOthers = {}
 
 -- Deliberately NOT the same as SB.DurationSecondsFor (Communication.lua) -
--- see mutedExpiresAt's own comment above for why "F" is excluded here.
+-- "F"/"B"/"R" show a semantic label (DURATION_TAG above), never a live
+-- countdown from the internal 90-minute safety-net timer that would
+-- wrongly imply a fixed duration - see Communication.lua's own
+-- DurationSecondsFor/ApplyRaidOverride comments for the full reasoning.
 local function DisplayDurationSeconds(code)
     if code == "30" then return 30 * 60
     elseif code == "60" then return 60 * 60
@@ -138,6 +162,7 @@ local ROLE_COLOR = {
     member = SB.Theme.TEXT,
 }
 local ROLE_LABEL = { leader = " (Lead)", assist = " (Assist)", member = "" }
+local function IsAdminRole(role) return role == "leader" or role == "assist" end
 
 ------------------------------------------------------------------------
 -- Member rows - same hover-highlight language as SendMenu.lua's context
@@ -204,12 +229,12 @@ local function EnsureCountdownTicker()
     end)
 end
 
--- Any entry still "pending" longer than ACK_TIMEOUT_SECONDS becomes
--- "failed" - explicit requirement: a command with no confirmation within a
--- reasonable window must stop implying it might still succeed. Covers both
--- a real rejection (e.g. a stronger restriction already active elsewhere)
--- and a target with no current Soundbook presence, who can never ack at
--- all - either way, never silently shown as successful.
+-- Any locally-tracked pending entry (mine or another admin's) still
+-- pending longer than ACK_TIMEOUT_SECONDS is dropped - explicit
+-- requirement: a command with no confirmation within a reasonable window
+-- must stop implying it might still succeed. Mine becomes "failed" (shown
+-- as such); another admin's just quietly disappears back to "not muted"
+-- (only the admin who actually clicked needs the failure detail).
 local function ExpirePendingAcks()
     local now = GetTime()
     for name, entry in pairs(mutedByMe) do
@@ -217,23 +242,36 @@ local function ExpirePendingAcks()
             entry.status = "failed"
         end
     end
+    for name, entry in pairs(pendingFromOthers) do
+        if (now - entry.sentAt) > ACK_TIMEOUT_SECONDS then
+            pendingFromOthers[name] = nil
+        end
+    end
+end
+
+-- The tag shown for a CONFIRMED raidAdminState entry - live countdown for
+-- 30/60 min, a semantic (not safety-net) label for F/B/R.
+local function ConfirmedTag(state)
+    local prefix = state.mutedAll and "RAID MUTE ALL" or "mute"
+    if state.expiresAt and (state.durationCode == "30" or state.durationCode == "60") then
+        local remaining = state.expiresAt - GetTime()
+        return string.format("[%s: %s]", prefix, remaining > 0 and FormatCountdown(remaining) or "0:00")
+    end
+    return string.format("[%s: %s]", prefix, DURATION_TAG[state.durationCode] or "active")
 end
 
 function RefreshList()
     ExpirePendingAcks()
     local roster = GetRosterWithRoles()
 
-    -- Drop any locally-tracked mute for someone no longer on the roster
-    -- (left the group, or this is a fresh raid) - avoids a stale "muted"
-    -- tag surviving into an unrelated future group.
+    -- Drop any locally-tracked state for someone no longer on the roster
+    -- (left the group, or this is a fresh raid) - avoids a stale tag
+    -- surviving into an unrelated future group.
     local present = {}
     for _, m in ipairs(roster) do present[m.name] = true end
-    for name in pairs(mutedByMe) do
-        if not present[name] then
-            mutedByMe[name] = nil
-            mutedExpiresAt[name] = nil
-        end
-    end
+    for name in pairs(mutedByMe) do if not present[name] then mutedByMe[name] = nil end end
+    for name in pairs(pendingFromOthers) do if not present[name] then pendingFromOthers[name] = nil end end
+    for name in pairs(raidAdminState) do if not present[name] then raidAdminState[name] = nil end end
 
     for i, member in ipairs(roster) do
         local row = AcquireRow(i)
@@ -248,72 +286,57 @@ function RefreshList()
             row.nameText:SetTextColor(SB.Theme.TEXT_DIM[1], SB.Theme.TEXT_DIM[2], SB.Theme.TEXT_DIM[3])
         end
 
-        local entry = mutedByMe[member.name]
-        -- Your OWN row is always "known" trivially - you obviously have
-        -- Soundbook, you're looking at this panel right now. The normal
-        -- knownUsers check would otherwise always say "no Soundbook?" for
-        -- yourself specifically: OnAddonMessage's IsSelf guard means you
-        -- never process (and therefore never NoteKnownUser) your own
-        -- broadcasts, so you can never actually appear in your own
-        -- knownUsers list through the normal HELLO/presence mechanism.
-        -- Explicit bugfix: this used to index SB.db.knownUsers directly by
-        -- the plain roster name, which only matches the OLD pre-realm-
-        -- aware key shape - a genuinely known player showed "no
-        -- Soundbook?" here anyway once their entry was keyed the new,
-        -- realm-qualified way (the exact same player still muted just
-        -- fine, since that path already went through the correct lookup).
-        -- SB.KnownUserInfo (Communication.lua) is that same correct lookup.
-        local known = member.isSelf or (SB.KnownUserInfo and SB.KnownUserInfo(member.name))
-        if entry and entry.status == "pending" then
-            row.statusText:SetText("|cffaaaaaa[mute: sending...]|r")
-        elseif entry and entry.status == "failed" then
-            row.statusText:SetText("|cffff9933[mute: not confirmed]|r")
-        elseif entry and entry.status == "confirmed" then
-            local expiresAt = mutedExpiresAt[member.name]
-            local tag
-            if expiresAt then
-                -- 30/60 min - live countdown, ticked by EnsureCountdownTicker
-                -- below while the panel's open (explicit request: "der
-                -- Timer läuft dann runter, 30 min.. 29 min..." - originally
-                -- only built for the muted PLAYER's own Mini Soundbook
-                -- title, this mirrors the same idea here in the admin's own
-                -- panel).
-                local remaining = expiresAt - GetTime()
-                tag = "[mute: " .. (remaining > 0 and FormatCountdown(remaining) or "0:00") .. "]"
-            else
-                -- "Next Fight"/"Until raid ends" - no numeric expiry to
-                -- count down, stays a plain static tag.
-                tag = DURATION_TAG[entry.duration] or "[mute]"
-            end
-            row.statusText:SetText("|cffff5555" .. tag .. "|r")
-        elseif not known then
-            row.statusText:SetText("no Soundbook?")
-        else
-            row.statusText:SetText("")
-        end
-
-        if member.isSelf then
+        if IsAdminRole(member.role) then
+            -- Explicit requirement: Lead/Assist/Party Lead are always
+            -- exempt (Mute All AND an individual mute - Communication.lua's
+            -- HandleAdminMute/HandleAdminMuteAll) - communicated here as a
+            -- distinct Admin/exempt state, never presented as a normal
+            -- mutable member.
+            row.statusText:SetText("|cff8ec8ffAdmin - exempt|r")
+            row:SetScript("OnClick", nil)
+        elseif member.isSelf then
             -- Muting yourself is meaningless (and a self-sent whisper is
             -- ignored on receipt anyway, see OnAddonMessage's IsSelf guard)
             -- - shown for visibility only, not clickable.
+            row.statusText:SetText("")
             row:SetScript("OnClick", nil)
         else
+            local known = SB.KnownUserInfo and SB.KnownUserInfo(member.name)
+            local confirmed = raidAdminState[member.name]
+            local mine = mutedByMe[member.name]
+            local others = pendingFromOthers[member.name]
+
+            if confirmed then
+                row.statusText:SetText("|cffff5555" .. ConfirmedTag(confirmed) .. "|r")
+            elseif mine and mine.status == "pending" then
+                row.statusText:SetText("|cffaaaaaa[mute: sending...]|r")
+            elseif mine and mine.status == "failed" then
+                row.statusText:SetText("|cffff9933[mute: not confirmed]|r")
+            elseif others then
+                row.statusText:SetText(string.format("|cffaaaaaa[mute: pending by %s...]|r",
+                    SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(others.byAdmin) or others.byAdmin))
+            elseif not known then
+                row.statusText:SetText("no Soundbook?")
+            else
+                row.statusText:SetText("")
+            end
+
             row:SetScript("OnClick", function()
-                if entry and entry.status ~= "failed" then
+                if confirmed or (mine and mine.status ~= "failed") then
                     -- Confirmed or still-pending mute - request the unmute;
-                    -- shown as gone from the list right away (explicit
-                    -- requirement doesn't extend to unmute confirmation
-                    -- display - the underlying override still only clears
-                    -- once the target's client processes ADMINUNMUTE).
+                    -- shown as gone from the list right away, same
+                    -- established precedent as before (the underlying
+                    -- override still only actually clears once the
+                    -- target's client processes ADMINUNMUTE and
+                    -- self-reports it via ADMINSTATE).
                     SB:SendAdminUnmute(member.name)
                     mutedByMe[member.name] = nil
-                    mutedExpiresAt[member.name] = nil
+                    raidAdminState[member.name] = nil
+                    pendingFromOthers[member.name] = nil
                 else
                     local duration = CurrentDuration()
                     SB:SendAdminMute(member.name, duration)
                     mutedByMe[member.name] = { duration = duration, status = "pending", sentAt = GetTime() }
-                    local seconds = DisplayDurationSeconds(duration)
-                    mutedExpiresAt[member.name] = seconds and (GetTime() + seconds) or nil
                 end
                 EnsureCountdownTicker()
                 RefreshList()
@@ -331,26 +354,81 @@ function RefreshList()
     listWrap.UpdateThumb()
 end
 
--- Marks the matching pending entry (or entries, for MUTEALL/UNMUTEALL)
--- confirmed/cleared the moment the target's own client acks it - explicit
--- requirement, see Communication.lua's SendAdminAck/ADMIN_ACK_RECEIVED.
+------------------------------------------------------------------------
+-- Synced raid-wide state - see Communication.lua's own "Admin state sync"
+-- section for the wire protocol. This is what actually makes the panel
+-- raid-wide instead of "only what I clicked" - explicit requirement.
+------------------------------------------------------------------------
+
+-- MY OWN command's outcome - explicit requirement: only ever shown as
+-- successful once the TARGET's own client confirms it (ADMINACK), never
+-- just optimistically on send. Only resolves mutedByMe's pending/failed
+-- state here - the actual CONFIRMED tag (raidAdminState) always comes
+-- from ADMIN_STATE_SYNCED below (the target's own self-report), which
+-- arrives at essentially the same moment (both triggered by the same
+-- ApplyRaidOverride/ClearRaidOverride call on the target's client) - so
+-- there is deliberately only ONE source of truth for the actual tag
+-- rendered, never two that could drift apart.
 SB:On("ADMIN_ACK_RECEIVED", function(fromName, kind)
     if kind == "MUTE" or kind == "EXEMPT" then
         local entry = mutedByMe[fromName]
-        if entry and entry.status == "pending" then
-            entry.status = "confirmed"
-        end
+        if entry and entry.status == "pending" then entry.status = "confirmed" end
     elseif kind == "UNMUTE" then
         mutedByMe[fromName] = nil
-        mutedExpiresAt[fromName] = nil
-    elseif kind == "MUTEALL" or kind == "UNMUTEALL" then
-        local entry = mutedByMe[fromName]
-        if entry and entry.status == "pending" then
-            entry.status = "confirmed"
+    end
+    -- MUTEALL/UNMUTEALL/EXEMPT-from-mute-all intentionally left alone
+    -- here - Mute All's own per-member mutedByMe entries (seeded in the
+    -- Mute All click handler below) resolve the same way once each
+    -- affected member's OWN raidOverride actually applies and they
+    -- self-report it (ADMIN_STATE_SYNCED), same reasoning as above.
+    if panel and panel:IsShown() then RefreshList() end
+end)
+
+-- The one real source of truth for what's actually applied anywhere in
+-- the raid right now - the TARGET's own client reporting its own
+-- SB.raidOverride (or the lack of one), whether that's a spontaneous
+-- change or a reply to SB:SendAdminStateQuery(). `state` is nil for "not
+-- muted" (a real CLEAR, not just "unknown").
+SB:On("ADMIN_STATE_SYNCED", function(name, state)
+    if not name then return end
+    raidAdminState[name] = state
+    mutedByMe[name] = nil
+    pendingFromOthers[name] = nil
+    if state and state.expiresAt then EnsureCountdownTicker() end
+    if panel and panel:IsShown() then RefreshList() end
+end)
+
+-- Another admin's just-issued command, relayed so this panel shows the
+-- same pending -> confirmed transition too, not just the admin who
+-- clicked - explicit requirement.
+SB:On("ADMIN_PENDING_SYNCED", function(byAdmin, target, kind, durationCode)
+    if kind == "mute" or kind == "unmute" then
+        if target and target ~= "" then
+            pendingFromOthers[target] = { kind = kind, duration = durationCode, byAdmin = byAdmin, sentAt = GetTime() }
+        end
+    elseif kind == "muteall" or kind == "unmuteall" then
+        for _, member in ipairs(GetRosterWithRoles()) do
+            if not IsAdminRole(member.role) and not member.isSelf then
+                pendingFromOthers[member.name] = { kind = kind, duration = durationCode, byAdmin = byAdmin, sentAt = GetTime() }
+            end
         end
     end
     if panel and panel:IsShown() then RefreshList() end
 end)
+
+-- Debounced the same way the REPLYING side already is
+-- (Communication.lua's AnnounceMyRaidAdminState) - several triggers in a
+-- short window (panel toggled a few times, a resize-driven refresh)
+-- must not each independently re-provoke a fresh reply from every raid
+-- member.
+local ADMIN_QUERY_DEBOUNCE = 3
+local lastQuerySentAt = 0
+local function RequestStateResync()
+    local now = GetTime()
+    if (now - lastQuerySentAt) < ADMIN_QUERY_DEBOUNCE then return end
+    lastQuerySentAt = now
+    if SB.SendAdminStateQuery then SB:SendAdminStateQuery() end
+end
 
 ------------------------------------------------------------------------
 -- Panel shell
@@ -377,7 +455,7 @@ function SB.BuildAdminPanel(mainFrame, contentFrame)
     subtitle:SetPoint("RIGHT", -4, 0)
     subtitle:SetJustifyH("LEFT")
     subtitle:SetWordWrap(true)
-    subtitle:SetText("Only you can see this. Overrides everyone's own Soundbook settings for the length of the raid - resets automatically the moment they leave the group.")
+    subtitle:SetText("Overrides everyone's own Soundbook settings for the length of the raid - resets automatically the moment they leave the group. Every current Raid Lead/Assist sees the same state here.")
 
     -- Mute All row: duration dropdown + Mute All + Unmute All.
     local muteAllLabel = panel:CreateFontString(nil, "OVERLAY")
@@ -401,18 +479,17 @@ function SB.BuildAdminPanel(mainFrame, contentFrame)
         local duration = CurrentDuration()
         SB:SendAdminMuteAll(duration)
         -- Pending, not confirmed, until each target's own client acks it
-        -- (explicit requirement - see ADMIN_ACK_RECEIVED below). Leadership
-        -- roles are exempt from Mute All (each receiving client verifies
-        -- this itself, see Communication.lua's HandleAdminMuteAll, and
-        -- still sends an EXEMPT ack) - skipped here too, they must be
-        -- muted individually via a click.
-        local seconds = DisplayDurationSeconds(duration)
-        local expiresAt = seconds and (GetTime() + seconds) or nil
+        -- AND self-reports it (explicit requirement - see ADMIN_ACK_RECEIVED/
+        -- ADMIN_STATE_SYNCED above). Leadership roles are exempt from Mute
+        -- All (each receiving client verifies this itself, see
+        -- Communication.lua's HandleAdminMuteAll, and still sends an
+        -- EXEMPT ack) - skipped here too, they must be muted individually
+        -- via a click (and even then are now always exempt - HandleAdminMute).
         local now = GetTime()
         for _, member in ipairs(GetRosterWithRoles()) do
-            if member.role ~= "leader" and member.role ~= "assist" and not member.isSelf then
+            if not IsAdminRole(member.role) and not member.isSelf then
                 mutedByMe[member.name] = { duration = duration, status = "pending", sentAt = now }
-                mutedExpiresAt[member.name] = expiresAt
+                raidAdminState[member.name] = nil
             end
         end
         EnsureCountdownTicker()
@@ -424,17 +501,18 @@ function SB.BuildAdminPanel(mainFrame, contentFrame)
     unmuteAllBtn:SetScript("OnClick", function()
         SB:SendAdminUnmuteAll()
         wipe(mutedByMe)
-        wipe(mutedExpiresAt)
+        wipe(raidAdminState)
+        wipe(pendingFromOthers)
         RefreshList()
     end)
 
     -- Exemption note, directly under the Mute All controls - explicit
-    -- request: leadership roles are always exempt from Mute All (an
-    -- individually-targeted mute below can still reach them).
+    -- request: leadership roles are always exempt from Mute All (and now
+    -- from an individual mute too - see HandleAdminMute).
     local exemptNote = panel:CreateFontString(nil, "OVERLAY")
     exemptNote:SetFontObject(SB.Fonts.DisableSmall)
     exemptNote:SetPoint("TOPLEFT", durationDD.button, "BOTTOMLEFT", 0, -6)
-    exemptNote:SetText("Raid Lead / Assist / Party Lead are always exempt from Mute All.")
+    exemptNote:SetText("Raid Lead / Assist / Party Lead are always exempt - Mute All and individual mutes alike.")
 
     local listLabel = panel:CreateFontString(nil, "OVERLAY")
     listLabel:SetFontObject(SB.Fonts.HighlightSmall)
@@ -452,7 +530,12 @@ end
 
 -- Rebuilds the member list - called by UI.lua's RefreshMainWindow every
 -- time the Admin panel is shown, so it's never stale (roster/roles/mute
--- status can all change while the panel is closed).
+-- status can all change while the panel is closed). Also requests a fresh
+-- state resync every time (debounced) - explicit requirement: opening the
+-- panel, gaining Lead/Assist, /reload, or joining an already-running raid
+-- must all reconstruct the ACTUAL current state from the target clients
+-- themselves, never trust whatever this panel happened to have cached
+-- from before.
 function SB:RefreshAdminPanel()
     if not panel or not listWrap then return end
     -- Explicit requirement: only the current leader may trigger Mute
@@ -461,14 +544,15 @@ function SB:RefreshAdminPanel()
     local isLeader = SB.IsCurrentGroupLeader and SB:IsCurrentGroupLeader()
     if muteAllBtn then muteAllBtn:SetShown(isLeader) end
     if unmuteAllBtn then unmuteAllBtn:SetShown(isLeader) end
+    RequestStateResync()
     RefreshList()
     -- Restarts the countdown ticker on reopen too, not just on the click
     -- that originally created a timed mute - it self-cancels on hide (see
     -- EnsureCountdownTicker), so closing and reopening the panel while a
     -- 30/60 min mute is still counting down would otherwise leave it
     -- static until the next click.
-    for _, expiresAt in pairs(mutedExpiresAt) do
-        if expiresAt then
+    for _, state in pairs(raidAdminState) do
+        if state.expiresAt then
             EnsureCountdownTicker()
             break
         end

@@ -81,6 +81,35 @@ local function FormatTime(seconds)
     return string.format("%.1f", seconds)
 end
 
+-- mm:ss, distinct from FormatTime above (which is a "12.3 / 45.0" style
+-- elapsed/duration pair for a real sound's progress) - used only for the
+-- Raid Admin mute countdown below, matching AdminPanel.lua's own
+-- FormatCountdown.
+local function FormatCountdown(seconds)
+    seconds = math.max(0, math.floor(seconds))
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- Semantic label for an event-cleared duration (F/B/R) - explicit
+-- requirement: never show the internal 90-minute safety-net timer as if
+-- it were the real duration, show what will actually clear it instead.
+-- Matches AdminPanel.lua's own DURATION_TAG.
+local RAID_DURATION_LABEL = {
+    F = "Until fight ends", B = "Until boss ends", R = "Until raid ends",
+}
+
+-- The live-countdown-or-semantic-label text for the CURRENT SB.raidOverride
+-- - shared by the icon's tooltip and the persistent "RAID MUTED" banner
+-- below, so the two can never say something different for the same state.
+local function RaidOverrideDurationText()
+    local ov = SB.raidOverride
+    if not ov then return nil end
+    if ov.expiresAt and (ov.durationCode == "30" or ov.durationCode == "60") then
+        return FormatCountdown(ov.expiresAt - GetTime())
+    end
+    return RAID_DURATION_LABEL[ov.durationCode] or "Active"
+end
+
 ------------------------------------------------------------------------
 -- Frame construction
 ------------------------------------------------------------------------
@@ -115,10 +144,15 @@ local function BuildIcon()
     tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     icon.texture = tex
 
-    -- Bottom-right: incoming receive-mute. Bottom-left: raid-admin
-    -- restriction. Kept as two SEPARATE dots (3.0 spec section 7) - a
-    -- player muting themselves and a raid leader muting the raid are
-    -- different facts and must never be collapsed into one ambiguous state.
+    -- Bottom-right: incoming personal receive-mute (small plain dot,
+    -- unchanged). Bottom-left: Raid Admin restriction - explicit
+    -- requirement this iteration: unmistakable, not just a tiny coloured
+    -- dot, so it's upgraded to a real shield glyph (SB.ADMIN_ICON, the
+    -- same icon Raid Admin uses everywhere else) tinted warning red/
+    -- orange. Kept as two SEPARATE indicators (3.0 spec section 7,
+    -- reaffirmed this iteration) - a player muting themselves and a raid
+    -- leader restricting the raid are different, independent facts that
+    -- can coexist and must never be collapsed into one ambiguous state.
     muteDot = icon:CreateTexture(nil, "OVERLAY")
     muteDot:SetSize(9, 9)
     muteDot:SetPoint("BOTTOMRIGHT", 1, -1)
@@ -127,10 +161,11 @@ local function BuildIcon()
     muteDot:Hide()
 
     raidDot = icon:CreateTexture(nil, "OVERLAY")
-    raidDot:SetSize(9, 9)
-    raidDot:SetPoint("BOTTOMLEFT", -1, -1)
-    raidDot:SetTexture("Interface\\Buttons\\WHITE8X8")
-    raidDot:SetVertexColor(1, 0.65, 0.15, 1)
+    raidDot:SetSize(14, 14)
+    raidDot:SetPoint("BOTTOMLEFT", -2, -2)
+    raidDot:SetTexture(SB.ADMIN_ICON)
+    raidDot:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    raidDot:SetVertexColor(1, 0.32, 0.18, 1)
     raidDot:Hide()
 
     icon:SetScript("OnDragStart", function(self)
@@ -162,6 +197,34 @@ local function BuildIcon()
     icon:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Soundbook", 1, 1, 1)
+        -- Explicit requirement: the tooltip explains the ACTUAL scope of
+        -- an active Raid Admin restriction, who applied it (when known),
+        -- and that local Self playback still works - independent of, and
+        -- shown alongside, the player's own personal receive-mute state
+        -- below it.
+        local ov = SB.raidOverride
+        if ov and (ov.mutedSend or ov.mutedAll) then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Raid Admin restriction active", 1, 0.4, 0.25)
+            if ov.mutedAll then
+                GameTooltip:AddLine("Sending and receiving Soundbook sounds is disabled.", 1, 0.7, 0.6, true)
+            else
+                GameTooltip:AddLine("Sending to Raid/Party and Guild is disabled.", 1, 0.7, 0.6, true)
+            end
+            local durationText = RaidOverrideDurationText()
+            if durationText then
+                GameTooltip:AddLine(durationText, 1, 0.7, 0.6)
+            end
+            if ov.source then
+                GameTooltip:AddLine("Applied by " .. (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(ov.source) or ov.source), 0.7, 0.75, 0.85)
+            end
+            GameTooltip:AddLine("Local (Self) playback still works.", 0.7, 0.75, 0.85)
+        end
+        if SB:IsReceiveMuted() then
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("Your own receive-mute is also active.", 1, 0.5, 0.5)
+        end
+        GameTooltip:AddLine(" ")
         GameTooltip:AddLine("Left Click: Send a Favourite", 0.85, 0.9, 1)
         GameTooltip:AddLine("Right Click: Open Soundbook", 0.85, 0.9, 1)
         GameTooltip:AddLine("Shift + Right Click: Quick Options", 0.85, 0.9, 1)
@@ -414,6 +477,82 @@ local function ValidDuration(d)
     return type(d) == "number" and d == d and d ~= math.huge and d > 0
 end
 
+------------------------------------------------------------------------
+-- Persistent "RAID MUTED" banner - explicit requirement: an active Raid
+-- Admin restriction must be unmistakable even while the Announcer is
+-- otherwise idle (no sound currently playing), using the existing header
+-- area rather than a new floating window. Reuses the exact same banner
+-- frame/elements RenderPrimary above uses for a real sound - just fed
+-- different content - so this is the SAME "header extension" mechanism,
+-- not a second implementation. Wired into CollapseToIdle below, which is
+-- already the one place every "nothing real left to show" path already
+-- funnels through (ScheduleCollapse, RemoveAnnouncerDisplayForSound,
+-- RestoreRealAnnouncerState) - so it doesn't need its own call sites.
+------------------------------------------------------------------------
+
+local raidMuteTicker
+local function StopRaidMuteTicker()
+    if raidMuteTicker then
+        raidMuteTicker:Cancel()
+        raidMuteTicker = nil
+    end
+end
+
+local RAID_MUTE_COLOR = { 1, 0.32, 0.18 }
+
+local function TickRaidMuteBanner()
+    local ov = SB.raidOverride
+    if not banner or not banner.soundbookRaidMuted or not ov then StopRaidMuteTicker(); return end
+    if not (ov.expiresAt and (ov.durationCode == "30" or ov.durationCode == "60")) then return end
+    local remaining = ov.expiresAt - GetTime()
+    banner.timeText:SetText(FormatCountdown(remaining))
+    local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2)
+    local total = (ov.durationCode == "30") and 1800 or 3600
+    local pct = math.max(0, math.min(1, remaining / total))
+    banner.fill:SetWidth(math.max(0.01, trackW * pct))
+end
+
+local function ShowRaidMuteBanner()
+    local ov = SB.raidOverride
+    if not ov then return end
+    BuildBanner()
+    banner.soundbookSoundID = nil
+    banner.soundbookRaidMuted = true
+    banner.slot.texture:SetTexture(SB.ADMIN_ICON)
+    banner.slot.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+    banner.slot.texture:SetVertexColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3], 1)
+    -- Primary state reads clearly as MUTED, per explicit requirement -
+    -- "RAID MUTED" covers both an individual admin mute and Mute All
+    -- alike (the subtitle line spells out the actual scope difference).
+    banner.nameText:SetText("RAID MUTED")
+    banner.nameText:SetTextColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3])
+    banner.subText:SetText(ov.mutedAll and "Sending & receiving disabled" or "Sending to Raid/Party + Guild disabled")
+    banner.subText:SetTextColor(unpack(V3.TEXT_SECONDARY))
+    banner.overlapBadge:SetText("")
+    banner.fill:SetVertexColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3], 1)
+
+    StopRaidMuteTicker()
+    if ov.expiresAt and (ov.durationCode == "30" or ov.durationCode == "60") then
+        -- Live countdown, explicit requirement ("RAID MUTED · 24:18") -
+        -- the fill also drains as a visual progress-style cue, same
+        -- element a real sound's own duration bar already uses.
+        banner.track:Show()
+        banner.fill:Show()
+        TickRaidMuteBanner()
+        raidMuteTicker = C_Timer.NewTicker(1, TickRaidMuteBanner)
+    else
+        -- F/B/R - semantic label only, explicit requirement: never show
+        -- the internal safety-net timer as if it were the real duration.
+        banner.track:Hide()
+        banner.fill:Hide()
+        banner.timeText:SetText(RAID_DURATION_LABEL[ov.durationCode] or "Active")
+    end
+
+    LayoutBanner()
+    banner:Show()
+    icon:SetAlpha(1)
+end
+
 local function RenderPrimary()
     -- A resize/drag preview currently owns the banner's content and
     -- position - a real playback event must not overwrite it (explicit
@@ -423,6 +562,12 @@ local function RenderPrimary()
     if IsPreviewActive() then return end
     local entry = activeDisplays[#activeDisplays]
     if not entry then return end
+
+    -- Real playback always takes over the banner from the persistent
+    -- Raid Admin display while it's actually active - see CollapseToIdle
+    -- below for the reverse transition once playback ends.
+    StopRaidMuteTicker()
+    banner.soundbookRaidMuted = nil
 
     banner.soundbookSoundID = entry.soundID
     banner.slot.texture:SetTexture(SoundIcon(entry.soundID))
@@ -495,6 +640,22 @@ local function CollapseToIdle()
     if IsPreviewActive() then return end
     StopProgressTicker()
     banner.soundbookSoundID = nil
+
+    -- Nothing real left to show - fall back to the persistent Raid Admin
+    -- display instead of the bare idle icon while a restriction is still
+    -- active (explicit requirement: unmistakable even while collapsed).
+    -- This is THE one place every "nothing real left" path already
+    -- funnels through, so a genuine mute/unmute/expiry (RAID_OVERRIDE_
+    -- CHANGED, further below) simply calls this again to pick the right
+    -- one, without needing its own separate show/hide logic.
+    local ov = SB.raidOverride
+    if ov and (ov.mutedSend or ov.mutedAll) then
+        ShowRaidMuteBanner()
+        return
+    end
+
+    banner.soundbookRaidMuted = nil
+    StopRaidMuteTicker()
     if UIFrameFadeOut then
         UIFrameFadeOut(banner, 0.12, banner:GetAlpha() or 1, 0)
         C_Timer.After(0.13, function() if #activeDisplays == 0 then banner:Hide() end end)
@@ -635,7 +796,20 @@ local function RefreshIndicators()
     raidDot:SetShown((ov and (ov.mutedAll or ov.mutedSend)) and true or false)
 end
 
-SB:On("RAID_OVERRIDE_CHANGED", RefreshIndicators)
+SB:On("RAID_OVERRIDE_CHANGED", function()
+    RefreshIndicators()
+    -- Explicit requirement: the persistent header state appears/clears
+    -- automatically the moment the restriction is applied/lifted/expires
+    -- - CollapseToIdle is the one place that already decides between the
+    -- Raid Admin display and the bare idle icon, so a genuine change just
+    -- re-runs it (only while nothing real is currently playing - a real
+    -- sound's own banner already wins, see RenderPrimary above, and will
+    -- itself fall through to CollapseToIdle the moment it naturally ends).
+    if icon and #activeDisplays == 0 then
+        BuildBanner()
+        CollapseToIdle()
+    end
+end)
 SB:On("RECEIVE_MUTE_CHANGED", RefreshIndicators)
 
 ------------------------------------------------------------------------
@@ -1278,6 +1452,16 @@ function SB:ShowAnnouncer()
     if #activeDisplays > 0 then
         BuildBanner()
         RenderPrimary()
+    elseif SB.raidOverride and (SB.raidOverride.mutedSend or SB.raidOverride.mutedAll) then
+        -- Explicit requirement: joining an already-running raid, or a
+        -- fresh login while a restriction happens to already be applied
+        -- to this client (unusual - raidOverride is session-only and
+        -- reset on reload/disconnect - but reachable if the Announcer
+        -- itself is toggled back on after being hidden mid-raid) shows
+        -- the persistent state immediately, not just from the next
+        -- RAID_OVERRIDE_CHANGED event.
+        BuildBanner()
+        CollapseToIdle()
     end
 end
 
