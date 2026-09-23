@@ -725,21 +725,22 @@ local function BuildMiniSoundbookSection(content, topAnchor)
     alphaHoverSlider:Refresh()
     Help(alphaHoverSlider, "Hover Opacity", "Set the Mini Soundbook's opacity while the mouse is over it.")
 
-    -- Now Playing / Announcement Duration - re-exposed (it was previously
-    -- kept in SavedVariables but hidden entirely once the Mini Soundbook's
-    -- own real-duration progress bar replaced the old fixed-timer HUD).
-    -- Honest description of what it ACTUALLY drives today: the Library
-    -- grid's own "just played" gold highlight duration (UI.lua's
-    -- SetPlayingState) - not a literal Now Playing -> Last Sound
-    -- transition inside the Mini Soundbook banner itself, which no longer
-    -- exists as a separate state in the current 3.0 Announcer. The
-    -- "0 = ..." floor behaviour from the underlying setting is preserved
-    -- exactly (SB.db.settings.announceDuration, clamped 0-15 in Database.lua).
+    -- Now Playing / Announcement Duration - drives TWO surfaces off the
+    -- one setting (SB.db.settings.announceDuration, clamped 0-15 in
+    -- Database.lua): the Library grid's own "just played" gold highlight
+    -- duration (UI.lua's SetPlayingState, unchanged), AND (playback-
+    -- lifecycle rewrite) the Announcer's own Now Playing banner - a
+    -- genuine MINIMUM display floor there: a sound never disappears
+    -- before this many seconds, is extended up to its own real known
+    -- duration whenever that's longer, and an explicit Stop or an
+    -- overlap-disabled replacement still always bypasses it immediately
+    -- (SoundPlayer.lua/Announcer.lua). 0 turns the minimum off entirely
+    -- for both surfaces - a real natural end just clears immediately.
     local nowPlayingHeader = Section(content, "Now Playing", alphaHoverSlider, -16)
     local durationLabel = content:CreateFontString(nil, "OVERLAY")
     durationLabel:SetFontObject(SB.Fonts.HighlightSmall)
     durationLabel:SetPoint("TOPLEFT", nowPlayingHeader, "BOTTOMLEFT", 0, -8)
-    durationLabel:SetText("Now Playing Highlight Duration")
+    durationLabel:SetText("Now Playing Minimum Duration")
 
     local durationSlider = SB.Theme.CreateSlider(content, 0, 15, 1, CONTENT_W - 140, function(value)
         SB.db.settings.announceDuration = math.floor(value + 0.5)
@@ -749,8 +750,8 @@ local function BuildMiniSoundbookSection(content, topAnchor)
     durationSlider:SetPoint("TOPLEFT", durationLabel, "BOTTOMLEFT", 0, -10)
     durationSlider:SetValue(tonumber(SB.db.settings.announceDuration) or 3)
     durationSlider:Refresh()
-    Help(durationSlider, "Now Playing Highlight Duration",
-        "How long the Library keeps highlighting a sound after it plays, before the highlight clears. 0 turns the highlight off.")
+    Help(durationSlider, "Now Playing Minimum Duration",
+        "How long the Library highlight and the Announcer's Now Playing banner stay visible after a sound plays, at minimum - extended automatically if the sound itself runs longer. 0 turns the minimum off.")
 
     local textHeader = Section(content, "Text", durationSlider, -16)
     local miniFontBtn = BuildFontDropdown(content, "Mini Soundbook Font", textHeader, -8,

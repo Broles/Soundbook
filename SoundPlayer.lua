@@ -52,24 +52,37 @@ local function NotifyMissingLocalFile(fileBase, info, source)
 end
 
 ------------------------------------------------------------------------
--- Playback progress tracking - drives the Mini Soundbook's Announcement
--- Bar progress fill (FavouritesWindow.lua) and the "learn a sound's real
--- duration by observing it" fallback for anything SoundDurations.lua
--- doesn't already know. Central here (not guessed at by the UI).
+-- Playback progress tracking - drives the Announcer's Now Playing
+-- progress fill (Announcer.lua) and the "learn a sound's real duration by
+-- observing it" fallback for anything SoundDurations.lua doesn't already
+-- know. Central here (not guessed at by the UI).
+--
+-- Tracked by a LOCAL playback-instance token (nextInstanceID), never by
+-- the WoW sound handle or by soundID alone - explicit requirement. The
+-- handle is optional tracking data (it can legitimately be nil even for a
+-- successful play - see supportsHandles above), used only to query
+-- C_Sound.IsPlaying when available; it is never the prerequisite for
+-- progress tracking/display. soundID alone can't identify a playback
+-- instance either, since the same sound can be retriggered/overlapped.
 ------------------------------------------------------------------------
 
--- C_Sound.IsPlaying(handle) is what this whole feature is built on - not
--- guaranteed on every client build, so it's feature-detected once and
--- every call site checks `canTrackPlayback` first. If it's ever
--- unavailable, playback itself is completely unaffected - only the
--- progress bar/duration-learning silently never activates.
+-- C_Sound.IsPlaying(handle) is an OPTIONAL refinement, not a prerequisite -
+-- not guaranteed on every client build, so it's feature-detected once.
+-- Every call site that actually NEEDS it checks `canTrackPlayback` first;
+-- an instance with a known duration tracks and displays progress
+-- perfectly well without it (see the duration-ceiling branch in
+-- PollTrackedInstances below) - only the REAL early-natural-end detection
+-- and live duration-learning fall back to "wait for the known duration's
+-- own ceiling" when it's unavailable.
 local canTrackPlayback = type(C_Sound) == "table" and type(C_Sound.IsPlaying) == "function"
 
--- [handle] = { soundID, startedAt (GetTimePreciseSec - when PlaySoundFile
---              was CALLED), playingStartedAt (when it was FIRST actually
---              observed playing - may lag startedAt: see below),
---              observedPlaying, interrupted, ambiguousOverlap,
---              duration (may be nil - unknown) }
+-- [instanceID] = { soundID, handle (may be nil - see above), startedAt
+--                  (GetTimePreciseSec - when PlaySoundFile was CALLED),
+--                  playingStartedAt (when it was FIRST actually observed
+--                  playing via C_Sound.IsPlaying - may lag startedAt: see
+--                  below, and stays nil if there's no handle to observe),
+--                  observedPlaying, interrupted, ambiguousOverlap,
+--                  duration (may be nil - unknown) }
 --
 -- WHY TWO TIMESTAMPS: WoW does not truly overlap two simultaneous plays of
 -- the exact same sound file - calling PlaySoundFile a second time while an
@@ -83,11 +96,12 @@ local canTrackPlayback = type(C_Sound) == "table" and type(C_Sound.IsPlaying) ==
 -- "this is when it actually started being audible" anchor - but even
 -- that alone did not fully fix it in testing (see activeSoundCount just
 -- below for the actual fix).
-local trackedHandles = {}
--- The most recently STARTED handle still being tracked - what the
+local trackedInstances = {}
+local nextInstanceID = 0
+-- The most recently STARTED instance still being tracked - what the
 -- Announcement Bar shows progress for ("zeigt den zuletzt gestarteten,
 -- noch relevanten Sound", explicit requirement for overlapping playback).
-local primaryHandle = nil
+local primaryInstanceID = nil
 local pollTicker = nil
 
 -- [soundID] = how many instances of that exact sound are CURRENTLY
@@ -101,26 +115,39 @@ local pollTicker = nil
 -- Rather than risk another bad measurement (or a desynced-looking
 -- progress bar), any such "ambiguous" instance is excluded from BOTH
 -- learning and live display entirely - see
--- TrackNewPlayback/BuildPlaybackState/ReleaseTrackedHandle.
+-- TrackNewPlayback/BuildPlaybackState/ReleaseTrackedInstance.
 local activeSoundCount = {}
 
--- A handle that's never even been observed playing once (e.g. a bad file,
--- or PlaySoundFile lied about willPlay) would otherwise sit in
--- trackedHandles forever, since there's nothing to transition it out -
--- dropped, unlearned, after this many seconds.
+-- An instance that's never even been observed playing once (e.g. a bad
+-- file, PlaySoundFile lied about willPlay, or there's no handle AND no
+-- known duration to fall back on) would otherwise sit in trackedInstances
+-- forever, since there's nothing to transition it out - dropped after
+-- this many seconds. Deliberately the SAME value used for two related but
+-- distinct "give up" cases - see PollTrackedInstances.
 local NEVER_STARTED_TIMEOUT = 3.0
--- Safety net for the OPPOSITE case: a handle that DID start playing but
+-- Safety net for the OPPOSITE case: an instance that DID start playing but
 -- whose C_Sound.IsPlaying somehow never flips back to false (a client
 -- quirk on some file, a missed transition, anything) would otherwise sit
--- in trackedHandles - and keep activeSoundCount for that sound elevated -
+-- in trackedInstances - and keep activeSoundCount for that sound elevated -
 -- forever. That wouldn't just leave one stale entry: since activeSoundCount
 -- never drops back to 0, EVERY future play of that same sound would look
 -- "ambiguous" and permanently never learn a duration, even in complete
 -- isolation. Force-released (never learned from - we can't trust an
 -- instance that ran this long anyway) past this many seconds regardless
--- of its playing state.
+-- of its playing state. Applies uniformly regardless of duration/handle
+-- knowledge - the one true absolute ceiling.
 local MAX_TRACKED_LIFETIME = 90.0
 local POLL_INTERVAL = 0.08
+-- Regression fix (explicit requirement - "C_Sound.IsPlaying must not be
+-- able to keep an already-expired announcer alive indefinitely"): once a
+-- KNOWN duration has elapsed, plus this small grace margin, an instance
+-- ends regardless of what C_Sound.IsPlaying still claims - some clients/
+-- files report IsPlaying=true for several seconds past the real audible
+-- end. Matches this addon's own existing precedent for exactly this
+-- margin (the pre-3.0 Mini Soundbook's ShowNowPlaying used the same
+-- 0.3s "don't cut off right at the last instant" grace), ported forward
+-- here as a real, reactive ceiling instead of a fixed display timer.
+local NATURAL_END_GRACE = 0.3
 
 local function Now()
     return GetTimePreciseSec and GetTimePreciseSec() or GetTime()
@@ -129,7 +156,7 @@ end
 -- DISPLAY elapsed is measured from startedAt (when PlaySoundFile was
 -- CALLED), not from playingStartedAt (first confirmed-playing poll tick).
 -- This is a deliberate split from LEARNING (which still uses
--- playingStartedAt - see the natural-end branch in PollTrackedHandles):
+-- playingStartedAt - see the natural-end branch in PollTrackedInstances):
 -- for a sound whose duration is already KNOWN, the Announcement Bar just
 -- needs a reasonable-looking, ALWAYS-AVAILABLE animation, and waiting on
 -- C_Sound.IsPlaying confirmation caused two real problems in testing - a
@@ -141,8 +168,8 @@ end
 -- immediately known and needs no such confirmation, so display simply
 -- doesn't depend on it - only the stricter LEARNING path still does,
 -- since THAT actually needs to be numerically trustworthy.
-local function BuildPlaybackState(handle, now)
-    local pb = trackedHandles[handle]
+local function BuildPlaybackState(instanceID, now)
+    local pb = trackedInstances[instanceID]
     if not pb then return nil end
     now = now or Now()
     local elapsed = math.max(0, now - pb.startedAt)
@@ -152,12 +179,13 @@ local function BuildPlaybackState(handle, now)
     end
     return {
         soundID = pb.soundID,
-        handle = handle,
+        instanceID = instanceID,
+        handle = pb.handle,
         startedAt = pb.startedAt,
         duration = pb.duration,
         elapsed = elapsed,
         progress = progress,
-        isPrimary = (handle == primaryHandle),
+        isPrimary = (instanceID == primaryInstanceID),
     }
 end
 
@@ -185,13 +213,13 @@ local function StopPollTicker()
     end
 end
 
--- Removes a handle from tracking and decrements its sound's active-
+-- Removes an instance from tracking and decrements its sound's active-
 -- instance count - the ONE place this ever happens, so activeSoundCount
--- can never drift out of sync with trackedHandles.
-local function ReleaseTrackedHandle(handle, pb)
-    trackedHandles[handle] = nil
-    activeHandles[handle] = nil
-    if primaryHandle == handle then primaryHandle = nil end
+-- can never drift out of sync with trackedInstances.
+local function ReleaseTrackedInstance(instanceID, pb)
+    trackedInstances[instanceID] = nil
+    if pb.handle then activeHandles[pb.handle] = nil end
+    if primaryInstanceID == instanceID then primaryInstanceID = nil end
     local n = (activeSoundCount[pb.soundID] or 1) - 1
     if n > 0 then
         activeSoundCount[pb.soundID] = n
@@ -200,44 +228,88 @@ local function ReleaseTrackedHandle(handle, pb)
     end
 end
 
-local function PollTrackedHandles()
+local function PollTrackedInstances()
     local now = Now()
-    for handle, pb in pairs(trackedHandles) do
-        if not pb.observedPlaying and (now - pb.startedAt) > NEVER_STARTED_TIMEOUT then
-            -- Never confirmed as actually started - drop silently, no
-            -- learning, no PLAYBACK_PROGRESS_ENDED (nothing to end).
-            ReleaseTrackedHandle(handle, pb)
-        elseif (now - pb.startedAt) > MAX_TRACKED_LIFETIME then
+    for instanceID, pb in pairs(trackedInstances) do
+        local elapsed = now - pb.startedAt
+        local durationCeiling = pb.duration and (pb.duration + NATURAL_END_GRACE) or nil
+
+        if durationCeiling and elapsed >= durationCeiling then
+            -- A known duration (plus its small grace margin) has
+            -- genuinely elapsed - end now regardless of what
+            -- C_Sound.IsPlaying still claims (see NATURAL_END_GRACE's own
+            -- comment). This is also the ONLY end signal at all for an
+            -- instance with no handle to poll in the first place.
+            local state = BuildPlaybackState(instanceID, now)
+            ReleaseTrackedInstance(instanceID, pb)
+            SB:Fire("PLAYBACK_PROGRESS_ENDED", state)
+        elseif elapsed > MAX_TRACKED_LIFETIME then
             -- Stuck (see MAX_TRACKED_LIFETIME's own comment) - force-
             -- release without learning, so activeSoundCount can recover
             -- and future plays of this sound aren't blocked forever.
-            local state = BuildPlaybackState(handle, now)
-            ReleaseTrackedHandle(handle, pb)
+            -- Applies uniformly regardless of handle/duration knowledge.
+            local state = BuildPlaybackState(instanceID, now)
+            ReleaseTrackedInstance(instanceID, pb)
             SB:Fire("PLAYBACK_PROGRESS_ENDED", state)
+        elseif not pb.handle or not canTrackPlayback then
+            -- No WoW handle for this instance (or this client can't query
+            -- C_Sound.IsPlaying at all) - nothing further to OBSERVE. A
+            -- known duration is already fully handled by the ceiling
+            -- branch above (still fires PLAYBACK_PROGRESS_UPDATE here in
+            -- the meantime, for API parity with the handle-driven branch
+            -- below - BuildPlaybackState is already handle-agnostic).
+            -- With no known duration either, there is nothing left to go
+            -- on: the play itself is known to have succeeded (that's why
+            -- this instance exists at all) even though its end can never
+            -- be observed, so this still fires a real END - never a
+            -- silent drop - once a reasonable window has passed, so nothing
+            -- (e.g. the Announcer's banner) is ever left stuck showing
+            -- "Playing" forever with no way to know better.
+            if not pb.duration then
+                if elapsed > NEVER_STARTED_TIMEOUT then
+                    local state = BuildPlaybackState(instanceID, now)
+                    ReleaseTrackedInstance(instanceID, pb)
+                    SB:Fire("PLAYBACK_PROGRESS_ENDED", state)
+                end
+            else
+                SB:Fire("PLAYBACK_PROGRESS_UPDATE", BuildPlaybackState(instanceID, now))
+            end
+        elseif not pb.observedPlaying and elapsed > NEVER_STARTED_TIMEOUT then
+            -- Never confirmed as actually started - drop silently, no
+            -- learning, no PLAYBACK_PROGRESS_ENDED (nothing to end). This
+            -- ambiguity (did PlaySoundFile lie about willPlay?) only
+            -- applies when there WAS a handle to observe in the first
+            -- place - see the no-duration branch above for the handle-
+            -- less case, which has no such doubt.
+            ReleaseTrackedInstance(instanceID, pb)
         else
-            local ok, isPlaying = pcall(C_Sound.IsPlaying, handle)
+            local ok, isPlaying = pcall(C_Sound.IsPlaying, pb.handle)
             if not ok then
                 -- An invalid/unrecognized handle errors rather than
                 -- returning false on some clients - treat identically to
                 -- "not playing", but never learn from it (we can't trust
                 -- the elapsed time against a call that just errored).
-                ReleaseTrackedHandle(handle, pb)
+                ReleaseTrackedInstance(instanceID, pb)
             elseif isPlaying then
                 if not pb.observedPlaying then
                     pb.observedPlaying = true
                     pb.playingStartedAt = now
                 end
-                -- Fired for EVERY playing handle now, not just the primary
-                -- one - explicit request: older sounds that haven't
-                -- finished yet, even after a newer one took over the
-                -- display, should still get a (demoted) progress
+                -- Fired for EVERY playing instance now, not just the
+                -- primary one - explicit request: older sounds that
+                -- haven't finished yet, even after a newer one took over
+                -- the display, should still get a (demoted) progress
                 -- indicator. state.isPrimary (BuildPlaybackState) is what
                 -- lets listeners tell which is which.
-                SB:Fire("PLAYBACK_PROGRESS_UPDATE", BuildPlaybackState(handle, now))
+                SB:Fire("PLAYBACK_PROGRESS_UPDATE", BuildPlaybackState(instanceID, now))
             elseif pb.observedPlaying then
-                -- Was playing, now isn't - a genuine natural end, UNLESS
-                -- this handle was explicitly stopped by us (interrupted)
-                -- or ambiguous (see activeSoundCount above - an instance
+                -- Was playing, now isn't - a genuine, TRUSTWORTHY natural
+                -- end (only ever trusted once actually observed playing
+                -- at least once - avoids a startup race/false negative
+                -- prematurely ending a long sound before IsPlaying ever
+                -- had a chance to confirm it started), UNLESS this
+                -- instance was explicitly stopped by us (interrupted) or
+                -- ambiguous (see activeSoundCount above - an instance
                 -- that started while another instance of the SAME sound
                 -- was still active never has a trustworthy MEASURED
                 -- elapsed time, so it's excluded from LEARNING here even
@@ -245,38 +317,44 @@ local function PollTrackedHandles()
                 if not pb.interrupted and not pb.ambiguousOverlap and pb.playingStartedAt then
                     SaveLearnedDuration(pb.soundID, now - pb.playingStartedAt)
                 end
-                local state = BuildPlaybackState(handle, now)
-                ReleaseTrackedHandle(handle, pb)
+                local state = BuildPlaybackState(instanceID, now)
+                ReleaseTrackedInstance(instanceID, pb)
                 SB:Fire("PLAYBACK_PROGRESS_ENDED", state)
             end
             -- else: not yet observed playing and still within the
             -- timeout window - keep waiting, nothing to do this tick.
         end
     end
-    if not next(trackedHandles) then
+    if not next(trackedInstances) then
         StopPollTicker()
     end
 end
 
+-- No longer gated on canTrackPlayback - a known-duration instance needs
+-- this ticker running purely to reach its own duration-ceiling check
+-- above, which needs no C_Sound.IsPlaying call at all.
 local function StartPollTicker()
-    if pollTicker or not canTrackPlayback then return end
-    pollTicker = C_Timer.NewTicker(POLL_INTERVAL, PollTrackedHandles)
+    if pollTicker then return end
+    pollTicker = C_Timer.NewTicker(POLL_INTERVAL, PollTrackedInstances)
 end
 
 -- Called right after a successful PlaySoundFile, from SB:PlaySound below.
+-- Tracks EVERY successful call as its own playback instance, regardless
+-- of whether a WoW handle came back - explicit requirement. Returns the
+-- new instanceID.
 local function TrackNewPlayback(soundID, handle, duration)
-    if not canTrackPlayback or not handle then return end
     -- Ambiguous: another instance of this EXACT sound is still active -
     -- C_Sound.IsPlaying doesn't seem to track each PlaySoundFile call of
     -- an identical file independently, so a MEASURED elapsed time can't
     -- be trusted here (confirmed in testing: a ~2x-too-long learned
     -- duration). This ONLY affects LEARNING (SaveLearnedDuration, gated
-    -- on ambiguousOverlap in PollTrackedHandles) - `duration` itself (once
-    -- known - precomputed or already learned) is always still passed
-    -- through and displayed. Display doesn't need C_Sound.IsPlaying at
-    -- all (see BuildPlaybackState) - it's just a call-time countdown, so
-    -- retriggering the same sound mid-playback correctly restarts the bar
-    -- instead of going blank, exactly as expected, regardless of overlap.
+    -- on ambiguousOverlap in PollTrackedInstances) - `duration` itself
+    -- (once known - precomputed or already learned) is always still
+    -- passed through and displayed. Display doesn't need C_Sound.IsPlaying
+    -- at all (see BuildPlaybackState) - it's just a call-time countdown,
+    -- so retriggering the same sound mid-playback correctly restarts the
+    -- bar instead of going blank, exactly as expected, regardless of
+    -- overlap.
     local ambiguous = (activeSoundCount[soundID] or 0) > 0
     if ambiguous then
         -- Poison every OTHER currently-tracked instance of this exact
@@ -285,51 +363,54 @@ local function TrackNewPlayback(soundID, handle, duration)
         -- be contaminated by the second, later one just as easily. Only
         -- affects THEIR learning eligibility now, not their own already-
         -- assigned display duration.
-        for h, pb in pairs(trackedHandles) do
+        for _, pb in pairs(trackedInstances) do
             if pb.soundID == soundID and not pb.ambiguousOverlap then
                 pb.ambiguousOverlap = true
             end
         end
     end
     activeSoundCount[soundID] = (activeSoundCount[soundID] or 0) + 1
-    trackedHandles[handle] = {
+    nextInstanceID = nextInstanceID + 1
+    local instanceID = nextInstanceID
+    trackedInstances[instanceID] = {
         soundID = soundID,
+        handle = handle, -- optional - may be nil, see the section header above
         startedAt = Now(),
-        playingStartedAt = nil, -- set on the first confirmed-playing poll tick
+        playingStartedAt = nil, -- set on the first confirmed-playing poll tick, only ever if handle is set
         observedPlaying = false,
         interrupted = false,
         ambiguousOverlap = ambiguous,
         duration = duration,
     }
-    primaryHandle = handle
+    primaryInstanceID = instanceID
     StartPollTicker()
-    SB:Fire("PLAYBACK_PROGRESS_STARTED", BuildPlaybackState(handle))
+    SB:Fire("PLAYBACK_PROGRESS_STARTED", BuildPlaybackState(instanceID))
+    return instanceID
 end
 
---- Re-marks an ALREADY-tracked handle as the primary one, without
+--- Re-marks an ALREADY-tracked instance as the primary one, without
 --- starting a new play or touching activeSoundCount/ambiguousOverlap -
---- used when the Mini Soundbook "falls back" to an older still-playing
---- sound after a newer, shorter one finishes first (see
---- FavouritesWindow.lua's HideNowPlaying/TryPromoteSecondary). Future
---- PLAYBACK_PROGRESS_UPDATE/ENDED events for this handle report
---- isPrimary=true again from the very next poll tick. No-op if the handle
---- isn't tracked anymore (already ended by the time this is called).
-function SB:PromoteTrackedHandle(handle)
-    if not trackedHandles[handle] then return end
-    primaryHandle = handle
+--- available for a caller that wants to explicitly fall back to an
+--- older still-playing sound after a newer, shorter one finishes first.
+--- Future PLAYBACK_PROGRESS_UPDATE/ENDED events for this instance report
+--- isPrimary=true again from the very next poll tick. No-op if the
+--- instance isn't tracked anymore (already ended by the time this is
+--- called). Note: the current 3.0 Announcer (Announcer.lua) doesn't need
+--- this - its own activeDisplays stack already promotes the next-most-
+--- recent entry implicitly whenever the primary one is removed.
+function SB:PromoteTrackedHandle(instanceID)
+    if not trackedInstances[instanceID] then return end
+    primaryInstanceID = instanceID
 end
 
---- The handle most recently started via TrackNewPlayback, regardless of
---- source (local/remote/test) - lets a caller correlate an event that
---- doesn't itself carry a handle (LOCAL_SOUND_PLAYED/REMOTE_SOUND_PLAYED
---- fire right after SB:PlaySound returns, with no handle argument) back
---- to the exact playback instance it just started, so cleanup can later
---- be scoped to that one instance via PLAYBACK_PROGRESS_ENDED's own
---- state.handle instead of a soundID-only (and therefore stale-instance-
---- prone) match. Nil if handle tracking isn't available on this client
---- (canTrackPlayback false) or nothing has played yet this session.
+--- The WoW sound handle for the instance most recently started via
+--- TrackNewPlayback, regardless of source (local/remote/test) - may be
+--- nil even for a currently-tracked instance (see the section header
+--- above). Nil if nothing has played yet this session, or the primary
+--- instance has already ended.
 function SB:GetPrimaryPlaybackHandle()
-    return primaryHandle
+    local pb = primaryInstanceID and trackedInstances[primaryInstanceID]
+    return pb and pb.handle or nil
 end
 
 local function GetChannel()
@@ -340,16 +421,31 @@ end
 
 local function StopAllOwnSounds()
     for handle in pairs(activeHandles) do
-        -- Mark BEFORE the actual StopSound call - the very next poll tick
-        -- must already see this as "we did this on purpose", not a
-        -- natural end, so it's never learned as a real duration. Covers
-        -- every stop path that funnels through here: the Stop button,
-        -- "/sb stop", and a new sound cutting off the previous one when
-        -- overlap is disabled.
-        if trackedHandles[handle] then trackedHandles[handle].interrupted = true end
         pcall(StopSound, handle, 0)
     end
     wipe(activeHandles)
+    -- Explicit requirement: an explicit Stop, and an overlap-disabled
+    -- replacement (which calls this same function first), must clear the
+    -- affected progress/secondary state IMMEDIATELY - not wait for the
+    -- next 0.08s poll tick to notice. Every currently-tracked instance
+    -- (this table only ever holds Soundbook's own playback - see this
+    -- file's header comment) is force-ended here and now, synchronously,
+    -- regardless of handle/duration knowledge - covers every stop path
+    -- that funnels through here: the Stop button, "/sb stop", and a new
+    -- sound cutting off the previous one when overlap is disabled. Never
+    -- learned as a real duration (this path never reaches
+    -- PollTrackedInstances' own natural-end/learning branch at all).
+    for instanceID, pb in pairs(trackedInstances) do
+        local state = BuildPlaybackState(instanceID)
+        -- Explicit requirement: a Stop/overlap-cutoff end must be
+        -- distinguishable from a natural or duration-ceiling end, so a
+        -- listener (the Announcer's own minimum-display-duration floor,
+        -- Announcer.lua) knows to bypass its own minimum and clear right
+        -- now instead of deferring this instance's removal.
+        if state then state.stopped = true end
+        ReleaseTrackedInstance(instanceID, pb)
+        SB:Fire("PLAYBACK_PROGRESS_ENDED", state)
+    end
 end
 
 -- Public wrapper - the Mini Soundbook's Stop button and "/sb stop" (see
@@ -482,13 +578,17 @@ function SB:PlaySound(soundID, source)
         C_Timer.After(60, function()
             activeHandles[handle] = nil
         end)
-        -- Progress-bar/duration-learning tracking - see the block near the
-        -- top of this file. Wrapped in pcall: a tracking-side problem must
-        -- never be able to take down actual playback, which has already
-        -- fully succeeded by this point regardless of what happens next.
-        local ok, err = pcall(TrackNewPlayback, soundID, handle, durationSeconds)
-        if not ok then SB:Debug("Playback tracking failed: %s", tostring(err)) end
     end
+    -- Progress-bar/duration-learning tracking - see the block near the top
+    -- of this file. Explicit requirement: tracked regardless of whether a
+    -- WoW handle came back - a nil handle here does NOT mean tracking is
+    -- skipped, only that C_Sound.IsPlaying can't be queried for this one
+    -- instance (TrackNewPlayback/PollTrackedInstances already treat the
+    -- handle as fully optional). Wrapped in pcall: a tracking-side problem
+    -- must never be able to take down actual playback, which has already
+    -- fully succeeded by this point regardless of what happens next.
+    local ok, err = pcall(TrackNewPlayback, soundID, handle, durationSeconds)
+    if not ok then SB:Debug("Playback tracking failed: %s", tostring(err)) end
 
     -- %s, not %d - category can be "Legacy"/"German Memes" (string) or 1/2 (number).
     SB:Debug("Played %s (category=%s, source=%s, channel=%s)%s", soundID, tostring(info.category), source, channel,

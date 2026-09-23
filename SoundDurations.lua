@@ -20,12 +20,14 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Auf Alkohol"] = 6.661,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Awolnation Run"] = 10.318,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Borat Vagine"] = 7.824,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Brother eeew"] = 11.024,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Cant Touch This"] = 20.193,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Celebration"] = 10.214,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Charge Army"] = 7.497,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Charge Chivalry"] = 4.885,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Charakter"] = 3.096,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Cthun You Will Die"] = 3.762,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Daddy Chill"] = 1.123,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Deja Vu"] = 6.296,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dexter Meme"] = 10.71,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Donkey Hee Haw"] = 1.489,
@@ -40,6 +42,7 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Du bist gut genug"] = 7.367,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Emotional Damage"] = 3.396,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Epic Saxx"] = 7.445,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Excuse me bruh"] = 11.912,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fahhh"] = 2.351,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fart 3D"] = 10.584,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Fart echo"] = 7.784,
@@ -91,11 +94,19 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\To be continued"] = 9.639,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Viel Gluck"] = 4.911,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Vine Boom"] = 1.332,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Was Zitterstn so"] = 1.515,
+    -- Casing fixed to match the shipped file exactly ("Was zitterstn so.mp3",
+    -- lowercase z) - the OLD "Was Zitterstn so" key still resolved fine at
+    -- runtime via SoundRegistry.lua's own case-insensitive fallback lookup,
+    -- but the audit tool (tools/audit_sound_durations.py) correctly flags
+    -- an exact-case mismatch as "no matching shipped file", so corrected
+    -- here rather than leaving a permanently-flagged false positive.
+    ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Was zitterstn so"] = 1.515,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Weiss Nicht Digga"] = 2.712,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Wha Wha"] = 4.911,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\what did he sayyyyy"] = 2.088,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Yamete Kudasai"] = 2.16,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Yippee"] = 2.717,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Zehahaha"] = 5.016,
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\aaahhhhhh!"] = 3.135,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\dun dun dun"] = 5.172,
 }

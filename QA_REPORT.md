@@ -1627,3 +1627,229 @@ with zero actual recipients until one does (the same "explicitly
 selected, zero eligible" state already accepted elsewhere in this
 addon for a legitimately empty guild) - worth a live-client sanity check
 on a genuinely brand-new character/account, not just the existing SavedVariables-reset simulation this environment can run.
+
+---
+
+## Round 14 - Mini Soundbook proximity/overlap tuning, live Announcer Size, and a full playback/progress lifecycle rewrite
+
+### 1. Mini Soundbook proximity auto-close - user report: closed almost instantly
+
+Reported: opening the Mini Soundbook (a real click, cursor on the icon)
+was followed by it closing again within a fraction of a second - no real
+time to react, even with the cursor still near the icon.
+
+Root cause was tuning, not logic - 60px tolerance and a 0.3s close delay
+are small enough that a real player's UI scale and normal mouse drift
+easily exceed them well before 300ms passes, especially moving from the
+icon toward content inside the just-opened surface. Fixed with:
+
+- Tolerance widened 60px -> 150px, close delay 0.3s -> 0.6s.
+- New ~0.6s **opening grace period**: for a short window right after
+  ANY of the tracked surfaces opens (a real click, hover-open, or the
+  new size-preview forced-open below), outside-time can never
+  accumulate at all, regardless of where the cursor already is at that
+  exact instant - guarantees a minimum reaction window on every single
+  open, not just a looser ongoing tolerance. Restarts on every fresh
+  open, even if the shared ticker is already running for another
+  surface (e.g. a size-preview opening while Quick Options is already
+  up).
+
+Verified in `loader_minisurfaces.lua`'s rewritten proximity section: the
+cursor is placed far away BEFORE the Mini Soundbook even opens, and it
+must still not close for the first several ticks purely from the
+opening grace; the rest of the mechanics (inside-tolerance never closes,
+a single outside sample never closes, interaction priority suspends
+indefinitely and restarts fresh once it ends, closes after exactly 6
+consecutive ~0.1s outside samples = 0.6s) all still hold at the new
+timing.
+
+### 2. Mini Soundbook Size preview overlapping Quick Options
+
+Reported: the live-preview added last round (dragging the slider forces
+the Mini Soundbook open so you can see the size) still visually
+overlapped Quick Options.
+
+Root cause: the preview positioned itself on the direction *opposite*
+the icon's own resolved Popout Direction - correct on paper, but near a
+screen edge `SetClampedToScreen` pulls an off-screen placement back
+on-screen, landing right back on top of Quick Options (which sits
+immediately next to the icon on the other side). Fixed by anchoring the
+preview off **Quick Options' own actual resolved rectangle** instead,
+continuing in the *same* direction Quick Options already opened toward
+(the side `ResolvePopoutDirection` picked specifically because it has
+room) - this can only ever be pushed further into open screen space,
+never back toward Quick Options. `DisplayFavMenu` gained an optional
+`positionAnchor` parameter for this (the anchor used for the one-time
+`SetPoint` call only - `favMenu.__anchor`, used by
+`SB:RefreshPopoutPositions` for everything else, stays the icon as
+before). Verified structurally in `loader_minisurfaces.lua` via
+`GetPointByName` - the preview's anchor `relTo` is asserted to be
+`quickMenu` itself, not an independently-computed guess.
+
+### 3. Announcer Size: added the same live preview
+
+Explicit new request - Announcer Size (the icon/banner's own scale) had
+no live preview at all before this round (a deliberate decision from an
+earlier round, when it was still tied to the Announcer Preview banner -
+no longer applicable now that it's a plain live rescale). The slider's
+value-change callback now also calls `SB:RefreshAnnouncerScale()` on
+every change, not only on release. No forced-open/positioning step is
+needed the way Mini Soundbook Size needs one - the icon (and banner,
+when shown) are always already on-screen and already independently
+anchored off the icon's own *live* edges, so growing/shrinking it in
+place can never newly overlap Quick Options (WoW re-resolves every
+`SetPoint` relationship every frame - Quick Options' own anchor to the
+icon's edge tracks the growth automatically). Verified in
+`loader_popout.lua`: the icon's scale reflects the slider's value
+immediately, with no mouse-up needed.
+
+### 4. Playback/progress lifecycle: root-cause rewrite
+
+The reported bugs - `Brother eeew` (and sometimes `Emotional Damage`)
+showing no progress bar at all, `Haha Ostrich`/`Epic Saxx` leaving the
+Announcer visible 6+ seconds after playback actually ended - turned out
+to be two genuinely different root causes, both fixed structurally
+rather than patched per-sound.
+
+**4a. Duration coverage gap.** `Brother eeew`, `Daddy Chill`,
+`Excuse me bruh`, `aaahhhhhh!`, and `what did he sayyyyy` - five real,
+currently-shipped Legacy sounds - had no entry in `SoundDurations.lua`
+at all, silently falling back to live-learning (which a bundled sound
+should never need). `tools/audit_sound_durations.py` (previously only
+checked registered entries against their files) now ALSO cross-checks
+every bundled `Sounds.lua` entry (Legacy/German Memes - the only
+categories that ship with real content) against `SoundDurations.lua`
+and prints a ready-to-paste entry (same MPEG frame-walk measurement) for
+anything missing. All 5 measured and added; a pre-existing case-only
+mismatch (`Was Zitterstn so` vs. the real `Was zitterstn so.mp3`) was
+also caught and corrected (harmless at runtime - `SoundRegistry.lua`'s
+own lookup already has a case-insensitive fallback - but now the tool
+reports zero coverage gaps and zero missing-file entries).
+
+**4b. Progress UI depended on a WoW sound handle that doesn't always
+exist.** `SoundPlayer.lua` only ever tracked a play (`TrackNewPlayback`)
+`if handle then ... end` - `PlaySoundFile` can legitimately return
+`willPlay=true` with a `nil` handle (already documented at the top of
+this file re: per-sound volume/`supportsHandles`), and for that one
+play, nothing was tracked at all: no `PLAYBACK_PROGRESS_STARTED`, no
+duration ever reaching the Announcer, permanently stuck showing
+"Playing" with no bar. This is the actual explanation for "sometimes"
+`Emotional Damage` (which has a perfectly good known duration) - not a
+data gap like `Brother eeew`, a runtime coin-flip on whether that one
+`PlaySoundFile` call happened to hand back a handle.
+
+**4c. `C_Sound.IsPlaying` had no ceiling.** The Announcer's own banner
+had a *separate*, purely cosmetic progress-fill ticker (its own
+`elapsed`/`duration` math) that never terminated anything by itself -
+actually ending a display was 100% dependent on `SoundPlayer.lua`
+observing a handle's `C_Sound.IsPlaying` transition from true to false.
+Some clients/files (the exact reported case) report `IsPlaying=true`
+for several seconds past the real audible end, and nothing capped that.
+
+**The rewrite** (`SoundPlayer.lua`, `Announcer.lua`):
+
+- Tracking keyed by a new local, always-available **playback-instance
+  token** (`nextInstanceID`, monotonically incrementing) - never by
+  handle (optional, can be `nil`) and never by `soundID` alone (the
+  same sound can be retriggered/overlapped). `TrackNewPlayback` is now
+  called unconditionally after every successful `PlaySoundFile`,
+  handle or not.
+- `PollTrackedInstances` (renamed from `PollTrackedHandles`) now checks
+  a **known-duration ceiling** (`duration + 0.3s grace` - the exact
+  margin this addon's own pre-3.0 Mini Soundbook used for precisely
+  this "don't cut off right at the last instant" purpose, ported
+  forward as a real reactive ceiling instead of a fixed timer) *before*
+  anything else, every tick, for every instance - handle or not. Once
+  elapsed passes that ceiling, the instance ends right there regardless
+  of what `C_Sound.IsPlaying` still claims. This is also the *only* end
+  signal at all for a handle-less instance - progress display and a
+  guaranteed end no longer need a handle for anything.
+- A handle-less instance with no known duration either (a companion
+  sound's first play) still eventually fires a real END (not a silent
+  drop) after a reasonable window, so nothing is ever left stuck
+  showing "Playing" forever with no way to know better - the "never
+  started" ambiguity that justifies a silent drop only applies when
+  there was a handle to doubt in the first place.
+- Real early-natural-end detection (via `C_Sound.IsPlaying`, when a
+  handle exists) is unchanged and still takes priority *before* the
+  ceiling is reached - "only ever trusted once observed playing at
+  least once" (explicit requirement - avoids a startup race
+  prematurely ending a long sound), so a sound that genuinely finishes
+  early still ends early.
+- `StopAllOwnSounds` (Stop button, `/sb stop`, and an overlap-disabled
+  replacement cutting off the previous sound) now force-ends **every**
+  currently-tracked instance synchronously, immediately, marking the
+  fired state `stopped = true` - not waiting for the next 0.08s poll
+  tick to notice, and distinguishable from a natural/ceiling end.
+- **Announcer.lua**: `activeDisplays` entries are now matched by
+  `instanceID`, never `handle` (two different handle-less instances
+  used to be indistinguishable from each other by that field - a real
+  contamination risk once handle-less tracking became possible). The
+  existing "Now Playing Highlight Duration" setting (renamed "Now
+  Playing Minimum Duration", Settings.lua) is now ALSO wired into the
+  Announcer's own lifecycle as a genuine minimum: a natural/ceiling end
+  arriving before the configured minimum defers the entry's actual
+  removal (via a scoped `C_Timer.After`) to exactly when the minimum is
+  reached, rather than vanishing early - but `state.stopped` (explicit
+  Stop/overlap-cutoff) always bypasses this and clears immediately, per
+  requirement. Matches this addon's own pre-3.0 precedent
+  (`FavouritesWindow.lua`'s old `ShowNowPlaying`: minimum, extended up
+  to the real duration + grace whenever that's longer) - reimplemented
+  reactively on the new instance-token architecture instead of a fixed
+  timer computed once.
+- Promotion (an older, still-genuinely-playing overlapped sound
+  becoming primary once a newer one ends) needed no new mechanism at
+  all in the current 3.0 Announcer - `activeDisplays` already promotes
+  implicitly by array position, and since the ceiling check applies
+  uniformly regardless of primary/secondary status, a stale/expired
+  secondary is removed via its own ceiling exactly like a primary would
+  be - it can never resurface later just because a stale handle might
+  still say something about it.
+
+**Preserved, verified unchanged**: the Library grid's own "just played"
+highlight (UI.lua's `SetPlayingState`) still reads `state.handle`
+exactly as before (kept in the fired state alongside the new
+`instanceID`, for zero-touch backward compatibility) -
+`loader_playback.lua`'s full existing suite (instance-scoped cleanup,
+stale-handle isolation, retrigger, overlap on/off) passes unchanged.
+Local/remote playback, sending, ACKs, routing, analytics, history, and
+Last Sound are all untouched - none of those files were modified.
+
+### Verification
+
+15 mock regression scripts now pass (the prior 13, `loader_popout.lua`
+extended with a live-icon-scale assertion, `loader_minisurfaces.lua`
+rewritten for the new proximity timing plus a new anchor-`relTo`
+assertion, and a new dedicated `loader_playbacklifecycle.lua`): handle-
+independent progress and its own duration-ceiling end; a known duration
+overriding a stuck `IsPlaying=true`; the minimum genuinely holding a
+real early end open, then clearing exactly at the minimum; an explicit
+Stop bypassing the minimum immediately; an overlap-disabled replacement
+clearing the cut-off sound's display immediately too; retrigger
+isolation (a stale older instance's own end never affects a newer
+retrigger); and secondary/overlap handling (an expired secondary is
+dropped entirely, never re-promoted). `mock.lua` gained two small,
+purely additive capabilities to make this possible at all: a mutable
+simulated clock (`AdvanceMockTime`, `GetTime`/`GetTimePreciseSec`
+previously a hardcoded constant - no prior test could ever prove
+anything about elapsed real time) and a one-shot nil-handle injector for
+`PlaySoundFile` (`SetMockForceNilHandleOnce`).
+
+`tools/audit_sound_durations.py` was run directly (not through the mock
+harness) and confirms zero coverage gaps, zero missing files, and zero
+duration mismatches across all 85 registered/bundled sounds after this
+round's fixes.
+
+### Still gated on a live client
+
+The lingering-announcer fix is verified via the mock's new simulated
+clock, which correctly proves the addon's own decision logic (the
+ceiling fires at the right elapsed time, in the right priority order),
+but cannot reproduce the real client quirk itself (does `C_Sound.
+IsPlaying` on TBC Anniversary genuinely report stale `true` for
+`Haha Ostrich`/`Epic Saxx` specifically, and by how much) - worth
+watching those two sounds specifically in-game to confirm the Announcer
+now clears within ~0.3s of the real audio ending rather than the
+previously-reported 6+. The 0.3s grace margin itself is a carried-
+forward value from this addon's own pre-3.0 precedent, not re-derived
+against real playback latency in this environment.

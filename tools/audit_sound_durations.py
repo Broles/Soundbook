@@ -185,6 +185,48 @@ def resolve_audio_file(repo_root: Path, rel_base: str):
 
 
 # ---------------------------------------------------------------------------
+# Sounds.lua parsing (read-only) - which bundled sounds actually need a
+# registered duration at all, independent of what SoundDurations.lua
+# happens to already contain. Only "Legacy" and "German Memes" ship with
+# real content (Category1/Category2 are empty placeholder folders for the
+# player's own sounds, never bundled) - see Sounds.lua's own header.
+# ---------------------------------------------------------------------------
+
+_BUNDLED_CATEGORIES = ("Legacy", "German Memes")
+_CATEGORY_BLOCK_RE = re.compile(r'\["(' + "|".join(re.escape(c) for c in _BUNDLED_CATEGORIES) + r')"\]\s*=\s*\{')
+_NAME_ENTRY_RE = re.compile(r'\{\s*name\s*=\s*"((?:[^"\\]|\\.)*)"')
+
+
+def load_bundled_sound_names(repo_root: Path):
+    """Returns [(category, name), ...] for every entry under a bundled
+    category in Sounds.lua - a plain regex walk, not a real Lua parser,
+    but Sounds.lua's own header mandates this exact `{ name = "...", ... }`
+    shape for every entry, so this is a faithful, low-risk read of it."""
+    text = (repo_root / "Sounds.lua").read_text(encoding="utf-8")
+    results = []
+    for match in _CATEGORY_BLOCK_RE.finditer(text):
+        category = match.group(1)
+        start = match.end()
+        # The block ends at the next top-level `["..."] = {` (any category,
+        # bundled or not) or the closing of SoundbookSounds itself -
+        # whichever comes first - so this never reads past its own list.
+        next_block = re.search(r'\n\s*\["[^"]+"\]\s*=\s*\{', text[start:])
+        end = start + next_block.start() if next_block else len(text)
+        block = text[start:end]
+        for name_match in _NAME_ENTRY_RE.finditer(block):
+            name = name_match.group(1).replace('\\"', '"')
+            results.append((category, name))
+    return results
+
+
+def expected_rel_base(category: str, name: str) -> str:
+    # Mirrors SoundRegistry.lua's BuildFileBase for a category with real
+    # content ("Legacy"/"German Memes" get their own named folder, not
+    # "CategoryN\") - see that function's own comment for why.
+    return f"Sounds/{category}/{name}"
+
+
+# ---------------------------------------------------------------------------
 # Main audit
 # ---------------------------------------------------------------------------
 
@@ -198,6 +240,31 @@ def main():
 
     repo_root = Path(args.repo_root)
     entries = load_registered_durations(repo_root)
+    registered_lower = {rel.lower() for rel, _ in entries}
+
+    # Coverage gap: a bundled sound (Sounds.lua) with NO registered
+    # duration at all - not a mismatch, an outright missing entry. This is
+    # the class of bug that left "Brother eeew" etc. with no progress bar
+    # at all (relying on live learning, which a bundled sound should never
+    # need) - measured here (same MPEG frame walk as everything else) so
+    # a ready-to-paste SoundDurations.lua entry can be printed directly.
+    coverage_gaps = []
+    for category, name in load_bundled_sound_names(repo_root):
+        rel_base = expected_rel_base(category, name)
+        if rel_base.lower() in registered_lower:
+            continue
+        audio_path = resolve_audio_file(repo_root, rel_base)
+        if not audio_path:
+            coverage_gaps.append((category, name, rel_base, None, "no shipped file found either"))
+            continue
+        if audio_path.suffix.lower() != ".mp3":
+            coverage_gaps.append((category, name, rel_base, None, f"unmeasured ({audio_path.suffix} - only .mp3 frame-walking is implemented)"))
+            continue
+        info = analyze_mp3(audio_path)
+        if info["measured_seconds"] is None:
+            coverage_gaps.append((category, name, rel_base, None, "no valid MPEG frames found"))
+        else:
+            coverage_gaps.append((category, name, rel_base, info["measured_seconds"], None))
 
     missing = []
     duration_mismatches = []
@@ -247,6 +314,19 @@ def main():
 
     print(f"Checked {checked_mp3} .mp3 files against SoundDurations.lua ({len(entries)} registered entries).\n")
 
+    if coverage_gaps:
+        print(f"--- {len(coverage_gaps)} bundled sound(s) in Sounds.lua have NO registered duration at all ---")
+        for category, name, rel_base, measured, problem in coverage_gaps:
+            if problem:
+                print(f"  {category}::{name} ({rel_base}): {problem}")
+            else:
+                wow_path = "Interface\\\\AddOns\\\\Soundbook\\\\" + rel_base.replace("/", "\\\\")
+                print(f"  {category}::{name}: measured={measured:.3f}s -> add to SoundDurations.lua:")
+                print(f'    ["{wow_path}"] = {measured:.3f},')
+        print()
+    else:
+        print("No coverage gaps. Every bundled Sounds.lua entry has a registered duration.\n")
+
     if missing:
         print(f"--- {len(missing)} registered entr{'y has' if len(missing)==1 else 'ies have'} no matching shipped file ---")
         for rel in missing:
@@ -276,7 +356,7 @@ def main():
     print(f"Sample rate distribution across checked files: {samplerate_counts}")
     print(f"MPEG version distribution across checked files: {version_counts}")
 
-    problems = len(missing) + len(duration_mismatches)
+    problems = len(missing) + len(duration_mismatches) + len(coverage_gaps)
     if problems:
         print(f"\n{problems} issue(s) found - review above before shipping.")
         return 1

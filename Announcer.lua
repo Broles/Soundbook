@@ -781,9 +781,9 @@ local function AddDisplay(soundID, sender, channelLabel)
     if not icon or not icon:IsShown() then return end
     BuildBanner()
     local start = pendingStart
-    local handle, duration, startedAt = nil, nil, GetTime()
+    local handle, duration, startedAt, instanceID = nil, nil, GetTime(), nil
     if start and start.soundID == soundID then
-        handle, duration, startedAt = start.handle, start.duration, start.startedAt or GetTime()
+        handle, duration, startedAt, instanceID = start.handle, start.duration, start.startedAt or GetTime(), start.instanceID
     end
     -- A retriggered sound that's already displayed restarts its own entry
     -- (fresh timing) instead of stacking a second identical-looking row.
@@ -791,26 +791,86 @@ local function AddDisplay(soundID, sender, channelLabel)
     table.insert(activeDisplays, {
         handle = handle, soundID = soundID, sender = sender,
         channelLabel = channelLabel, duration = duration, startedAt = startedAt,
+        -- instanceID (SoundPlayer.lua's own playback-instance token, may
+        -- be nil if this AddDisplay call couldn't be paired with a
+        -- PLAYBACK_PROGRESS_STARTED - e.g. a fully synthetic/test call) -
+        -- the one true correlator for PLAYBACK_PROGRESS_ENDED below, never
+        -- the WoW handle (which can legitimately be nil, and can't
+        -- distinguish two different handle-less instances from each
+        -- other) and never soundID alone (a retrigger/overlap would
+        -- confuse two different instances of the same sound).
+        instanceID = instanceID,
     })
     if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
     RenderPrimary()
 end
 
+-- Instance-scoped removal (unlike SB.RemoveAnnouncerDisplayForSound above,
+-- which is deliberately soundID-scoped for its own callers - a retrigger's
+-- own dedup, and a sound going muted). Used by the ENDED handler below,
+-- including from inside a deferred minimum-display-duration timer - safe
+-- to call on an instanceID that's already gone (retriggered/muted/stopped
+-- out from under it in the meantime): finds nothing, does nothing.
+local function RemoveDisplayByInstance(instanceID)
+    local removed = false
+    for i = #activeDisplays, 1, -1 do
+        if activeDisplays[i].instanceID == instanceID then
+            table.remove(activeDisplays, i)
+            removed = true
+        end
+    end
+    if not removed then return end
+    if #activeDisplays > 0 then
+        RenderPrimary()
+    else
+        ScheduleCollapse()
+    end
+end
+
 SB:On("PLAYBACK_PROGRESS_STARTED", function(state)
     if not state then return end
-    pendingStart = { soundID = state.soundID, handle = state.handle, duration = state.duration, startedAt = GetTime() }
+    pendingStart = { soundID = state.soundID, handle = state.handle, duration = state.duration, startedAt = GetTime(), instanceID = state.instanceID }
 end)
 
+-- Regression fix (explicit requirement - the Announcer must never
+-- disappear before the configured Announcement Duration minimum, but
+-- must also never depend on a WoW handle or linger past a known duration
+-- just because C_Sound.IsPlaying still claims otherwise - see
+-- SoundPlayer.lua's own duration-ceiling fix). Matched purely by
+-- instanceID now, never by handle (which SoundPlayer.lua now allows to
+-- be nil, and which can't tell two handle-less instances apart anyway).
 SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
-    if not state or not state.handle then return end
-    for i, entry in ipairs(activeDisplays) do
-        if entry.handle == state.handle then
-            table.remove(activeDisplays, i)
-            if #activeDisplays > 0 then
-                RenderPrimary()
-            else
-                ScheduleCollapse()
+    if not state or not state.instanceID then return end
+    for _, entry in ipairs(activeDisplays) do
+        if entry.instanceID == state.instanceID then
+            -- An explicit Stop or an overlap-disabled replacement cutting
+            -- this sound off must clear it immediately, bypassing the
+            -- minimum entirely (SoundPlayer.lua marks state.stopped for
+            -- exactly this case) - only a genuine natural/duration-
+            -- ceiling end is ever held to the minimum below.
+            if state.stopped or entry.naturalEndPending then
+                RemoveDisplayByInstance(state.instanceID)
+                return
             end
+            local minDisplay = tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
+            local minUntil = (entry.startedAt or 0) + math.max(0, minDisplay)
+            local now = GetTime()
+            if minDisplay > 0 and now < minUntil then
+                -- The real sound has genuinely ended (or hit its known-
+                -- duration ceiling), but the configured minimum hasn't
+                -- elapsed yet - keep the entry fully visible/ticking
+                -- (RenderPrimary's own progress ticker already holds at
+                -- 100% once elapsed reaches duration) and defer the
+                -- actual removal to exactly when the minimum is reached,
+                -- rather than vanishing early.
+                entry.naturalEndPending = true
+                local instanceID = state.instanceID
+                C_Timer.After(minUntil - now, function()
+                    RemoveDisplayByInstance(instanceID)
+                end)
+                return
+            end
+            RemoveDisplayByInstance(state.instanceID)
             return
         end
     end
