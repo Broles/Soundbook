@@ -505,6 +505,30 @@ function SB:IsFriend(name)
     return false
 end
 
+-- Whether `name` is on the player's own Ignore list. Same enumerate-and-
+-- match approach as SB:IsFriend above, deliberately - the older
+-- GetNumIgnores/GetIgnoreName globals are available across every
+-- supported client (Classic through Retail), unlike a name-keyed
+-- C_FriendList.IsIgnored which isn't universally present on this addon's
+-- target clients (see this file's own header: Classic - TBC Anniversary).
+-- Only ever tells us "have I ignored them", never the reverse (WoW has no
+-- API for "who has ignored me") - Communication.lua's Ignore-blocking
+-- enforcement (IsPlayableRightNow/HandlePlayCommand/SendToPlayerSilent/
+-- SendToFriends) is built entirely around that asymmetry.
+function SB:IsIgnored(name)
+    local requestedKey = SB.PlayerKey and SB.PlayerKey(name) or SB.NormalizeName(name)
+    if not requestedKey then return false end
+    local n = GetNumIgnores and GetNumIgnores() or 0
+    for i = 1, n do
+        local ignoreName = GetIgnoreName and GetIgnoreName(i)
+        local ignoreKey = ignoreName and (SB.PlayerKey and SB.PlayerKey(ignoreName) or SB.NormalizeName(ignoreName))
+        if ignoreKey and ignoreKey == requestedKey then
+            return true
+        end
+    end
+    return false
+end
+
 ------------------------------------------------------------------------
 -- SavedVariables defaults + migration
 ------------------------------------------------------------------------

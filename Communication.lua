@@ -62,6 +62,10 @@ local MUTED_COLOR = "cffff5555" -- red
 -- different thing from an actual mute (see RXOFFACK below), gets its own
 -- colour so the two counts are never visually confused with each other.
 local RXOFF_COLOR = "cffffa500" -- orange
+-- Distinct again from both of the above - a personal Ignore-list block is
+-- neither a sound-mute nor a channel opt-out, gets its own colour so the
+-- three counts are never visually confused with each other.
+local IGNORE_COLOR = "cffff8080" -- soft red
 
 -- Explicit request: colour-code the channel/source portion of every one
 -- of these lines the same way Now Playing does (SB.CHANNEL_COLOR,
@@ -143,7 +147,7 @@ end
 -- opt-out, not a deliberate per-sound/per-person mute). Debug-Mode-only by
 -- design (see HandleRxOffAck) - `rxOffCount` is simply always 0 for a
 -- normal (non-debug) client, so this segment naturally never appears then.
-local function PrintFriendsReceived(soundName, entries, mutedCount, rxOffCount)
+local function PrintFriendsReceived(soundName, entries, mutedCount, rxOffCount, ignoredCount)
     local receivedPart = #entries > 0
         and string.format(" |cff999999(%s)|r", FormatReceivedList(entries))
         or ""
@@ -153,9 +157,13 @@ local function PrintFriendsReceived(soundName, entries, mutedCount, rxOffCount)
     local rxOffPart = (rxOffCount and rxOffCount > 0)
         and string.format(" |%s(%d receive-off)|r", RXOFF_COLOR, rxOffCount)
         or ""
+    -- "Guild received: 4 (1 blocked by Ignore)" - explicit requirement.
+    local ignoredPart = (ignoredCount and ignoredCount > 0)
+        and string.format(" |%s(%d blocked by Ignore)|r", IGNORE_COLOR, ignoredCount)
+        or ""
     DEFAULT_CHAT_FRAME:AddMessage(string.format(
-        "|%s[Soundbook]|r |cffffffff%s|r: |cffffd100%s|r%s%s%s",
-        TAG_COLOR, UnitName("player"), soundName, receivedPart, mutedPart, rxOffPart))
+        "|%s[Soundbook]|r |cffffffff%s|r: |cffffd100%s|r%s%s%s%s",
+        TAG_COLOR, UnitName("player"), soundName, receivedPart, mutedPart, rxOffPart, ignoredPart))
 end
 
 ------------------------------------------------------------------------
@@ -220,7 +228,13 @@ local function SendToFriends(text, covered)
     local n = SB.GetNumFriends()
     for i = 1, n do
         local name, connected = SB.GetFriendInfoByIndex(i)
-        if name and connected and not covered[IdentityKey(name)] then
+        -- Ignore blocking (explicit requirement): "A must not intentionally
+        -- send directly to B" - a multi-recipient blind broadcast like this
+        -- one CAN filter per-recipient (unlike a true Guild/Raid channel
+        -- message), so it does, silently - same "skip and continue" shape
+        -- as the existing `covered` de-dup right above, never aborting the
+        -- rest of the send over one blocked name.
+        if name and connected and not covered[IdentityKey(name)] and not SB:IsIgnored(name) then
             SB.SendAddonMessage(SB.COMM_PREFIX, text, "WHISPER", name)
         end
     end
@@ -310,6 +324,14 @@ end
 
 local function SendToPlayerSilent(soundID, name)
     if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
+    -- Ignore blocking (explicit requirement) - the single shared funnel
+    -- for a Default-Output single-player target AND a SUBSET (multi-select
+    -- Guild/Raid/Friends submenu) send, so both get this for free. Silent,
+    -- matching this whole function's own established "no chat line" design
+    -- (see its callers' own comments) - SB:SendSoundToPlayer below is the
+    -- one surface with an explicit chat confirmation, and checks this
+    -- itself first so it can print its own dedicated message instead.
+    if SB:IsIgnored(name) then return end
     recentBroadcasts[soundID] = GetTime()
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID .. SEP .. "D", "WHISPER", name)
 end
@@ -783,6 +805,18 @@ end
 -- confirmed friends is a different, much narrower thing.
 function SB:SendSoundToPlayer(soundID, name)
     if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
+    -- Ignore blocking (explicit requirement) - checked first, ahead of the
+    -- raid-mute Friend exemption below: absolute, no exceptions. This is
+    -- THE single-target "Direct/specific send" surface the exact required
+    -- wording belongs on; DispatchDefaultOutput's own PLAYER/SUBSET
+    -- targets share the same underlying block via SendToPlayerSilent, but
+    -- stay silent there on purpose (that whole codepath is deliberately
+    -- chat-line-free, see its own header comment) - this deliberate,
+    -- explicitly-confirmed SendMenu.lua action gets the explicit message.
+    if SB:IsIgnored(name) then
+        SB:Print(string.format("Cannot send to %s: Soundbook communication is blocked by Ignore.", NormalizeName(name) or name))
+        return
+    end
     if SB:IsSendBlockedByRaid() and not SB:IsFriend(name) then
         SB:Print("Sending is currently disabled by your raid leader.")
         return
@@ -861,13 +895,13 @@ local CHANNEL_LABEL = {
 -- the same way `entries` already de-dupes a retried ACK below - only their
 -- counts are ever shown, never the names themselves (explicit request:
 -- "sehen ob und wieviele", not who).
-local pendingAcks = {} -- [soundID] = { entries = { {name=, code=}, ... }, mutedNames = {[name]=true}, mutedCount = 0, rxOffNames = {[name]=true}, rxOffCount = 0, timer = <handle> }
+local pendingAcks = {} -- [soundID] = { entries = { {name=, code=}, ... }, mutedNames = {[name]=true}, mutedCount = 0, rxOffNames = {[name]=true}, rxOffCount = 0, ignoredNames = {[name]=true}, ignoredCount = 0, timer = <handle> }
 local ACK_DEBOUNCE = 1.5 -- seconds of quiet before printing
 
 local function EnsurePending(soundID)
     local pending = pendingAcks[soundID]
     if not pending then
-        pending = { entries = {}, mutedNames = {}, mutedCount = 0, rxOffNames = {}, rxOffCount = 0 }
+        pending = { entries = {}, mutedNames = {}, mutedCount = 0, rxOffNames = {}, rxOffCount = 0, ignoredNames = {}, ignoredCount = 0 }
         pendingAcks[soundID] = pending
     end
     return pending
@@ -887,8 +921,8 @@ FlushAcks = function(soundID)
     local pending = pendingAcks[soundID]
     if not pending then return end
     pendingAcks[soundID] = nil
-    if #pending.entries > 0 or pending.mutedCount > 0 or pending.rxOffCount > 0 then
-        PrintFriendsReceived(SB:GetSoundDisplayName(soundID), pending.entries, pending.mutedCount, pending.rxOffCount)
+    if #pending.entries > 0 or pending.mutedCount > 0 or pending.rxOffCount > 0 or pending.ignoredCount > 0 then
+        PrintFriendsReceived(SB:GetSoundDisplayName(soundID), pending.entries, pending.mutedCount, pending.rxOffCount, pending.ignoredCount)
     end
 end
 
@@ -983,6 +1017,34 @@ local function HandleRxOffAck(soundID, sender)
     RestartFlushTimer(soundID, pending)
 end
 
+-- Ignore blocking (explicit requirement) - a recipient who rejected this
+-- broadcast because THEY have US ignored (see HandlePlayCommand/
+-- IsPlayableRightNow's own "ignored" branch) replies with IGNOREACK
+-- instead of a normal ACK, so we never count them as a successful
+-- recipient. Unlike RxOffAck (Debug-Mode-only) this always shows, same
+-- visibility as HandleMuteAck - "protocol correctness: only report Ignore
+-- when the local client can determine it directly, or the remote client
+-- explicitly reports it" is exactly what this is: an explicit wire-level
+-- rejection, never inferred from a bare timeout/missing ACK (that stays
+-- "unreachable", see HandlePlayCommand's own Ignore check above). Still credited to
+-- Analytics the same way a mute is - a real other client genuinely
+-- received and processed the message, they just aren't allowed to play it.
+local function HandleIgnoreAck(soundID, sender)
+    local sentAt = recentBroadcasts[soundID]
+    if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
+        return
+    end
+    CreditAnalyticsOnce(soundID, sentAt)
+    if not SB.db.settings.notifyFriendReceipts then return end
+
+    local name = IdentityKey(sender) or sender
+    local pending = EnsurePending(soundID)
+    if pending.ignoredNames[name] then return end -- already counted
+    pending.ignoredNames[name] = true
+    pending.ignoredCount = pending.ignoredCount + 1
+    RestartFlushTimer(soundID, pending)
+end
+
 -- Explicit request: if an incoming PLAY references a Legacy/German Memes
 -- soundID we don't have locally at all, the most likely explanation is
 -- that OUR OWN Soundbook is older than the sender's - a shared/standard
@@ -1030,6 +1092,32 @@ local function HandlePlayCommand(soundID, sender, channel, isDirect)
     -- fact it physically travels over the same WHISPER channel a
     -- broadcast-to-all-friends send does - see SB:SendSoundToPlayer above.
     local channelLabel = isDirect and "Direct" or (CHANNEL_LABEL[channel] or channel)
+
+    -- Ignore blocking (explicit requirement) - checked FIRST, before even
+    -- the raid-admin mute's own Friend exemption: "if either player has
+    -- the other ignored, Soundbook communication must not succeed" is
+    -- absolute, no exceptions. Our OWN outbound sends already skip anyone
+    -- WE have ignored before the message is even sent (see SendToFriends/
+    -- SendToPlayerSilent/SB:SendSoundToPlayer) - this is the other half of
+    -- the same rule, for a channel-wide Guild/Raid broadcast (which can't
+    -- be filtered per-recipient at send time) or the case where THEY
+    -- haven't ignored anyone but WE have ignored THEM. Rejected before
+    -- playback, never recorded to History (both only ever happen further
+    -- below, past this return), and an explicit IGNOREACK reply lets the
+    -- sender's aggregate ("Guild received: N (1 blocked by Ignore)")
+    -- reflect it - never a normal, success-implying ACK. If instead THEY
+    -- have ignored US, WoW's own server-level whisper suppression means
+    -- this handler is simply never reached at all for a WHISPER-based
+    -- send (Friends/Direct) - that looks like, and is deliberately left
+    -- as, ordinary unreachable/no-ACK rather than guessed at. A Guild/
+    -- Raid channel message, however, is NOT suppressed by ignore at the
+    -- game level, so it still reaches us and this same check catches
+    -- that direction too.
+    if SB:IsIgnored(sender) then
+        SB:Debug("Remote sound %s from %s ignored (Ignore list).", soundID, sender)
+        SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "IGNOREACK" .. SEP .. soundID, "WHISPER", sender)
+        return
+    end
 
     -- Raid-admin "mute all" (see the Raid Admin section below) blocks
     -- receiving too, not just sending - deliberately silent here (no
@@ -1340,6 +1428,15 @@ end
 ---   rejection notification is warranted, see NotifyIfMuted below)
 local function IsPlayableRightNow(soundID, sender, isDirect)
     if not SB.registry[soundID] then return false, "unknown" end
+    -- Ignore blocking (explicit requirement) - checked before EVERYTHING
+    -- else, including the raid-mute-all Friend exemption below: "if either
+    -- player has the other ignored, Soundbook communication must not
+    -- succeed" is absolute. Also checked here (not just HandlePlayCommand's
+    -- own redundant copy) so a message from someone we've ignored never
+    -- burns a queue slot or a rate-limit accept credit in the first place -
+    -- same reasoning this function's own header comment already gives for
+    -- "unknown"/"raid_blocked"/"muted".
+    if SB:IsIgnored(sender) then return false, "ignored" end
     if SB:IsReceiveBlockedByRaid() and not (isDirect and SB:IsFriend(sender)) then return false, "raid_blocked" end
     -- Individual Mute (Mini Soundbook mute button's right-click dropdown) -
     -- no exemption, unlike the raid-mute-all check above - this is a
@@ -1369,6 +1466,16 @@ local function NotifyIfMuted(reason, soundID, sender, channel, isDirect)
         -- this specifically means "our own Soundbook might be outdated"
         -- for a Legacy/German Memes id.
         MaybeShowOutdatedHint(soundID)
+        return
+    end
+    if reason == "ignored" then
+        -- Fully silent locally (like "raid_blocked" below) - the whole
+        -- point of Ignore is that nothing about this person surfaces here
+        -- at all, no notifyMutedAttempts-style opt-in. The SENDER still
+        -- needs to know, though (explicit requirement - their aggregate
+        -- must show "(N blocked by Ignore)", never a normal success ACK),
+        -- so an IGNOREACK reply is unconditional, same as MUTEACK below.
+        SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "IGNOREACK" .. SEP .. soundID, "WHISPER", sender)
         return
     end
     if reason ~= "muted" and reason ~= "player_muted" then return end
@@ -2128,6 +2235,7 @@ end)
 local COMMAND_CHANNELS = {
     PLAY = { PARTY = true, RAID = true, RAID_LEADER = true, GUILD = true, OFFICER = true, WHISPER = true },
     ACK = { WHISPER = true }, MUTEACK = { WHISPER = true }, RXOFFACK = { WHISPER = true },
+    IGNOREACK = { WHISPER = true },
     HELLO = { PARTY = true, RAID = true, RAID_LEADER = true, GUILD = true, OFFICER = true, WHISPER = true },
     HELLOACK = { WHISPER = true },
     ANLY = { PARTY = true, RAID = true, RAID_LEADER = true, GUILD = true, OFFICER = true },
@@ -2273,6 +2381,16 @@ local function OnAddonMessage(prefix, message, channel, sender)
         -- HandleRxOffAck). Additive/backward-compatible the same way.
         if SB.IsValidSoundID(payload) then
             HandleRxOffAck(payload, sender)
+        end
+    elseif cmd == "IGNOREACK" then
+        -- Same wire shape again ("soundID" only) - a rejection because the
+        -- recipient has US ignored (see HandleIgnoreAck). Additive/
+        -- backward-compatible the same way: an older client that never
+        -- sends this simply never gets counted as ignore-blocked, which is
+        -- the correct fallback (it just looks like an ordinary unreachable
+        -- recipient instead, never a false Ignore claim).
+        if SB.IsValidSoundID(payload) then
+            HandleIgnoreAck(payload, sender)
         end
     elseif cmd == "HELLO" then
         -- Lightweight presence ping (see SendHello below) - reply right
