@@ -271,6 +271,9 @@ local function SanitizeDatabase(db, defaults)
     ui.announcer.alphaHover = ClampNumber(ui.announcer.alphaHover, defaults.ui.announcer.alphaHover, 10, 100)
     ui.layoutLocked = BooleanOr(ui.layoutLocked, defaults.ui.layoutLocked)
 
+    local validPopoutDirections = { AUTO = true, RIGHT = true, LEFT = true, UP = true, DOWN = true }
+    ui.popoutDirection = validPopoutDirections[ui.popoutDirection] and ui.popoutDirection or defaults.ui.popoutDirection
+
     ui.categoryCollapsed = type(ui.categoryCollapsed) == "table" and ui.categoryCollapsed or {}
     for key, value in pairs(ui.categoryCollapsed) do
         if (type(key) ~= "string" and type(key) ~= "number") or value ~= true then

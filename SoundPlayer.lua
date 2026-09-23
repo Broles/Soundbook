@@ -489,7 +489,11 @@ function SB:PlaySound(soundID, source)
     -- received play from HandlePlayCommand) - the single right place to
     -- count both sides of "3 mal selber abgespielt/versendet UND 3 mal
     -- received" without hooking every individual entry point separately.
-    if SB.BumpNewSoundHeardCount then
+    -- source == "test" (e.g. the Announcer icon-drag preview's 10-second
+    -- easter-egg sound - Announcer.lua) is a UI-only exercise of this
+    -- function, never a genuine play - explicitly excluded here so it
+    -- can't inflate a sound's "New" early-expiry counter.
+    if SB.BumpNewSoundHeardCount and source ~= "test" then
         SB:BumpNewSoundHeardCount(soundID, source == "remote" and "received" or "self")
     end
 

@@ -20,12 +20,28 @@ local icon           -- idle/always-visible app icon (a Button, draggable)
 local banner         -- expanding "now playing" content, anchored to icon
 local muteDot        -- small indicator: incoming receive-mute is active
 local raidDot        -- small indicator: raid-admin currently restricts you
--- True while the banner is showing DEMO content (Announcer Size slider,
--- explicit request: "damit ich die Größe besser einschätzen kann") rather
--- than an actual playing sound - see ShowAnnouncerQuickOptions/
--- HideDemoBanner below. Never true at the same time a real sound is
--- displayed (activeDisplays takes priority - see AddDisplay).
+-- Forward-declared (defined further down, alongside the rest of the
+-- drag-preview machinery) so BuildIcon's OnDragStart/OnDragStop - defined
+-- BEFORE that machinery in this file - can call them as plain upvalues,
+-- same forward-reference idiom already used elsewhere in this file.
+local StartIconDragPreview, StopIconDragPreview
+-- True while the banner is showing PREVIEW content - either the Announcer
+-- Size slider's resize preview (ShowDemoBanner/HideDemoBanner below) or
+-- the icon-drag preview (StartIconDragPreview/StopIconDragPreview) -
+-- rather than an actual playing sound. Unlike before 3.0's Popout
+-- Direction work, a real sound starting mid-preview no longer force-kills
+-- either flag (explicit requirement: "real Announcer event must not
+-- overwrite preview positioning/content during active configuration") -
+-- RenderPrimary/CollapseToIdle themselves check IsPreviewActive() below
+-- and simply skip repainting the banner while either preview owns it;
+-- activeDisplays keeps tracking real playback normally underneath, and
+-- RestoreRealAnnouncerState() catches it up the moment the preview ends.
 local demoBannerActive = false
+local dragPreviewActive = false
+
+local function IsPreviewActive()
+    return demoBannerActive or dragPreviewActive
+end
 
 -- The most recently seen PLAYBACK_PROGRESS_STARTED, consumed by the very
 -- next LOCAL_SOUND_PLAYED/REMOTE_SOUND_PLAYED for the SAME soundID. These
@@ -120,11 +136,13 @@ local function BuildIcon()
     icon:SetScript("OnDragStart", function(self)
         if SB.db.ui.layoutLocked then return end
         self:StartMoving()
+        StartIconDragPreview()
     end)
     icon:SetScript("OnDragStop", function(self)
         self:StopMovingOrSizing()
         local point, _, relPoint, x, y = self:GetPoint()
         SB.db.ui.announcer.pos = { point = point, relPoint = relPoint, x = x, y = y }
+        StopIconDragPreview()
     end)
 
     -- Explicit request - rebound:
@@ -189,6 +207,7 @@ local function BuildBanner()
     banner:SetHeight(48)
     banner:SetFrameStrata("MEDIUM")
     banner:EnableMouse(true)
+    banner:SetClampedToScreen(true)
     banner:Hide()
 
     banner:SetBackdrop({
@@ -308,20 +327,71 @@ local function BuildBanner()
 end
 
 ------------------------------------------------------------------------
--- Layout: banner expands away from whichever screen edge the icon is
--- closest to, so it always stays fully on-screen (3.0 spec section 15).
--- The icon's own anchor is never touched by this.
+-- Popout Direction - ONE shared resolver + positioner, used by every
+-- surface that opens off the permanent Soundbook icon (this banner, the
+-- Favourites popup, and Quick Options below) so they can never
+-- independently pick contradictory sides for the same icon position -
+-- explicit requirement. SB.db.ui.popoutDirection is "AUTO" or one of the
+-- four manual sides; Quick Options exposes it as a dropdown.
 ------------------------------------------------------------------------
 
-local function LayoutBanner()
-    banner:ClearAllPoints()
-    local iconCenterX = icon:GetCenter() or 0
+local POPOUT_GAP = 4
+
+-- Automatic mode's screen-region model: horizontal A(0-40%)/B(40-60%)/
+-- C(60-100%), vertical 1(top half)/2(bottom half), classified off the
+-- ANCHOR's own current CENTER point in UIParent's coordinate space (never
+-- a hardcoded resolution, so this stays correct at any resolution/UI
+-- scale). A1/A2->RIGHT, C1/C2->LEFT, B1->DOWN, B2->UP: this prioritizes
+-- horizontal expansion across most of the screen, and only opens
+-- vertically while the icon sits in the narrow centre band - the design
+-- goal is "always opens toward the usable centre of the screen", not
+-- "always opens away from the nearest edge".
+function SB.ResolvePopoutDirection(anchorFrame)
+    local mode = SB.db.ui.popoutDirection or "AUTO"
+    if mode ~= "AUTO" then return mode end
+
     local screenW = UIParent:GetWidth() or 0
-    if (screenW - iconCenterX) < (BANNER_W + 16) then
-        banner:SetPoint("RIGHT", icon, "LEFT", -6, 0)
+    local screenH = UIParent:GetHeight() or 0
+    local cx, cy = anchorFrame:GetCenter()
+    if screenW <= 0 or screenH <= 0 or not cx or not cy then return "RIGHT" end
+
+    local xPct = cx / screenW
+    -- WoW's coordinate origin is bottom-up, so a larger cy IS the upper
+    -- half - no separate flip needed to match the user-facing diagram.
+    local yPct = cy / screenH
+
+    if xPct < 0.4 then
+        return "RIGHT" -- region A
+    elseif xPct > 0.6 then
+        return "LEFT" -- region C
     else
-        banner:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+        return (yPct > 0.5) and "DOWN" or "UP" -- region B: 1 (top) / 2 (bottom)
     end
+end
+
+-- Anchors `frame` to `anchorFrame` (always the icon, or the icon-shaped
+-- preview during a drag) for the given resolved direction. Every
+-- direction's anchor pair is chosen so WoW's own point resolution centres
+-- the popup on the icon for free (LEFT/RIGHT points are their edge's
+-- vertical centre, TOP/BOTTOM points are their edge's horizontal centre) -
+-- no separate centring math needed. SetClampedToScreen(true) on every
+-- surface this is used for keeps a manual direction from ever placing a
+-- popup off-screen, without silently switching it to a different side.
+function SB.PositionRelativeToIcon(frame, anchorFrame, direction)
+    frame:ClearAllPoints()
+    if direction == "LEFT" then
+        frame:SetPoint("RIGHT", anchorFrame, "LEFT", -POPOUT_GAP, 0)
+    elseif direction == "UP" then
+        frame:SetPoint("BOTTOM", anchorFrame, "TOP", 0, POPOUT_GAP)
+    elseif direction == "DOWN" then
+        frame:SetPoint("TOP", anchorFrame, "BOTTOM", 0, -POPOUT_GAP)
+    else -- "RIGHT", and the fallback for any unrecognised stored value
+        frame:SetPoint("LEFT", anchorFrame, "RIGHT", POPOUT_GAP, 0)
+    end
+end
+
+local function LayoutBanner()
+    SB.PositionRelativeToIcon(banner, icon, SB.ResolvePopoutDirection(icon))
 end
 
 ------------------------------------------------------------------------
@@ -345,6 +415,12 @@ local function ValidDuration(d)
 end
 
 local function RenderPrimary()
+    -- A resize/drag preview currently owns the banner's content and
+    -- position - a real playback event must not overwrite it (explicit
+    -- requirement). activeDisplays itself was already updated normally by
+    -- the caller; RestoreRealAnnouncerState() repaints from it once the
+    -- preview ends.
+    if IsPreviewActive() then return end
     local entry = activeDisplays[#activeDisplays]
     if not entry then return end
 
@@ -396,7 +472,13 @@ local function RenderPrimary()
         banner.fill:SetWidth(0.01)
         progressTicker = C_Timer.NewTicker(0.1, function()
             local top = activeDisplays[#activeDisplays]
+            -- This self-termination check runs regardless of any active
+            -- preview, so a real sound that finishes mid-preview still
+            -- correctly stops its own ticker instead of leaking it - only
+            -- the VISUAL update below is skipped while a preview owns the
+            -- banner (same reasoning as RenderPrimary's own guard above).
             if not top or top ~= entry then StopProgressTicker(); return end
+            if IsPreviewActive() then return end
             local elapsed = GetTime() - (entry.startedAt or GetTime())
             if elapsed ~= elapsed then elapsed = 0 end -- NaN guard
             local displayElapsed = math.max(0, math.min(elapsed, entry.duration))
@@ -408,6 +490,9 @@ local function RenderPrimary()
 end
 
 local function CollapseToIdle()
+    -- Same reasoning as RenderPrimary above - never hide/fade the banner
+    -- out from under an active preview just because real playback ended.
+    if IsPreviewActive() then return end
     StopProgressTicker()
     banner.soundbookSoundID = nil
     if UIFrameFadeOut then
@@ -424,6 +509,22 @@ local function ScheduleCollapse()
         collapseTimer = nil
         if #activeDisplays == 0 then CollapseToIdle() end
     end)
+end
+
+-- Called the instant either preview ends (resize slider released, icon
+-- drag dropped) - repaints the banner from whatever activeDisplays
+-- genuinely holds right now (a real sound may well have started or ended
+-- while the preview was up), or collapses it if there's nothing real to
+-- show. Never loses real playback backend state: activeDisplays was kept
+-- accurate throughout by AddDisplay/PLAYBACK_PROGRESS_ENDED regardless of
+-- any preview being active.
+local function RestoreRealAnnouncerState()
+    if IsPreviewActive() or not banner then return end
+    if #activeDisplays > 0 then
+        RenderPrimary()
+    else
+        CollapseToIdle()
+    end
 end
 
 ------------------------------------------------------------------------
@@ -462,7 +563,6 @@ local function AddDisplay(soundID, sender, channelLabel)
     -- display at all while the HUD itself is hidden (a fresh install
     -- defaults to hidden - see Core.lua's "safer first start").
     if not icon or not icon:IsShown() then return end
-    demoBannerActive = false -- a real sound always wins over the size-preview demo
     BuildBanner()
     local start = pendingStart
     local handle, duration, startedAt = nil, nil, GetTime()
@@ -546,26 +646,41 @@ SB:On("RECEIVE_MUTE_CHANGED", RefreshIndicators)
 
 local quickMenu
 
--- Explicit request: while adjusting the Announcer Size slider, show a
--- demo "now playing" banner (placeholder name/sender/bar/time) so the
--- player can actually judge the size - only while no REAL sound is
--- currently displayed there (never overrides genuine playback).
-local function ShowDemoBanner()
-    if #activeDisplays > 0 then return end
+-- Shared preview content for BOTH the Announcer Size slider's resize
+-- preview and the icon-drag preview (explicit requirement: "the same
+-- populated Announcer preview... do not create a second fake
+-- implementation" - one content function, reusing the REAL banner frame
+-- and all its real elements, rather than a second mocked-up layout).
+-- Deliberately fixed/deterministic (never real user data) - see the
+-- "must not pollute user data" requirement in SB:PlaySound's own "test"
+-- source handling.
+local function PopulatePreviewBanner()
     BuildBanner()
-    demoBannerActive = true
     banner.soundbookSoundID = nil
-    banner.slot.texture:SetTexture(SB.DEFAULT_ICON)
-    banner.nameText:SetText("Sound Name")
+    banner.slot.texture:SetTexture(SB.APP_ICON or SB.DEFAULT_ICON)
+    banner.nameText:SetText("Announcer Preview")
     banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
-    local selfColor = SB.GetChannelColor("Self")
-    banner.subText:SetText(string.format("You |cff%s- Self|r", selfColor.hex))
-    banner.timeText:SetText("2.0 / 2.0")
+    local color = SB.GetChannelColor("Raid")
+    banner.subText:SetText(string.format("Preview |cff%s- Raid|r", color.hex))
+    banner.fill:SetVertexColor(color.r, color.g, color.b, 1)
     banner.overlapBadge:SetText("")
     banner.track:Show()
     banner.fill:Show()
+end
+
+-- Explicit request: while adjusting the Announcer Size slider, show a
+-- populated preview banner so the player can actually judge the size and
+-- layout. No longer declines just because a real sound happens to be
+-- playing (explicit requirement, section 21) - RenderPrimary/
+-- CollapseToIdle themselves now defer to whichever preview is active,
+-- and RestoreRealAnnouncerState catches the banner back up the instant
+-- this ends (HideDemoBanner below).
+local function ShowDemoBanner()
+    demoBannerActive = true
+    PopulatePreviewBanner()
     local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2)
     banner.fill:SetWidth(trackW * 0.6)
+    banner.timeText:SetText("6.0 / 10.0")
     LayoutBanner()
     banner:Show()
     icon:SetAlpha(1)
@@ -574,7 +689,103 @@ end
 local function HideDemoBanner()
     if not demoBannerActive then return end
     demoBannerActive = false
-    if #activeDisplays == 0 then CollapseToIdle() end
+    RestoreRealAnnouncerState()
+end
+
+------------------------------------------------------------------------
+-- Icon-drag preview - explicit request: while Popout Direction is
+-- Automatic and the player drags the Soundbook icon, show the same
+-- populated Announcer preview as above, repositioning live as the icon
+-- crosses screen regions (A/B/C, 1/2 - see SB.ResolvePopoutDirection), so
+-- the automatic placement rule is understandable just by watching it
+-- happen. Also carries the deliberate 10-second easter egg (section 16):
+-- while the preview's own progress bar completes a 10-second cycle, one
+-- random LOCAL-ONLY sound plays and the cycle restarts, for as long as
+-- the drag continues.
+------------------------------------------------------------------------
+
+local DRAG_SOUND_CYCLE = 10.0
+local dragPreviewElapsed = 0
+local dragCandidateSounds -- built lazily, once per drag session (never rebuilt mid-drag)
+
+-- Valid, currently playable candidates for the easter egg: excludes
+-- muted and Hidden sounds (SB.db.sounds[id].hidden - UI.lua's own "Hide"
+-- category flag) so the joke can't surface something the player
+-- deliberately buried or silenced. Built once per drag (StartIconDragPreview
+-- clears the cache), not rebuilt every 10-second cycle.
+local function BuildDragCandidateSounds()
+    local list = {}
+    for soundID in pairs(SB.registry) do
+        local saved = SB.db.sounds and SB.db.sounds[soundID]
+        if not (saved and (saved.muted or saved.hidden)) then
+            list[#list + 1] = soundID
+        end
+    end
+    return list
+end
+
+local function PlayRandomLocalDragSound()
+    dragCandidateSounds = dragCandidateSounds or BuildDragCandidateSounds()
+    if #dragCandidateSounds == 0 then return end
+    local soundID = dragCandidateSounds[math.random(#dragCandidateSounds)]
+    -- SB:PlaySound(soundID, "test") directly - deliberately NEVER
+    -- SB:TriggerSound. TriggerSound is what dispatches to the Output
+    -- Rail/broadcasts to Guild/Raid/Friends/a direct target; PlaySound on
+    -- its own only ever plays audio on THIS client, full stop - no
+    -- addon message, no ACK, no History entry, no routing. The "test"
+    -- source additionally excludes it from the New-Sound-heard counter
+    -- (SoundPlayer.lua). This is a UI easter egg, never multiplayer
+    -- behaviour.
+    SB:PlaySound(soundID, "test")
+end
+
+-- Runs every frame ONLY while the icon is actively being dragged (section
+-- 24 explicitly allows OnUpdate here: "the user is actively moving the
+-- frame"); StopIconDragPreview below unconditionally detaches it the
+-- instant the drag ends. Recomputing the resolved direction and
+-- repositioning every tick is deliberately simple rather than diffing
+-- against the last-known region - both are O(1) and this is exactly the
+-- sanctioned exception to "no idle polling" (there is no idle polling:
+-- this handler exists for zero frames outside an active drag).
+local function DragPreviewOnUpdate(_, elapsed)
+    LayoutBanner()
+
+    dragPreviewElapsed = dragPreviewElapsed + elapsed
+    local pct = math.min(1, dragPreviewElapsed / DRAG_SOUND_CYCLE)
+    local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2)
+    banner.fill:SetWidth(math.max(0.01, trackW * pct))
+    banner.timeText:SetText(string.format("%s / %s", FormatTime(dragPreviewElapsed), FormatTime(DRAG_SOUND_CYCLE)))
+
+    if dragPreviewElapsed >= DRAG_SOUND_CYCLE then
+        dragPreviewElapsed = 0
+        PlayRandomLocalDragSound()
+    end
+end
+
+function StartIconDragPreview()
+    dragPreviewActive = true
+    dragPreviewElapsed = 0
+    dragCandidateSounds = nil
+    PopulatePreviewBanner()
+    LayoutBanner()
+    banner:Show()
+    icon:SetAlpha(1)
+    icon:SetScript("OnUpdate", DragPreviewOnUpdate)
+end
+
+-- No delayed callback (C_Timer.After) is used anywhere in this feature -
+-- the entire 10-second cycle runs synchronously inside DragPreviewOnUpdate,
+-- which this unconditionally detaches before this function returns. That
+-- makes "a sound fires after the mouse was already released" structurally
+-- impossible (section 20's explicit edge case) without needing a
+-- drag-session token/generation ID - there is no async window for a stale
+-- callback to fire from in the first place.
+function StopIconDragPreview()
+    if not dragPreviewActive then return end
+    dragPreviewActive = false
+    icon:SetScript("OnUpdate", nil)
+    dragCandidateSounds = nil
+    RestoreRealAnnouncerState()
 end
 
 ------------------------------------------------------------------------
@@ -794,8 +1005,8 @@ end
 function SB.ShowFavMenu(anchor)
     BuildFavMenu()
     PopulateFavMenu()
-    favMenu:ClearAllPoints()
-    favMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
+    favMenu.__anchor = anchor
+    SB.PositionRelativeToIcon(favMenu, anchor, SB.ResolvePopoutDirection(anchor))
     favMenu.catcher:Show()
     favMenu:Show()
 end
@@ -855,6 +1066,36 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             SB:Fire("TOGGLE_MAIN_UI")
         end)
 
+        -- Popout Direction - explicit request: one shared setting for
+        -- every surface that opens off the icon (this menu, Favourites,
+        -- the Announcer banner itself and its previews - see
+        -- SB.ResolvePopoutDirection/SB.PositionRelativeToIcon above).
+        -- "Automatic" resolves from the icon's current screen region every
+        -- time it's needed; the other four pin one side regardless of
+        -- where the icon sits.
+        local dirLabel = quickMenu:CreateFontString(nil, "OVERLAY")
+        dirLabel:SetFontObject(SB.Fonts.HighlightSmall)
+        dirLabel:SetPoint("TOP", rows[#rows], "BOTTOM", 0, -12)
+        dirLabel:SetText("Popout Direction")
+        dirLabel:SetTextColor(unpack(Theme.TEXT_DIM))
+
+        local dirDropdown = Theme.CreateDropdown(quickMenu, 160, 22)
+        dirDropdown:SetOptions({
+            { text = "Automatic", value = "AUTO" },
+            { text = "Right", value = "RIGHT" },
+            { text = "Left", value = "LEFT" },
+            { text = "Up", value = "UP" },
+            { text = "Down", value = "DOWN" },
+        })
+        dirDropdown:SetOnChange(function(value)
+            SB.db.ui.popoutDirection = value
+            -- Explicit requirement: reposition any already-open anchored
+            -- surface immediately, no /reload needed.
+            SB:RefreshPopoutPositions()
+        end)
+        dirDropdown.button:SetPoint("TOP", dirLabel, "BOTTOM", 0, -6)
+        quickMenu.dirDropdown = dirDropdown
+
         -- Announcer size - explicit request ("irgendwie clever größer/
         -- kleiner machen können, aktuell zu klein"). SetScale on both the
         -- idle icon and the active banner scales everything about them
@@ -862,50 +1103,59 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- than this menu trying to independently resize a dozen elements.
         local sizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         sizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
-        sizeLabel:SetPoint("TOP", rows[#rows], "BOTTOM", 0, -12)
+        sizeLabel:SetPoint("TOP", dirDropdown.button, "BOTTOM", 0, -12)
         sizeLabel:SetText("Announcer Size")
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
         -- The value/label update live (Theme.CreateSlider's own Refresh),
-        -- but the icon/banner only actually rescale on mouse-up - explicit
-        -- report: this menu is itself anchored to the icon, so rescaling
-        -- it on every drag tick moved the icon (and this menu right along
-        -- with it) under the player's cursor. Resolving the visual resize
-        -- once, on release, keeps this menu's own live anchor to the icon
-        -- both simple and always correct instead of trying to out-guess
-        -- where a rescaling icon's edge will land.
+        -- and now the PREVIEW banner's own scale does too (explicit
+        -- requirement, section 15 - "resize reflects layout live") - but
+        -- the real icon/banner still only actually rescale on mouse-up.
+        -- This is NOT the same jitter bug this menu's own anchor hit
+        -- before: THIS menu is anchored to the icon (which never rescales
+        -- live), while the preview banner is a separate frame the mouse
+        -- isn't over and isn't housing the slider, so rescaling IT live
+        -- has nothing to jitter.
         local sizeSlider = Theme.CreateSlider(quickMenu, 70, 160, 5, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
+            if demoBannerActive and banner then banner:SetScale(value / 100) end
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
         quickMenu.sizeSlider = sizeSlider
 
-        quickMenu:SetSize(184, #rows * 26 + 66)
+        quickMenu:SetSize(184, #rows * 26 + 66 + 58)
     end
 
     quickMenu.sizeSlider:SetValue(math.floor((SB.db.ui.announcer.scale or 1.0) * 100 + 0.5))
+    quickMenu.dirDropdown:SetValue(SB.db.ui.popoutDirection or "AUTO")
 
     quickMenu.muteBtn.label:SetText(SB:IsReceiveMuted() and "Unmute Incoming" or "Mute Incoming")
     quickMenu.lockBtn.label:SetText(SB.db.ui.layoutLocked and "Unlock Interface" or "Lock Interface")
 
-    -- A plain live anchor to anchor's own BOTTOM - explicit report on an
-    -- earlier attempt at a scale-independent snapshot (manual GetLeft/
-    -- GetBottom math): it opened "way too far from the icon". WoW's own
-    -- anchor resolution always places this correctly relative to the
-    -- icon's CURRENT rendered position/scale, which manual coordinate
-    -- math evidently didn't reproduce correctly. The Announcer Size
-    -- slider's jitter (this menu moving while its own icon rescales
-    -- live) is now fixed at the source instead - the icon/banner only
-    -- actually rescale on the slider's mouse-up, not on every drag tick,
-    -- so this menu has nothing moving under it while being dragged.
-    -- SetClampedToScreen(true) above keeps it fully on-screen regardless
-    -- of which edge the icon is near.
-    quickMenu:ClearAllPoints()
-    quickMenu:SetPoint("TOP", anchor, "BOTTOM", 0, -4)
+    quickMenu.__anchor = anchor
+    SB.PositionRelativeToIcon(quickMenu, anchor, SB.ResolvePopoutDirection(anchor))
     quickMenu.catcher:Show()
     quickMenu:Show()
     ShowDemoBanner()
+end
+
+-- Explicit requirement (section 22): if Popout Direction changes while
+-- Favourites/Quick Options/the Announcer banner are currently visible,
+-- reposition them immediately rather than waiting for the next open/
+-- reload. Each surface's own anchor is always the icon in practice, but
+-- __anchor is tracked (not hardcoded to `icon`) so this stays correct if
+-- that ever changes.
+function SB:RefreshPopoutPositions()
+    if favMenu and favMenu:IsShown() and favMenu.__anchor then
+        SB.PositionRelativeToIcon(favMenu, favMenu.__anchor, SB.ResolvePopoutDirection(favMenu.__anchor))
+    end
+    if quickMenu and quickMenu:IsShown() and quickMenu.__anchor then
+        SB.PositionRelativeToIcon(quickMenu, quickMenu.__anchor, SB.ResolvePopoutDirection(quickMenu.__anchor))
+    end
+    if banner and banner:IsShown() then
+        LayoutBanner()
+    end
 end
 
 ------------------------------------------------------------------------

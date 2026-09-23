@@ -727,6 +727,16 @@ local function GetDefaultDB()
             -- the old Mini window's lock); this one is meant to eventually
             -- also cover the 3.0 Main shell once it exists.
             layoutLocked = false,
+            -- Popout Direction (explicit request) - one shared setting for
+            -- every surface that opens off the permanent Soundbook icon
+            -- (Favourites, Quick Options, the Announcer banner itself, and
+            -- its drag/resize preview - see Announcer.lua's
+            -- SB.ResolvePopoutDirection/SB.PositionRelativeToIcon), so they
+            -- can never independently pick contradictory sides for the same
+            -- icon position. "AUTO" resolves from the icon's current screen
+            -- region every time it's needed; the other four values pin one
+            -- side regardless of where the icon sits.
+            popoutDirection = "AUTO", -- "AUTO" | "RIGHT" | "LEFT" | "UP" | "DOWN"
             -- [categoryKey] = true/false, keyed by the STABLE category
             -- identifier (SB.CATEGORIES entries / "favourites" / private
             -- tab name), never a display name - see 3.0 spec section 85.
