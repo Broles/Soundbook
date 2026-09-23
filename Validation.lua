@@ -114,10 +114,11 @@ end
 function SB.IsValidOutputTarget(value)
     if value == "ALL" or value == "SELF" or value == "FRIENDS"
         or value == "GUILD" or value == "PARTY" or value == "RAID"
-        -- 3.0 Output Rail individual-recipient subset (UI.lua's flyouts) -
-        -- the actual recipient list lives in SB.db.ui.outputRail.recipients,
+        -- Right-side broadcast tabs' combined recipient set (UI.lua's
+        -- Guild/Raid/Friends multi-select flyouts) - the actual selection
+        -- lives in SB.db.ui.outputRail.selected (one array per bucket),
         -- never encoded into this value itself; see Communication.lua's
-        -- SB:DispatchDefaultOutput.
+        -- SB.ComputeEffectiveRecipients/SB:DispatchDefaultOutput.
         or value == "SUBSET" then
         return true
     end

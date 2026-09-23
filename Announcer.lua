@@ -802,37 +802,77 @@ end
 
 local favMenu
 
--- Mirrors the Output Rail's own "P/R shows whichever you're actually in,
--- (N) is the real reachable count" language (UI.lua's RailGroupLabel/
--- ConfigureHeader) so this menu's title always says the same thing the
--- Rail itself would show for the current selection.
-local function GetSendTargetLabel()
-    local target = SB.db.settings.defaultOutputTarget or "ALL"
-    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
-    if target == "ALL" then
-        return "Send Sound to All:"
-    elseif target == "SELF" then
-        return "Send Sound to Self:"
-    elseif target == "SUBSET" then
-        local rail = SB.db.ui.outputRail
-        local mode = rail and rail.mode
-        local count = rail and #(rail.recipients or {}) or 0
-        local label = (mode == "GUILD" and "Guild") or (mode == "FRIENDS" and "Friends")
-            or (mode == "RAID" and (IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party")))
-            or "Selected"
-        return string.format("Send Sound to %s (%d):", label, count)
-    elseif target == "GUILD" then
-        return string.format("Send Sound to Guild (%d):", reachable and #reachable.GUILD or 0)
-    elseif target == "FRIENDS" then
-        return string.format("Send Sound to Friends (%d):", reachable and #reachable.FRIENDS or 0)
-    elseif target == "RAID" or target == "PARTY" then
-        local label = IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party")
-        return string.format("Send Sound to %s (%d):", label, reachable and #reachable.RAID or 0)
-    elseif type(target) == "string" and target:match("^PLAYER:") then
-        local name = target:match("^PLAYER:(.+)$")
-        return string.format("Send Sound to %s:", (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name)
+-- Describes the right-side broadcast tabs' CURRENT effective selection as
+-- a short phrase ("Guild (10)", "selected Guild members (4)", "6 people",
+-- ...) plus an optional secondary breakdown line ("Guild (4) - Friends
+-- (2)") for the multi-source case - explicit requirement, preferred over
+-- one long "Guild and Friends and Raid..." sentence. `isLocal` is true for
+-- Self Only AND for "nothing selected at all" (same practical effect -
+-- see SB:ResolveOutputTarget's own step-4 fallback, Communication.lua).
+local function DescribeEffectiveTargetPhrase()
+    local rail = SB.db.ui.outputRail
+    if rail.selfOnly then return "locally", nil, true end
+
+    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers() or { GUILD = {}, RAID = {}, FRIENDS = {} }
+    local buckets = {}
+    for _, key in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        local sel = (rail.selected and rail.selected[key]) or {}
+        if #sel > 0 then
+            local label = (key == "RAID") and (IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party"))
+                or (key == "GUILD" and "Guild") or "Friends"
+            buckets[#buckets + 1] = { label = label, count = #sel, eligible = #(reachable[key] or {}) }
+        end
     end
-    return "Send Sound:"
+    if #buckets == 0 then return "locally", nil, true end
+
+    if #buckets == 1 then
+        local b = buckets[1]
+        if b.count == b.eligible then
+            return string.format("%s (%d)", b.label, b.count), nil, false
+        end
+        return string.format("selected %s members (%d)", b.label, b.count), nil, false
+    end
+
+    local total = #(SB.ComputeEffectiveRecipients and SB.ComputeEffectiveRecipients() or {})
+    local parts = {}
+    for _, b in ipairs(buckets) do parts[#parts + 1] = string.format("%s (%d)", b.label, b.count) end
+    -- Plain ASCII separator, not a Unicode middle dot - see this file's
+    -- other glyph-safety comments (WoW's bundled fonts don't reliably
+    -- cover every codepoint).
+    return string.format("%d people", total), table.concat(parts, "  -  "), false
+end
+
+-- Section 20: a per-sound "Default Output" override on one of the
+-- VISIBLE Favourites would make a header promising "Send sound to X:"
+-- actively misleading for that one sound - it won't actually go there.
+-- Switches to "Default destination: X" (describing what applies to
+-- everything WITHOUT its own override) whenever at least one visible
+-- Favourite has one; GetOrCreateFavMenuRow below adds a small routing
+-- badge on that sound's own tile so it's clear WHICH one differs.
+local function AnyVisibleFavouriteHasOverride()
+    local favourites = SB.GetFavourites and SB:GetFavourites() or {}
+    for slot = 1, SB.MAX_FAVOURITES do
+        local soundID = favourites[slot]
+        if soundID then
+            local saved = SB.db.sounds and SB.db.sounds[soundID]
+            if saved and saved.outputOverride and saved.outputOverride ~= "ALL" then
+                return true
+            end
+        end
+    end
+    return false
+end
+
+local function GetFavMenuHeaderText()
+    local phrase, secondary, isLocal = DescribeEffectiveTargetPhrase()
+    local overridesPresent = AnyVisibleFavouriteHasOverride()
+    local primary
+    if overridesPresent then
+        primary = isLocal and "Default destination: Play sound locally" or ("Default destination: " .. phrase)
+    else
+        primary = isLocal and "Play sound locally:" or ("Send sound to " .. phrase .. ":")
+    end
+    return primary, secondary
 end
 
 -- Up to 8 rows visible before scrolling (24px each) - "wenn zu lang dann
@@ -872,6 +912,17 @@ local function GetOrCreateFavMenuRow(index)
     icon:SetPoint("LEFT", 4, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     row.icon = icon
+    -- Small routing badge (section 20) - only shown on a sound with its
+    -- OWN per-sound "Default Output" override, so it's clear which
+    -- Favourite(s) don't follow the header's "Send sound to X:" summary.
+    -- Same colour source as the Library's own override tint
+    -- (SB.SoundOutputOverrideColor, Communication.lua).
+    local overrideDot = row:CreateTexture(nil, "OVERLAY")
+    overrideDot:SetSize(7, 7)
+    overrideDot:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 1, 1)
+    overrideDot:SetTexture("Interface\\Buttons\\WHITE8X8")
+    overrideDot:Hide()
+    row.overrideDot = overrideDot
     local text = row:CreateFontString(nil, "OVERLAY")
     text:SetFontObject(SB.Fonts.HighlightSmall)
     text:SetPoint("LEFT", icon, "RIGHT", 5, 0)
@@ -884,9 +935,16 @@ local function GetOrCreateFavMenuRow(index)
         favMenu:Hide()
     end)
     row:SetScript("OnEnter", function(self)
-        if self.hotkey and self.hotkey ~= "" then
+        local saved = self.soundID and SB.db.sounds and SB.db.sounds[self.soundID]
+        local override = saved and saved.outputOverride and saved.outputOverride ~= "ALL" and saved.outputOverride
+        if (self.hotkey and self.hotkey ~= "") or override then
             GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-            GameTooltip:AddLine(self.hotkey, 1, 1, 1)
+            if self.hotkey and self.hotkey ~= "" then GameTooltip:AddLine(self.hotkey, 1, 1, 1) end
+            if override then
+                local oc = SB.SoundOutputOverrideColor and SB.SoundOutputOverrideColor(self.soundID)
+                local label = override:match("^PLAYER:(.+)$") or override
+                if oc then GameTooltip:AddLine("Default Output: " .. label, oc.r, oc.g, oc.b) end
+            end
             GameTooltip:Show()
         end
     end)
@@ -925,6 +983,18 @@ local function BuildFavMenu()
     favMenu.title:SetWordWrap(false)
     favMenu.title:SetTextColor(unpack(SB.Theme.GOLD))
 
+    -- Secondary per-source breakdown line ("Guild (4) - Friends (2)") -
+    -- only shown for a multi-source selection (DescribeEffectiveTargetPhrase
+    -- above), preferred over folding everything into one long title line.
+    favMenu.subtitle = favMenu:CreateFontString(nil, "OVERLAY")
+    favMenu.subtitle:SetFontObject(SB.Fonts.DisableSmall)
+    favMenu.subtitle:SetPoint("TOPLEFT", favMenu.title, "BOTTOMLEFT", 0, -2)
+    favMenu.subtitle:SetPoint("RIGHT", -10, 0)
+    favMenu.subtitle:SetJustifyH("LEFT")
+    favMenu.subtitle:SetWordWrap(false)
+    favMenu.subtitle:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    favMenu.subtitle:Hide()
+
     favMenu.emptyText = favMenu:CreateFontString(nil, "OVERLAY")
     favMenu.emptyText:SetFontObject(SB.Fonts.DisableSmall)
     favMenu.emptyText:SetPoint("TOPLEFT", 10, -32)
@@ -954,7 +1024,16 @@ local function BuildFavMenu()
 end
 
 local function PopulateFavMenu()
-    favMenu.title:SetText(GetSendTargetLabel())
+    local primary, secondary = GetFavMenuHeaderText()
+    favMenu.title:SetText(primary)
+    favMenu.subtitle:SetShown(secondary ~= nil)
+    if secondary then favMenu.subtitle:SetText(secondary) end
+
+    -- Extra headroom when the secondary breakdown line is showing - same
+    -- "measure the real rendered height, don't guess a fixed offset"
+    -- approach the old Output flyout's own subtitle used.
+    local subtitleH = secondary and ((favMenu.subtitle:GetHeight() or 0) + 2) or 0
+    local topOffset = 30 + subtitleH
 
     -- Grid width/columns first, everything below positions against it.
     local columns = GetFavMenuColumns()
@@ -962,6 +1041,9 @@ local function PopulateFavMenu()
     local gridW = columns * colW
     favMenu:SetWidth(gridW + 8)
     favMenu.scroll.content:SetWidth(gridW)
+    favMenu.scroll.scroll:ClearAllPoints()
+    favMenu.scroll.scroll:SetPoint("TOPLEFT", 4, -topOffset)
+    favMenu.scroll.scroll:SetPoint("BOTTOMRIGHT", -4, 8)
 
     local favourites = SB.GetFavourites and SB:GetFavourites() or {}
     local shown = 0
@@ -980,11 +1062,20 @@ local function PopulateFavMenu()
             row.icon:SetTexture(SB:GetSoundIcon(soundID))
             row.text:SetText(SB:GetSoundDisplayName(soundID))
             row.hotkey = (SB.GetFavouriteHotkeyLabel and SB:GetFavouriteHotkeyLabel(slot)) or ""
+            local overrideColor = SB.SoundOutputOverrideColor and SB.SoundOutputOverrideColor(soundID)
+            if overrideColor then
+                row.overrideDot:SetVertexColor(overrideColor.r, overrideColor.g, overrideColor.b, 1)
+                row.overrideDot:Show()
+            else
+                row.overrideDot:Hide()
+            end
             row:Show()
         end
     end
     for i = shown + 1, #favMenu.rows do favMenu.rows[i]:Hide() end
 
+    favMenu.emptyText:ClearAllPoints()
+    favMenu.emptyText:SetPoint("TOPLEFT", 10, -topOffset - 2)
     favMenu.emptyText:SetShown(shown == 0)
     local totalRows = math.ceil(shown / columns)
     favMenu.scroll.content:SetHeight(math.max(1, totalRows * FAV_MENU_ROW_H))
@@ -994,7 +1085,7 @@ local function PopulateFavMenu()
     favMenu.scroll.UpdateThumb()
 
     local titleH = (shown == 0) and 46 or 24
-    favMenu:SetHeight(30 + math.max(titleH - 22, visibleH == 0 and 24 or visibleH) + 10)
+    favMenu:SetHeight(topOffset + math.max(titleH - 22, visibleH == 0 and 24 or visibleH) + 10)
 end
 
 -- Exposed on SB (not a plain local) - BuildIcon's OnClick handler above
@@ -1010,6 +1101,15 @@ function SB.ShowFavMenu(anchor)
     favMenu.catcher:Show()
     favMenu:Show()
 end
+
+-- Explicit requirement (section 19): if the right-side broadcast tabs'
+-- selection changes while this popup is open, its summary must update
+-- immediately, not on next open/reload. UI.lua fires this after every
+-- change to SB.db.ui.outputRail (select-all, Self Only, individual
+-- flyout checkboxes).
+SB:On("OUTPUT_SELECTION_CHANGED", function()
+    if favMenu and favMenu:IsShown() then PopulateFavMenu() end
+end)
 
 function SB.ShowAnnouncerQuickOptions(anchor)
     if quickMenu and quickMenu:IsShown() then

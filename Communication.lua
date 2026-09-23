@@ -399,6 +399,38 @@ function SB.ComputeReachablePlayers()
     return result
 end
 
+------------------------------------------------------------------------
+-- Right-side broadcast tabs (explicit request) - Guild/Raid/Friends are no
+-- longer a single-choice radio group; any combination of individually
+-- selected recipients may be active at once (SB.db.ui.outputRail.selected,
+-- one array per bucket - see Database.lua's SanitizeDatabase). This is the
+-- ONE central place that unions and deduplicates them, by the same
+-- realm-aware SB.PlayerKey identity SB.ComputeReachablePlayers itself
+-- already uses - both actual sending (SB:DispatchDefaultOutput's SUBSET
+-- branch) and every UI total (the Favourites popup summary - Announcer.lua)
+-- call this, never compute their own count independently, so they can
+-- never drift apart. `selfOnly` short-circuits to an empty set - explicit
+-- requirement: Self Only is exclusive and never combines with a real send.
+------------------------------------------------------------------------
+function SB.ComputeEffectiveRecipients()
+    local rail = SB.db and SB.db.ui and SB.db.ui.outputRail
+    if not rail or rail.selfOnly then return {} end
+    local seen, list = {}, {}
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        local names = rail.selected and rail.selected[bucket]
+        if type(names) == "table" then
+            for _, name in ipairs(names) do
+                local key = SB.PlayerKey and SB.PlayerKey(name)
+                if key and not seen[key] and SB.IsValidPlayerTarget(name) then
+                    seen[key] = true
+                    list[#list + 1] = name
+                end
+            end
+        end
+    end
+    return list
+end
+
 function SB.ComputeOutputTargetOptions()
     local opts = { { text = "All (checked in Settings)", value = "ALL", isHeader = true } }
     local reachable = SB.ComputeReachablePlayers()
@@ -505,22 +537,26 @@ end
 --- use, if `explicitOverride` is nil - priority order:
 ---   1. `explicitOverride` (a macro's own "::Target" suffix, or an
 ---      explicit caller like SendMenu.lua) - unchanged from before.
----   2. NEW - explicit request: the sound's OWN per-sound "Default
----      Output" (Edit Sound window, saved.outputOverride) - distinct from
----      the existing "Macro Output" field, which only ever affects the
----      copied macro text, never a normal click. "ALL" (or unset) counts
----      as "no override" here, same as Settings' own global default does.
----   3. Settings -> Sound Routing -> Default Output Channel
----      (SB.db.settings.defaultOutputTarget).
----   4. "ALL" as the last-resort fallback.
+---   2. The sound's OWN per-sound "Default Output" (Edit Sound window,
+---      saved.outputOverride) - distinct from the existing "Macro Output"
+---      field, which only ever affects the copied macro text, never a
+---      normal click. "ALL" (or unset) counts as "no override" here.
+---   3. The right-side broadcast tabs' current selection
+---      (SB.db.ui.outputRail - see SB.ComputeEffectiveRecipients above).
+---      "ALL"/a single channel/etc no longer come from
+---      SB.db.settings.defaultOutputTarget - that field is now ONLY the
+---      per-sound/macro override vocabulary's "no override" sentinel and
+---      is otherwise unused for the global default.
+---   4. "SELF" (local-only) as the last-resort fallback - nothing
+---      selected on the tabs behaves exactly like Self Only.
 function SB:ResolveOutputTarget(soundID, explicitOverride)
     if explicitOverride and SB.IsValidOutputTarget(explicitOverride) then return explicitOverride end
     local saved = soundID and SB.db and SB.db.sounds and SB.db.sounds[soundID]
     if saved and saved.outputOverride and saved.outputOverride ~= "ALL" and SB.IsValidOutputTarget(saved.outputOverride) then
         return saved.outputOverride
     end
-    local fallback = (SB.db and SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
-    return SB.IsValidOutputTarget(fallback) and fallback or "ALL"
+    if #SB.ComputeEffectiveRecipients() > 0 then return "SUBSET" end
+    return "SELF"
 end
 
 --- The SB.CHANNEL_COLOR entry matching `soundID`'s OWN per-sound "Default
@@ -575,27 +611,21 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
         return
     end
 
-    -- 3.0 Output Rail individual-recipient subset (UI.lua's Guild/Party-
-    -- Raid/Friends flyouts, SB.db.ui.outputRail.recipients) - fanned out
-    -- through the exact same Direct/whisper send every other single-player
-    -- target already uses (SendToPlayerSilent), one message per recipient,
-    -- deduplicated by realm-aware identity. Deliberately NOT a new wire
-    -- command - this is purely a local UI convenience over the existing
-    -- protocol (3.0 spec section 23). Per-recipient friend exemption, same
-    -- as the single-PLAYER branch above - a raid-admin "Mute Sending" still
-    -- lets a subset send through to whichever of its members are mutual
-    -- Friends, blocking only the rest.
+    -- Right-side broadcast tabs' combined recipient set (any mix of
+    -- Guild/Raid/Friends selections, union+deduplicated by
+    -- SB.ComputeEffectiveRecipients above) - fanned out through the exact
+    -- same Direct/whisper send every other single-player target already
+    -- uses (SendToPlayerSilent), one message per unique recipient.
+    -- Deliberately NOT a new wire command - this is purely a local UI
+    -- convenience over the existing protocol. The per-recipient friend
+    -- exemption below is an EXTRA filter on top of ComputeEffectiveRecipients'
+    -- own dedup, same as the single-PLAYER branch above - a raid-admin
+    -- "Mute Sending" still lets the set send through to whichever members
+    -- are mutual Friends, blocking only the rest.
     if target == "SUBSET" then
-        local names = SB.db.ui.outputRail and SB.db.ui.outputRail.recipients
-        if type(names) == "table" then
-            local seen = {}
-            for _, name in ipairs(names) do
-                local key = SB.PlayerKey and SB.PlayerKey(name)
-                if key and not seen[key] and SB.IsValidPlayerTarget(name)
-                    and not (SB:IsSendBlockedByRaid() and not SB:IsFriend(name)) then
-                    seen[key] = true
-                    SendToPlayerSilent(soundID, name)
-                end
+        for _, name in ipairs(SB.ComputeEffectiveRecipients()) do
+            if not (SB:IsSendBlockedByRaid() and not SB:IsFriend(name)) then
+                SendToPlayerSilent(soundID, name)
             end
         end
         return

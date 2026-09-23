@@ -281,30 +281,60 @@ local function SanitizeDatabase(db, defaults)
         end
     end
 
-    -- Output Rail subset selection (UI.lua's Guild/Party-Raid/Friends
-    -- flyouts) - `mode` is which rail bucket the subset was built from
-    -- (purely for re-showing the right flyout/highlight), `recipients` is
-    -- the actual player list SB:DispatchDefaultOutput fans out to.
+    -- Right-side broadcast tabs - a per-bucket MULTI-select recipient set
+    -- (explicit request: Guild/Raid/Friends are no longer a single-choice
+    -- radio group; any combination may be simultaneously active), plus a
+    -- `selfOnly` flag. There is deliberately no separate "entire channel"
+    -- mode flag - "Entire Guild"/"All Friends" is a derived, not stored,
+    -- state: SelectedCount == EligibleCount (see UI.lua's broadcast-tab
+    -- code). SB.ComputeEffectiveRecipients (Communication.lua) is the one
+    -- central place that unions + deduplicates these three lists for
+    -- actual sending and for any UI total - never computed independently.
     ui.outputRail = type(ui.outputRail) == "table" and ui.outputRail or {}
-    if ui.outputRail.mode ~= "GUILD" and ui.outputRail.mode ~= "RAID" and ui.outputRail.mode ~= "FRIENDS" then
-        ui.outputRail.mode = nil
-    end
-    local cleanRecipients, seenRecipients = {}, {}
-    local rawRecipients = type(ui.outputRail.recipients) == "table" and ui.outputRail.recipients or {}
-    for _, name in ipairs(rawRecipients) do
-        local key = SB.PlayerKey and SB.PlayerKey(name)
-        if SB.IsValidPlayerTarget(name) and key and not seenRecipients[key] then
-            seenRecipients[key] = true
-            table.insert(cleanRecipients, name)
+    if type(ui.outputRail.selected) ~= "table" then
+        -- One-time migration from the OLD single-bucket shape (Soundbook
+        -- 3.0's first Output Rail: one `mode` + one flat `recipients`
+        -- list, single-select only) into the new per-bucket shape. Once
+        -- `selected` exists, this branch never runs again for this player.
+        local migrated = { GUILD = {}, RAID = {}, FRIENDS = {} }
+        local oldMode = ui.outputRail.mode
+        local oldRecipients = type(ui.outputRail.recipients) == "table" and ui.outputRail.recipients or {}
+        if migrated[oldMode] then
+            for _, name in ipairs(oldRecipients) do
+                if SB.IsValidPlayerTarget(name) then table.insert(migrated[oldMode], name) end
+            end
         end
+        ui.outputRail.selected = migrated
+        -- The OLD global defaultOutputTarget=="SELF" (safer-first-start,
+        -- or the player's own deliberate choice) maps directly onto the
+        -- new selfOnly flag. Every other old value ("ALL"/"GUILD"/"RAID"/
+        -- "FRIENDS"/"PLAYER:x") deliberately does NOT try to reconstruct
+        -- "everyone reachable" here - guild/friends/group rosters are
+        -- frequently still empty this early in login, so guessing "who
+        -- was reachable" at migration time would be unreliable. Existing
+        -- players with one of those old values simply start with nothing
+        -- selected (safe/local-only) and pick their broadcast targets
+        -- once on the new tabs - the same "never silently resets an
+        -- existing setup to something wrong" principle already applied
+        -- elsewhere, just resolved toward the safer option here.
+        ui.outputRail.selfOnly = (settings.defaultOutputTarget == "SELF")
     end
-    ui.outputRail.recipients = cleanRecipients
-    -- A SUBSET target with nothing left in it (every saved recipient
-    -- pruned above) would otherwise silently send to nobody - fall back to
-    -- the whole group it was built from, or ALL if even that's unknown.
-    if settings.defaultOutputTarget == "SUBSET" and #cleanRecipients == 0 then
-        settings.defaultOutputTarget = ui.outputRail.mode or "ALL"
+    ui.outputRail.mode = nil
+    ui.outputRail.recipients = nil
+    local selected = ui.outputRail.selected
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        local clean, seen = {}, {}
+        local raw = type(selected[bucket]) == "table" and selected[bucket] or {}
+        for _, name in ipairs(raw) do
+            local key = SB.PlayerKey and SB.PlayerKey(name)
+            if SB.IsValidPlayerTarget(name) and key and not seen[key] then
+                seen[key] = true
+                table.insert(clean, name)
+            end
+        end
+        selected[bucket] = clean
     end
+    ui.outputRail.selfOnly = BooleanOr(ui.outputRail.selfOnly, false)
 end
 
 local function ValidateDatabase(db)

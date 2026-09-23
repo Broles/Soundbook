@@ -1334,6 +1334,14 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
             -- since an existing player's current setup must never be
             -- silently reset.
             SB.db.settings.defaultOutputTarget = "SELF"
+            -- Right-side broadcast tabs (this iteration): the GLOBAL default
+            -- is now the Output Rail's own selection, not defaultOutputTarget
+            -- (still kept in sync above for per-sound/macro override
+            -- compatibility, which still reads that field's vocabulary) -
+            -- "safer first start" needs to be expressed there too. Table
+            -- already exists at this point (SB:PrepareDatabase's own
+            -- SanitizeDatabase has already run for a fresh install).
+            SB.db.ui.outputRail.selfOnly = true
             SB.db.ui.favShown = false
             SB.db.ui.announcer.shown = false
         end

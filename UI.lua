@@ -60,14 +60,13 @@ local entryButtons = {}
 local sectionHeaders = {}
 local searchBox
 local searchPlaceholder
-local outputRailButtons = {}
+local broadcastTabButtons = {}
 local emptyHint
 local emptyHintClear
 local settingsPanel
 local isSettingsOpen = false
 local adminPanel
 local isAdminOpen = false
-local adminToolbarBtn
 local lockToolbarBtn
 local selectedSoundID
 local playingSoundID
@@ -1376,8 +1375,8 @@ local function RefreshLibraryImpl()
         tostring(main.libraryScroll and main.libraryScroll.scroll:GetVerticalScroll()))
     local scroll = main.libraryScroll
     -- Defensive floor: the scroll frame's width comes from a multi-hop
-    -- anchor chain (main -> toolbar -> tagFilterBar -> outputRail ->
-    -- libraryScroll.scroll) rather than a single hop off `main` directly
+    -- anchor chain (main -> toolbar -> tagFilterBar -> libraryScroll.
+    -- scroll) rather than a single hop off `main` directly
     -- like the pre-3.0 book used. That chain does resolve synchronously in
     -- practice, but GetWidth() returning 0/nil on the very first layout
     -- pass (before anything has actually been shown once) would otherwise
@@ -1599,28 +1598,26 @@ RefreshLibrary = function()
 end
 
 ------------------------------------------------------------------------
--- Output Rail - ALL / G / P-R / F / NO (3.0 spec section 20). Sets the
--- global Default Output Channel (Communication.lua's
--- SB.db.settings.defaultOutputTarget) directly. Guild/Party-Raid/Friends
--- also open a hover flyout offering the whole group or an individual
--- recipient subset (SB.db.ui.outputRail, fanned out through the existing
--- Direct/whisper transport - see Communication.lua's SB:DispatchDefaultOutput
--- SUBSET branch, never a new wire command).
+-- Right-side broadcast tabs - explicit redesign: attached to the Main
+-- Soundbook's own outer RIGHT edge (like the pre-3.0 2.7.x book's side
+-- tabs), never inside the Library content area. Upper group = broadcast
+-- destinations (All/Guild/Raid-Party/Friends/Self Only); Guild/Raid/
+-- Friends are an independent MULTI-select (any combination may be active
+-- at once - SB.db.ui.outputRail.selected, one array per bucket), not a
+-- single-choice radio group any more. Lower group = utility/navigation
+-- (Admin/Settings), built right after this section (BuildUtilityTabs).
 ------------------------------------------------------------------------
 
--- Explicit request: the Rail should use the same semantic channel colours
--- as everywhere else in the addon (Announcer sender line, SendMenu, ...) -
--- reusing SB.CHANNEL_COLOR (Core.lua) rather than inventing a second set.
-local OUTPUT_RAIL_ENTRIES = {
-    { label = "ALL", value = "ALL", tooltip = "All currently enabled broadcast channels.",
-      color = { 0.92, 0.94, 1.0 } },
-    { label = "G", value = "GUILD", tooltip = "Guild only.", bucket = "GUILD", groupLabel = "Guild",
+local BROADCAST_TABS = {
+    { key = "ALL", label = "All", tooltip = "Select everyone currently reachable across Guild, Raid/Party and Friends.",
+      color = SB.Theme.V3.ARCANE_CYAN },
+    { key = "GUILD", label = "Guild", bucket = "GUILD",
       color = { SB.CHANNEL_COLOR.GUILD.r, SB.CHANNEL_COLOR.GUILD.g, SB.CHANNEL_COLOR.GUILD.b } },
-    { label = "P/R", value = "RAID", tooltip = "Party or Raid, whichever you're currently in.", bucket = "RAID",
+    { key = "RAID", label = "Raid / Party", bucket = "RAID",
       color = { SB.CHANNEL_COLOR.RAID.r, SB.CHANNEL_COLOR.RAID.g, SB.CHANNEL_COLOR.RAID.b } },
-    { label = "F", value = "FRIENDS", tooltip = "Friends only.", bucket = "FRIENDS", groupLabel = "Friends",
+    { key = "FRIENDS", label = "Friends", bucket = "FRIENDS",
       color = { SB.CHANNEL_COLOR.FRIENDS.r, SB.CHANNEL_COLOR.FRIENDS.g, SB.CHANNEL_COLOR.FRIENDS.b } },
-    { label = "NO", value = "SELF", tooltip = "Local playback only - nothing is sent.",
+    { key = "SELF", label = "Self Only", tooltip = "Local playback only - nothing is sent.",
       color = { SB.CHANNEL_COLOR.SELF.r, SB.CHANNEL_COLOR.SELF.g, SB.CHANNEL_COLOR.SELF.b } },
 }
 
@@ -1634,128 +1631,163 @@ local function IsRailBucketAvailable(bucket)
     return true
 end
 
-local function RailGroupLabel(entry)
-    if entry.bucket == "RAID" then
-        return IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid/Party")
+local function RailGroupLabel(bucket)
+    if bucket == "RAID" then
+        return IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid / Party")
     end
-    return entry.groupLabel
+    if bucket == "GUILD" then return "Guild" end
+    if bucket == "FRIENDS" then return "Friends" end
+    return bucket
 end
 
-local function RefreshOutputRail()
-    local current = SB.db.settings.defaultOutputTarget or "ALL"
-    local subsetMode = current == "SUBSET" and SB.db.ui.outputRail and SB.db.ui.outputRail.mode
-    local subsetCount = subsetMode and #(SB.db.ui.outputRail.recipients or {}) or 0
-    for _, btn in ipairs(outputRailButtons) do
-        local entry = btn.railEntry
-        local selected = btn.railValue == current
-            or (btn.railValue == "RAID" and current == "PARTY")
-            or (subsetMode and btn.railValue == subsetMode)
-        -- Explicit report: the active channel "geht voll unter" (gets
-        -- totally lost) - a border-colour-only change wasn't enough.
-        -- Selected now fills the tile with the channel's own colour, not
-        -- just its edge, so it's obvious at a glance which one is active.
-        if selected then
-            local c = entry.color
-            btn:SetBackdropColor(c[1] * 0.32, c[2] * 0.32, c[3] * 0.32, 0.95)
-            btn:SetBackdropBorderColor(c[1], c[2], c[3], 1)
-            btn.label:SetTextColor(1, 1, 1)
-            btn.accent:SetVertexColor(c[1], c[2], c[3], 1)
-        else
-            btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
-            btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
-            btn.label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-            btn.accent:SetVertexColor(entry.color[1], entry.color[2], entry.color[3], 0.85)
-        end
-        local baseLabel = entry.label
-        if btn.railValue == "RAID" then
-            baseLabel = IsInRaid() and "R" or (IsInGroup() and "P" or "P/R")
-        end
-        if subsetMode and btn.railValue == subsetMode and subsetCount > 0 then
-            -- Plain ASCII, not a Unicode middle dot - see this file's other
-            -- glyph-safety comments (WoW's bundled fonts don't reliably
-            -- cover every codepoint).
-            baseLabel = baseLabel .. ":" .. subsetCount
-        end
-        btn.label:SetText(baseLabel)
+-- Eligible = SB.ComputeReachablePlayers' own live list for that bucket;
+-- Selected = however many of those the player has actually checked
+-- (SB.db.ui.outputRail.selected[bucket]). Deliberately two separate,
+-- always-live queries - never cached - so a roster change is reflected
+-- the next time anything asks, with no separate invalidation to forget.
+local function EligibleNames(bucket)
+    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
+    return (reachable and reachable[bucket]) or {}
+end
 
-        if entry.bucket then
-            local available = IsRailBucketAvailable(entry.bucket)
-            btn:SetAlpha(available and 1 or 0.45)
-        end
+local function SelectedNames(bucket)
+    local rail = SB.db.ui.outputRail
+    return (rail.selected and rail.selected[bucket]) or {}
+end
+
+-- A bucket is "active" purely because it has >=1 selected recipient right
+-- now (explicit requirement, section 11) - it doesn't matter whether that
+-- selection came from the derived "Entire X" row or picking individuals
+-- by hand; the actual selected set is the only source of truth.
+local function SelectedCount(bucket)
+    return #SelectedNames(bucket)
+end
+
+-- Explicit requirement: selecting ANY real recipient anywhere always
+-- clears Self Only - the two states are mutually exclusive at all times.
+local function ClearSelfOnly()
+    SB.db.ui.outputRail.selfOnly = false
+end
+
+-- Toggles ONE person's selection within a bucket - the one place this
+-- actually happens, called both by an individual flyout row's checkbox
+-- and (indirectly, via SB.SetBroadcastBucketAllSelected below) by the
+-- derived "Entire X" row. Exposed on SB (not a plain local) since it's
+-- the natural, reusable "select this person" primitive, same reasoning
+-- as SB.ResolvePopoutDirection/SB.PositionRelativeToIcon in Announcer.lua.
+function SB.SetBroadcastRecipientSelected(bucket, name, selected)
+    local rail = SB.db.ui.outputRail
+    local list = rail.selected[bucket]
+    local key = SB.PlayerKey and SB.PlayerKey(name)
+    for idx = #list, 1, -1 do
+        if key and SB.PlayerKey(list[idx]) == key then table.remove(list, idx) end
     end
+    if selected then
+        table.insert(list, name)
+        ClearSelfOnly()
+    end
+    -- Fired at the true point of mutation (not just wherever a redraw
+    -- happens to be called) so nothing that changes this data can ever
+    -- forget to notify listeners - explicit requirement, section 19: the
+    -- Favourites popup's summary (Announcer.lua) must live-update the
+    -- instant the selection actually changes.
+    SB:Fire("OUTPUT_SELECTION_CHANGED")
+end
+
+-- The derived "Entire Guild"/"All Friends"/"Entire Raid" row's own
+-- select-all/deselect-all action for ONE bucket - explicit requirement:
+-- this is a convenience action over the SAME selected-list storage
+-- individual picks use, never a separate stored "whole channel" mode.
+function SB.SetBroadcastBucketAllSelected(bucket, allSelected)
+    local rail = SB.db.ui.outputRail
+    if allSelected then
+        local names = EligibleNames(bucket)
+        local copy = {}
+        for i, n in ipairs(names) do copy[i] = n end
+        rail.selected[bucket] = copy
+        ClearSelfOnly()
+    else
+        rail.selected[bucket] = {}
+    end
+    SB:Fire("OUTPUT_SELECTION_CHANGED")
 end
 
 ------------------------------------------------------------------------
--- Output flyout - Guild/Party-Raid/Friends' hover popup (3.0 spec section
--- 22). One shared floating panel, repopulated per hover target, same
--- "stay open while the mouse crosses onto it" pattern Theme.CreateDropdown
--- already uses for its own list.
+-- Broadcast flyout - Guild/Raid-Party/Friends' CLICK-opened multi-select
+-- (explicit requirement: a straightforward checkbox list, never a radio
+-- between "entire group" and "selected members" - those are the same
+-- list, just with a derived select-all row at the top). Opens toward the
+-- LEFT (screen interior) since the tabs themselves live on the right
+-- edge - same click-to-open/click-outside-to-close shape as every other
+-- flyout in this addon (Theme.CreateDropdown, Announcer.lua's Favourites/
+-- Quick Options menus).
 ------------------------------------------------------------------------
 
-local outputFlyout
-local outputFlyoutOpenTimer, outputFlyoutCloseTimer
+local broadcastFlyout
 
-local function ScheduleFlyoutClose()
-    if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel() end
-    outputFlyoutCloseTimer = C_Timer.NewTimer(0.15, function()
-        outputFlyoutCloseTimer = nil
-        if outputFlyout and not outputFlyout:IsMouseOver() then outputFlyout:Hide() end
-    end)
+local function CloseBroadcastFlyout()
+    if broadcastFlyout then
+        broadcastFlyout:Hide()
+        broadcastFlyout.catcher:Hide()
+        broadcastFlyout.__bucket = nil
+    end
 end
 
-local function BuildOutputFlyout()
-    if outputFlyout then return outputFlyout end
+local function BuildBroadcastFlyout()
+    if broadcastFlyout then return broadcastFlyout end
     local f = SB.CreateFrame("Frame", nil, UIParent)
     f:SetFrameStrata("TOOLTIP")
     f:SetWidth(190)
     f:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
     f:SetBackdropColor(unpack(SB.Theme.BG_RAISED))
     f:SetBackdropBorderColor(SB.Theme.GOLD_DIM[1], SB.Theme.GOLD_DIM[2], SB.Theme.GOLD_DIM[3], 0.8)
+    f:SetClampedToScreen(true)
     f:EnableMouse(true)
     f:Hide()
-    f:SetScript("OnEnter", function()
-        if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel(); outputFlyoutCloseTimer = nil end
-    end)
-    f:SetScript("OnLeave", ScheduleFlyoutClose)
+
+    local catcher = CreateFrame("Button", nil, UIParent)
+    catcher:SetAllPoints(UIParent)
+    catcher:SetFrameStrata("TOOLTIP")
+    catcher:SetFrameLevel(math.max(1, f:GetFrameLevel() - 1))
+    catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    catcher:Hide()
+    catcher:SetScript("OnClick", CloseBroadcastFlyout)
+    f.catcher = catcher
+    f:SetScript("OnHide", function() catcher:Hide() end)
 
     f.title = f:CreateFontString(nil, "OVERLAY")
     f.title:SetFontObject(SB.Fonts.Highlight)
     f.title:SetPoint("TOPLEFT", 10, -8)
     f.title:SetTextColor(unpack(SB.Theme.GOLD))
 
-    -- Explicit request: the Rail's own hover tooltip and this flyout used
-    -- to appear one after another (tooltip first, flyout second) -
-    -- "störung", a two-step reveal instead of one clean hover. Bucketed
-    -- Rail entries (Guild/Party-Raid/Friends) now skip the native tooltip
-    -- entirely and show its explanation here instead, so hovering produces
-    -- exactly one popup.
-    f.subtitle = f:CreateFontString(nil, "OVERLAY")
-    f.subtitle:SetFontObject(SB.Fonts.DisableSmall)
-    f.subtitle:SetPoint("TOPLEFT", f.title, "BOTTOMLEFT", 0, -2)
-    f.subtitle:SetPoint("RIGHT", -10, 0)
-    f.subtitle:SetJustifyH("LEFT")
-    f.subtitle:SetWordWrap(true)
-    f.subtitle:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-
     f.unavailableText = f:CreateFontString(nil, "OVERLAY")
     f.unavailableText:SetFontObject(SB.Fonts.DisableSmall)
+    f.unavailableText:SetPoint("TOPLEFT", 10, -28)
+    f.unavailableText:SetPoint("RIGHT", -10, 0)
     f.unavailableText:SetJustifyH("LEFT")
     f.unavailableText:SetWordWrap(true)
     f.unavailableText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     f.unavailableText:Hide()
 
+    -- "Entire Guild (10)"/"All Friends (5)"/"Entire Raid (24)" - a
+    -- select-all ACTION whose own checked state is always DERIVED
+    -- (SelectedCount(bucket) == #EligibleNames(bucket)), never a stored
+    -- flag - see PopulateBroadcastFlyout below.
     f.allRow = CreateFrame("Button", nil, f)
     f.allRow:SetHeight(20)
     local hl = f.allRow:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.15)
+    local allCheck = SB.Theme.CreateToggleTile(f.allRow, 14)
+    allCheck:SetPoint("LEFT", 8, 0)
+    f.allRow.check = allCheck
     f.allRow.text = f.allRow:CreateFontString(nil, "OVERLAY")
-    f.allRow.text:SetFontObject(SB.Fonts.HighlightSmall)
-    f.allRow.text:SetPoint("LEFT", 10, 0)
+    f.allRow.text:SetFontObject(SB.Fonts.Highlight)
+    f.allRow.text:SetPoint("LEFT", allCheck, "RIGHT", 6, 0)
     f.allRow:Hide()
 
     f.rows = {}
-    outputFlyout = f
+    broadcastFlyout = f
     return f
 end
 
@@ -1763,40 +1795,48 @@ local function GetOrCreateFlyoutRow(f, index)
     if f.rows[index] then return f.rows[index] end
     local row = CreateFrame("Button", nil, f)
     row:SetHeight(20)
+    local hl = row:CreateTexture(nil, "HIGHLIGHT")
+    hl:SetAllPoints()
+    hl:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.10)
     local check = SB.Theme.CreateToggleTile(row, 14)
     check:SetPoint("LEFT", 8, 0)
     row.check = check
     local text = row:CreateFontString(nil, "OVERLAY")
     text:SetFontObject(SB.Fonts.HighlightSmall)
     text:SetPoint("LEFT", check, "RIGHT", 6, 0)
+    text:SetPoint("RIGHT", -6, 0)
+    text:SetJustifyH("LEFT")
+    text:SetWordWrap(false)
     row.text = text
     f.rows[index] = row
     return row
 end
 
--- `bucketKey` is one of SB.ComputeReachablePlayers' own keys (GUILD/RAID/
--- FRIENDS). Toggling an individual player builds a SUBSET target (3.0 spec
--- section 23) - fanned out through the existing Direct transport by
--- Communication.lua's SB:DispatchDefaultOutput, never a new wire command.
-local function PopulateOutputFlyout(bucketKey, groupLabel, description)
-    local f = BuildOutputFlyout()
-    f.title:SetText(groupLabel)
-    f.subtitle:SetText(description or "")
-    f.subtitle:SetShown(description ~= nil and description ~= "")
+local RefreshBroadcastTabs -- forward-declared, PopulateBroadcastFlyout needs it as an upvalue before its own definition below
 
-    local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers()
-    local names = (reachable and reachable[bucketKey]) or {}
-    -- Extra headroom when the subtitle is showing - its own height varies
-    -- with wrapping, so read it back after SetText/Show rather than
-    -- guessing a fixed offset.
-    local y = -28 - (description and description ~= "" and ((f.subtitle:GetHeight() or 0) + 4) or 0)
+-- `bucket` is one of SB.ComputeReachablePlayers' own keys (GUILD/RAID/
+-- FRIENDS). Every row here is an independent checkbox - explicit
+-- requirement: no separate "entire channel" vs "selected members" MODE,
+-- just individuals plus one derived select-all row toggling all of them
+-- at once. Fans out through the existing Direct/whisper transport
+-- (Communication.lua's SB:DispatchDefaultOutput SUBSET branch reading
+-- SB.ComputeEffectiveRecipients), never a new wire command.
+local function PopulateBroadcastFlyout(bucket)
+    local f = BuildBroadcastFlyout()
+    f.__bucket = bucket
+    local groupLabel = RailGroupLabel(bucket)
+    f.title:SetText(groupLabel)
+
+    local names = EligibleNames(bucket)
+    local rail = SB.db.ui.outputRail
+    local y = -28
 
     if #names == 0 then
         f.allRow:Hide()
         for _, row in ipairs(f.rows) do row:Hide() end
         local reason
-        if bucketKey == "GUILD" then reason = "Not currently in a guild"
-        elseif bucketKey == "RAID" then reason = "Not currently in a party or raid"
+        if bucket == "GUILD" then reason = "Not currently in a guild"
+        elseif bucket == "RAID" then reason = "Not currently in a party or raid"
         else reason = "No online Soundbook friends detected" end
         f.unavailableText:ClearAllPoints()
         f.unavailableText:SetPoint("TOPLEFT", 10, y)
@@ -1806,21 +1846,25 @@ local function PopulateOutputFlyout(bucketKey, groupLabel, description)
         y = y - 32
     else
         f.unavailableText:Hide()
+
+        local function RefreshAllRowChecked()
+            f.allRow.check:SetChecked(#rail.selected[bucket] == #names and #names > 0)
+        end
+
         f.allRow:ClearAllPoints()
         f.allRow:SetPoint("TOPLEFT", 0, y)
         f.allRow:SetPoint("RIGHT", 0, 0)
-        f.allRow.text:SetText(string.format("All %s (%d)", groupLabel, #names))
-        f.allRow:SetScript("OnClick", function()
-            SB.db.settings.defaultOutputTarget = bucketKey
-            wipe(SB.db.ui.outputRail.recipients)
-            SB.db.ui.outputRail.mode = bucketKey
-            RefreshOutputRail()
-            outputFlyout:Hide()
+        local allWord = (bucket == "FRIENDS") and "All" or "Entire"
+        f.allRow.text:SetText(string.format("%s %s (%d)", allWord, groupLabel, #names))
+        RefreshAllRowChecked()
+        f.allRow.check:SetScript("OnClick", function(self)
+            SB.SetBroadcastBucketAllSelected(bucket, self:GetChecked() and true or false)
+            RefreshBroadcastTabs()
+            PopulateBroadcastFlyout(bucket)
         end)
         f.allRow:Show()
         y = y - 22
 
-        local subset = SB.db.ui.outputRail.recipients
         for i, name in ipairs(names) do
             local row = GetOrCreateFlyoutRow(f, i)
             row:ClearAllPoints()
@@ -1829,23 +1873,14 @@ local function PopulateOutputFlyout(bucketKey, groupLabel, description)
             row.text:SetText(SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name) or name)
             local key = SB.PlayerKey and SB.PlayerKey(name)
             local checked = false
-            for _, n in ipairs(subset) do
+            for _, n in ipairs(rail.selected[bucket]) do
                 if key and SB.PlayerKey and SB.PlayerKey(n) == key then checked = true break end
             end
             row.check:SetChecked(checked)
             row.check:SetScript("OnClick", function(self)
-                local list = SB.db.ui.outputRail.recipients
-                for idx = #list, 1, -1 do
-                    if key and SB.PlayerKey and SB.PlayerKey(list[idx]) == key then table.remove(list, idx) end
-                end
-                if self:GetChecked() then table.insert(list, name) end
-                if #list > 0 then
-                    SB.db.settings.defaultOutputTarget = "SUBSET"
-                    SB.db.ui.outputRail.mode = bucketKey
-                else
-                    SB.db.settings.defaultOutputTarget = bucketKey
-                end
-                RefreshOutputRail()
+                SB.SetBroadcastRecipientSelected(bucket, name, self:GetChecked() and true or false)
+                RefreshBroadcastTabs()
+                RefreshAllRowChecked()
             end)
             row:Show()
             y = y - 22
@@ -1856,92 +1891,216 @@ local function PopulateOutputFlyout(bucketKey, groupLabel, description)
     f:SetHeight(math.abs(y) + 10)
 end
 
-local function BuildOutputRail(parent)
-    local rail = SB.CreateFrame("Frame", nil, parent)
-    rail:SetWidth(40)
-    for i, entry in ipairs(OUTPUT_RAIL_ENTRIES) do
-        local btn = SB.CreateFrame("Button", nil, rail)
-        btn:SetSize(36, 34)
-        btn:SetPoint("TOP", rail, "TOP", 0, -(i - 1) * 38)
-        btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+local function OpenBroadcastFlyout(anchorBtn, bucket)
+    GameTooltip:Hide()
+    PopulateBroadcastFlyout(bucket)
+    broadcastFlyout:ClearAllPoints()
+    -- Prefer LEFT (toward the screen interior, away from the outer edge
+    -- the tabs are attached to) - explicit requirement. SetClampedToScreen
+    -- above safely nudges it back on-screen if there isn't room, without
+    -- ever becoming inaccessible.
+    broadcastFlyout:SetPoint("TOPRIGHT", anchorBtn, "TOPLEFT", -4, 0)
+    broadcastFlyout.catcher:Show()
+    broadcastFlyout:Show()
+end
+
+-- Explicit requirement (section 15): "All" is a convenience select-all
+-- across every eligible Guild/Raid/Friends member at once, using the
+-- exact same selection storage individual picks use - never a separate,
+-- independently-dispatched "send mode" (SB:DispatchDefaultOutput only
+-- ever sees the one resulting SUBSET, deduplicated, regardless of how it
+-- was built).
+function SB.SelectAllBroadcastTargets()
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        SB.SetBroadcastBucketAllSelected(bucket, true)
+    end
+end
+
+-- Explicit requirement (section 16): exclusive - selecting this clears
+-- every selected network recipient outright, not just "shown as inactive".
+function SB.SelectSelfOnly()
+    local rail = SB.db.ui.outputRail
+    rail.selfOnly = true
+    rail.selected.GUILD, rail.selected.RAID, rail.selected.FRIENDS = {}, {}, {}
+    SB:Fire("OUTPUT_SELECTION_CHANGED")
+end
+
+------------------------------------------------------------------------
+-- Active/inactive/disabled tab visuals (section 4/5) - explicit report on
+-- the OLD single-select rail carries over here: a border-colour change
+-- alone isn't enough, active needs a stronger combined state (filled
+-- Arcane background + brighter text + a full-strength accent edge as the
+-- "active side marker" + a soft outer glow), inactive stays clearly
+-- quieter, and a disabled (unavailable) bucket stays readable but
+-- obviously unusable. Shared by the broadcast tabs AND the utility
+-- (Admin/Settings) tabs below - same visual family, just a different
+-- colour and a different notion of "active".
+------------------------------------------------------------------------
+
+local function ApplyTabVisual(btn, active, color)
+    if active then
+        btn:SetBackdropColor(color[1] * 0.30, color[2] * 0.30, color[3] * 0.30, 0.96)
+        btn:SetBackdropBorderColor(color[1], color[2], color[3], 1)
+        btn.label:SetTextColor(1, 1, 1)
+        btn.accent:SetVertexColor(color[1], color[2], color[3], 1)
+        btn.glow:SetVertexColor(color[1], color[2], color[3], 0.35)
+        btn.glow:Show()
+    else
         btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
         btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
-        btn.railValue = entry.value
-        btn.railEntry = entry
+        btn.label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+        btn.accent:SetVertexColor(color[1], color[2], color[3], 0.55)
+        btn.glow:Hide()
+    end
+end
 
-        -- Always-visible channel accent (explicit request: known colour
-        -- coding - green Guild, blue Friends, orange Party/Raid, white
-        -- All, grey Self) - a left-edge strip rather than tinting the
-        -- whole tile, so it reads as a colour CODE, not a saturated block.
-        local accent = btn:CreateTexture(nil, "ARTWORK")
-        accent:SetPoint("TOPLEFT", 1, -1)
-        accent:SetPoint("BOTTOMLEFT", 1, 1)
-        accent:SetWidth(3)
-        accent:SetTexture("Interface\\Buttons\\WHITE8X8")
-        accent:SetVertexColor(entry.color[1], entry.color[2], entry.color[3], 0.85)
-        btn.accent = accent
+RefreshBroadcastTabs = function()
+    local rail = SB.db.ui.outputRail
+    -- "All" itself is active exactly when every eligible person across
+    -- every non-empty bucket is currently selected (and at least one
+    -- bucket actually has someone eligible) - a derived state, same
+    -- principle as each bucket's own "Entire X" row, never a stored flag.
+    local anyEligible, allFullySelected = false, true
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        local eligible = #EligibleNames(bucket)
+        if eligible > 0 then
+            anyEligible = true
+            if SelectedCount(bucket) ~= eligible then allFullySelected = false end
+        end
+    end
+    local allActive = (not rail.selfOnly) and anyEligible and allFullySelected
 
-        local label = btn:CreateFontString(nil, "OVERLAY")
-        label:SetFontObject(SB.Fonts.HighlightSmall)
-        label:SetPoint("CENTER")
-        label:SetText(entry.label)
-        btn.label = label
+    for _, btn in ipairs(broadcastTabButtons) do
+        local entry = btn.tabEntry
+        local active, count, available = false, nil, true
+        if entry.key == "SELF" then
+            active = rail.selfOnly and true or false
+        elseif entry.key == "ALL" then
+            active = allActive
+        else
+            available = IsRailBucketAvailable(entry.bucket)
+            count = SelectedCount(entry.bucket)
+            active = count > 0
+        end
+
+        local label = entry.label
+        if entry.key == "RAID" then
+            label = IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid / Party")
+        end
+        if count and count > 0 then
+            label = label .. " (" .. count .. ")"
+        end
+        btn.label:SetText(label)
+
+        ApplyTabVisual(btn, active, entry.color)
+        -- Disabled (unavailable bucket): stays readable, just visibly
+        -- dimmed as a whole and unclickable - never invisible.
+        btn:SetAlpha(available and 1 or 0.45)
+        btn:EnableMouse(available)
+    end
+
+    -- This is called right after every real selection change (select-all,
+    -- Self Only, an individual flyout checkbox) AND after roster-driven
+    -- refreshes - firing here once, rather than at each individual
+    -- mutation call-site, means the Favourites popup's live summary
+    -- (Announcer.lua, section 19) can never miss one.
+    SB:Fire("OUTPUT_SELECTION_CHANGED")
+end
+
+------------------------------------------------------------------------
+-- Shared "attached tab" button builder - used for BOTH the upper
+-- broadcast tabs and the lower utility (Admin/Settings) tabs below, so
+-- they read as one visual family while their own colour/behaviour differ.
+------------------------------------------------------------------------
+
+local TAB_W, TAB_H, TAB_GAP = 108, 28, 3
+
+local function CreateAttachedTab(parent, color, refreshFn)
+    local btn = SB.CreateFrame("Button", nil, parent)
+    btn:SetSize(TAB_W, TAB_H)
+    btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    btn:SetBackdropColor(0.015, 0.04, 0.09, 0.85)
+    btn:SetBackdropBorderColor(unpack(SB.Theme.BORDER_DIM))
+
+    -- Soft ADD-blend glow behind the tile, only shown while active - a
+    -- slightly oversized, low-alpha colour wash reads as a gentle glow
+    -- without needing a dedicated blurred texture asset.
+    local glow = btn:CreateTexture(nil, "BACKGROUND")
+    glow:SetPoint("TOPLEFT", -4, 4)
+    glow:SetPoint("BOTTOMRIGHT", 4, -4)
+    glow:SetTexture("Interface\\Buttons\\WHITE8X8")
+    glow:SetBlendMode("ADD")
+    glow:Hide()
+    btn.glow = glow
+
+    -- Active-side marker / always-visible colour code - a left-edge strip
+    -- (the edge facing the book, where an attached bookmark tab's spine
+    -- would be) rather than tinting the whole tile.
+    local accent = btn:CreateTexture(nil, "ARTWORK")
+    accent:SetPoint("TOPLEFT", 1, -1)
+    accent:SetPoint("BOTTOMLEFT", 1, 1)
+    accent:SetWidth(3)
+    accent:SetTexture("Interface\\Buttons\\WHITE8X8")
+    accent:SetVertexColor(color[1], color[2], color[3], 0.85)
+    btn.accent = accent
+
+    local label = btn:CreateFontString(nil, "OVERLAY")
+    label:SetFontObject(SB.Fonts.HighlightSmall)
+    label:SetPoint("LEFT", 8, 0)
+    label:SetPoint("RIGHT", -4, 0)
+    label:SetJustifyH("LEFT")
+    label:SetWordWrap(false)
+    btn.label = label
+
+    btn:SetScript("OnEnter", function(self) self:SetBackdropColor(0.04, 0.10, 0.20, 0.92) end)
+    btn:SetScript("OnLeave", function(self) if refreshFn then refreshFn() end end)
+
+    return btn
+end
+
+local function BuildBroadcastTabs(parent)
+    for i, entry in ipairs(BROADCAST_TABS) do
+        local btn = CreateAttachedTab(parent, entry.color, function() RefreshBroadcastTabs() end)
+        -- Attached directly to the Soundbook's own outer right edge - a
+        -- small negative x-offset overlaps the frame's own border (a
+        -- "bookmark" look) rather than floating with a gap; a fixed
+        -- vertical offset from the very top-right corner (not chained to
+        -- the toolbar/tagFilterBar) clears the frame's own decorative
+        -- corner ornament and keeps every tab's position independent of
+        -- window height, unlike the old rail's anchor chain.
+        btn:SetPoint("TOPLEFT", parent, "TOPRIGHT", -3, -(30 + (i - 1) * (TAB_H + TAB_GAP)))
+        btn.tabEntry = entry
 
         btn:SetScript("OnClick", function()
-            SB.db.settings.defaultOutputTarget = entry.value
-            if entry.bucket then
-                wipe(SB.db.ui.outputRail.recipients)
-                SB.db.ui.outputRail.mode = entry.bucket
+            if entry.key == "ALL" then
+                SB.SelectAllBroadcastTargets()
+                CloseBroadcastFlyout()
+                RefreshBroadcastTabs()
+            elseif entry.key == "SELF" then
+                SB.SelectSelfOnly()
+                CloseBroadcastFlyout()
+                RefreshBroadcastTabs()
+            elseif broadcastFlyout and broadcastFlyout:IsShown() and broadcastFlyout.__bucket == entry.bucket then
+                CloseBroadcastFlyout()
+            else
+                OpenBroadcastFlyout(btn, entry.bucket)
             end
-            RefreshOutputRail()
         end)
-        btn:SetScript("OnEnter", function(self)
-            self:SetBackdropColor(0.04, 0.10, 0.20, 0.92)
-            -- Explicit request: the Rail's own hover tooltip and the
-            -- flyout used to appear one after another ("störung") - a
-            -- bucketed entry (Guild/Party-Raid/Friends) now skips the
-            -- native tooltip entirely, since its explanation lives in the
-            -- flyout's own subtitle instead (PopulateOutputFlyout below).
-            -- Only ALL/Self, which have no flyout, still use a plain
-            -- tooltip.
-            if not entry.bucket then
-                GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        btn:HookScript("OnEnter", function(self)
+            -- Only All/Self Only (no flyout of their own) get a plain
+            -- tooltip - a bucket tab's explanation lives inside its own
+            -- flyout instead, so hovering never produces tooltip+flyout
+            -- at once (explicit requirement).
+            if entry.tooltip then
+                GameTooltip:SetOwner(self, "ANCHOR_LEFT")
                 GameTooltip:SetText(entry.label, 1, 1, 1)
                 GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
                 GameTooltip:Show()
             end
-
-            if entry.bucket then
-                if outputFlyoutCloseTimer then outputFlyoutCloseTimer:Cancel(); outputFlyoutCloseTimer = nil end
-                if outputFlyoutOpenTimer then outputFlyoutOpenTimer:Cancel() end
-                outputFlyoutOpenTimer = C_Timer.NewTimer(0.12, function()
-                    outputFlyoutOpenTimer = nil
-                    local label = entry.label == "P/R" and "Party/Raid" or entry.label
-                    local description = entry.tooltip
-                    if not IsRailBucketAvailable(entry.bucket) then
-                        local reason
-                        if entry.bucket == "GUILD" then reason = "Not currently in a guild"
-                        elseif entry.bucket == "RAID" then reason = "Not currently in a party or raid"
-                        else reason = "No online Soundbook friends detected" end
-                        description = reason
-                    end
-                    PopulateOutputFlyout(entry.bucket, RailGroupLabel(entry), description)
-                    outputFlyout:ClearAllPoints()
-                    outputFlyout:SetPoint("TOPLEFT", self, "TOPRIGHT", 4, 0)
-                    outputFlyout:Show()
-                end)
-            end
-        end)
-        btn:SetScript("OnLeave", function(self)
-            GameTooltip:Hide()
-            RefreshOutputRail()
-            if outputFlyoutOpenTimer then outputFlyoutOpenTimer:Cancel(); outputFlyoutOpenTimer = nil end
-            if entry.bucket then ScheduleFlyoutClose() end
         end)
 
-        outputRailButtons[i] = btn
+        broadcastTabButtons[i] = btn
     end
-    return rail
 end
 
 ------------------------------------------------------------------------
@@ -2045,9 +2204,14 @@ local function BuildTagFilterBar(parent)
 end
 
 ------------------------------------------------------------------------
--- Raid Admin toolbar button - only visible to the current Raid Leader/
--- Assist or Party Leader (AdminPanel.lua). Replaces the old right-side
--- Admin tab.
+-- Lower-right utility tabs - Admin (only visible to the current Raid
+-- Leader/Assist or Party Leader, AdminPanel.lua) and Settings (always
+-- available). Explicit request: back to attached right-side tabs (like
+-- the pre-3.0 2.7.x book), same visual family as the broadcast tabs above
+-- but with a clear vertical gap - anchored independently to the
+-- Soundbook's own BOTTOMRIGHT corner instead of chained below them, and a
+-- neutral gold accent instead of a channel colour, so the two groups
+-- never get visually confused with each other despite matching chrome.
 ------------------------------------------------------------------------
 
 local function ToggleAdmin()
@@ -2059,18 +2223,53 @@ local function ToggleAdmin()
     SB:RefreshMainWindow()
 end
 
+local function ToggleSettings()
+    isSettingsOpen = not isSettingsOpen
+    if isSettingsOpen then
+        isAdminOpen = false
+        ClearFiltering()
+    end
+    SB:RefreshMainWindow()
+end
+
+local adminTabBtn, settingsTabBtn
+
+-- Open (showing its panel) is the only "active" state these two have -
+-- unlike a broadcast tab, there's no separate notion of "selected but not
+-- currently viewing". Library being open falsely marks neither (explicit
+-- requirement, section 28).
+local function RefreshUtilityTabs()
+    if adminTabBtn then ApplyTabVisual(adminTabBtn, isAdminOpen, SB.Theme.GOLD) end
+    if settingsTabBtn then ApplyTabVisual(settingsTabBtn, isSettingsOpen, SB.Theme.GOLD) end
+end
+
 function SB:RefreshAdminTabVisibility()
-    if not adminToolbarBtn then return end
+    if not adminTabBtn then return end
     local adminVisible = SB:IsRaidAdmin()
     if adminVisible then
-        adminToolbarBtn:Show()
+        adminTabBtn:Show()
     else
-        adminToolbarBtn:Hide()
+        adminTabBtn:Hide()
         if isAdminOpen then
             isAdminOpen = false
             SB:RefreshMainWindow()
         end
     end
+end
+
+local function BuildUtilityTabs(parent)
+    adminTabBtn = CreateAttachedTab(parent, SB.Theme.GOLD, RefreshUtilityTabs)
+    adminTabBtn:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30 + (TAB_H + TAB_GAP))
+    adminTabBtn.label:SetText("Admin")
+    adminTabBtn:SetScript("OnClick", ToggleAdmin)
+    adminTabBtn:Hide()
+
+    settingsTabBtn = CreateAttachedTab(parent, SB.Theme.GOLD, RefreshUtilityTabs)
+    settingsTabBtn:SetPoint("BOTTOMLEFT", parent, "BOTTOMRIGHT", -3, 30)
+    settingsTabBtn.label:SetText("Settings")
+    settingsTabBtn:SetScript("OnClick", ToggleSettings)
+
+    RefreshUtilityTabs()
 end
 
 ------------------------------------------------------------------------
@@ -2132,45 +2331,61 @@ local function BuildMainFrame()
     tinsert(UISpecialFrames, "SoundbookMainFrame")
 
     ------------------------------------------------------------------
-    -- Toolbar: Settings / Raid Admin / Lock / Search / Close (3.0 spec
-    -- section 16) - replaces the old tall crest header + right-side tab
-    -- dock. A slim gold-bordered strip instead of a large ornamental
-    -- banner (spec section 2's own "avoid" list).
+    -- Toolbar - explicit redesign: a visible "Soundbook" product title
+    -- (row 1, higher hierarchy, integrated with the frame via a thin gold
+    -- divider - not a giant ornamental banner) with Search promoted to
+    -- the primary interaction of row 2 (taller, using most of the header
+    -- width), and the remaining utility controls (Quick Audio, Lock)
+    -- demoted to small secondary icons beside it. Admin/Settings moved
+    -- OUT of the toolbar entirely - they're now the lower-right utility
+    -- tabs (BuildUtilityTabs below).
     ------------------------------------------------------------------
     local toolbar = SB.CreateFrame("Frame", nil, main)
     toolbar:SetPoint("TOPLEFT", 8, -8)
     toolbar:SetPoint("TOPRIGHT", -8, -8)
-    toolbar:SetHeight(34) -- grown from 30 to fit the enlarged 26px toolbar controls
+    toolbar:SetHeight(62)
     main.toolbar = toolbar
 
-    local toolbarLine = toolbar:CreateTexture(nil, "ARTWORK")
-    toolbarLine:SetPoint("BOTTOMLEFT", 0, -2)
-    toolbarLine:SetPoint("BOTTOMRIGHT", 0, -2)
-    toolbarLine:SetHeight(1)
-    toolbarLine:SetTexture("Interface\\Buttons\\WHITE8X8")
-    toolbarLine:SetVertexColor(unpack(SB.Theme.GOLD))
+    -- Row 1: product identity. Compact and readable rather than a large
+    -- ornamental crest (explicit "avoid a giant banner" requirement) -
+    -- one FontString a size up from a normal label, plus a thin Arcane
+    -- divider line standing in for "a subtle Arcane crest".
+    local title = toolbar:CreateFontString(nil, "OVERLAY")
+    title:SetFontObject(SB.Fonts.NormalLarge)
+    title:SetPoint("TOPLEFT", 2, 0)
+    title:SetText("Soundbook")
+    title:SetTextColor(unpack(SB.Theme.GOLD))
 
-    local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, 22)
-    closeBtn:SetPoint("RIGHT", 0, 0)
+    local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, 20)
+    closeBtn:SetPoint("TOPRIGHT", 0, -1)
     closeBtn:SetScript("OnClick", function() main:Hide() end)
 
-    local function ToggleSettings()
-        isSettingsOpen = not isSettingsOpen
-        if isSettingsOpen then
-            isAdminOpen = false
-            ClearFiltering()
-        end
-        SB:RefreshMainWindow()
-    end
+    local titleLine = toolbar:CreateTexture(nil, "ARTWORK")
+    titleLine:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -5)
+    titleLine:SetPoint("RIGHT", 0, 0)
+    titleLine:SetHeight(1)
+    titleLine:SetTexture("Interface\\Buttons\\WHITE8X8")
+    titleLine:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.55)
+
+    -- Row 2: Search is the primary interaction here - explicit request:
+    -- taller (32px, within the 30-36px target), wider left padding, and
+    -- it consumes most of the row's width. Quick Audio/Lock are secondary
+    -- - smaller, clustered at the right edge, never competing with Search
+    -- or the title for attention.
+    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 24)
+    lockToolbarBtn:SetPoint("BOTTOMRIGHT", toolbar, "BOTTOMRIGHT", 0, 4)
+    lockToolbarBtn:SetScript("OnClick", function()
+        SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
+        RefreshLockVisual()
+    end)
+    SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
 
     -- "Audio" quick-access - reuses the Announcer's own Quick Options menu
     -- (mute incoming / lock / muted players / open Soundbook / Announcer
-    -- size), so there is exactly one such menu in the whole addon rather
-    -- than two diverging copies. Explicit request: flush at the toolbar's
-    -- own left edge (matching Settings' own left-edge placement below),
-    -- and a bit bigger like the search field next to it.
-    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 26)
-    audioBtn:SetPoint("LEFT", 0, 0)
+    -- size / Popout Direction), so there is exactly one such menu in the
+    -- whole addon rather than two diverging copies.
+    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 24)
+    audioBtn:SetPoint("BOTTOMRIGHT", lockToolbarBtn, "BOTTOMLEFT", -4, 0)
     local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
     audioIcon:SetPoint("TOPLEFT", 2, -2)
     audioIcon:SetPoint("BOTTOMRIGHT", -2, 2)
@@ -2181,33 +2396,10 @@ local function BuildMainFrame()
     end)
     SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
 
-    local adminBtn = SB.Theme.CreateMiniControlButton(toolbar, 26)
-    adminBtn:SetPoint("LEFT", audioBtn, "RIGHT", 4, 0)
-    local adminIcon = adminBtn:CreateTexture(nil, "ARTWORK")
-    adminIcon:SetPoint("TOPLEFT", 2, -2)
-    adminIcon:SetPoint("BOTTOMRIGHT", -2, 2)
-    adminIcon:SetTexture(SB.ADMIN_ICON)
-    adminIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    adminBtn:SetScript("OnClick", ToggleAdmin)
-    SB.Theme.AttachTooltip(adminBtn, "Raid Admin", "Temporarily mute sending/receiving for the raid or party.")
-    adminBtn:Hide()
-    adminToolbarBtn = adminBtn
-
-    -- Explicit request: Lock stays on the right, between the search field
-    -- and the close button.
-    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 26)
-    lockToolbarBtn:SetPoint("RIGHT", closeBtn, "LEFT", -4, 0)
-    lockToolbarBtn:SetScript("OnClick", function()
-        SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
-        RefreshLockVisual()
-    end)
-    SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
-
-    -- Explicit request: a bit bigger, matching the toolbar icons' own
-    -- size bump.
-    searchBox = SB.Theme.CreateInputBox(toolbar, 100, 26)
-    searchBox:SetPoint("LEFT", adminBtn, "RIGHT", 8, 0)
-    searchBox:SetPoint("RIGHT", lockToolbarBtn, "LEFT", -8, 0)
+    searchBox = SB.Theme.CreateInputBox(toolbar, 100, 32)
+    searchBox:SetPoint("BOTTOMLEFT", toolbar, "BOTTOMLEFT", 0, 0)
+    searchBox:SetPoint("RIGHT", audioBtn, "LEFT", -8, 0)
+    searchBox:SetTextInsets(10, 8, 0, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
     searchBox:SetScript("OnEscapePressed", function(self) self:SetText(""); self:ClearFocus() end)
@@ -2219,7 +2411,7 @@ local function BuildMainFrame()
 
     searchPlaceholder = searchBox:CreateFontString(nil, "OVERLAY")
     searchPlaceholder:SetFontObject(SB.Fonts.DisableSmall)
-    searchPlaceholder:SetPoint("LEFT", 4, 0)
+    searchPlaceholder:SetPoint("LEFT", 10, 0)
     searchPlaceholder:SetText("Find a sound...")
 
     ------------------------------------------------------------------
@@ -2230,31 +2422,17 @@ local function BuildMainFrame()
     tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -8, 0)
 
     ------------------------------------------------------------------
-    -- Output Rail (left) + scrolling Library content (right).
+    -- Right-side attached tabs (outside the content area entirely - see
+    -- BuildBroadcastTabs/BuildUtilityTabs above) + full-width scrolling
+    -- Library content. The Library no longer loses width to a left-side
+    -- rail - explicit redesign moved that whole column out to the right
+    -- edge, outside the frame.
     ------------------------------------------------------------------
-    local outputRail = BuildOutputRail(main)
-    outputRail:SetPoint("TOPLEFT", tagFilterBar, "BOTTOMLEFT", 0, -8)
-    outputRail:SetPoint("BOTTOM", main, "BOTTOM", 0, 10)
-    main.outputRail = outputRail
-
-    -- Settings - explicit request: bottom-left, sized to match the Output
-    -- Rail's own buttons (36x34) rather than the small 22px toolbar glyphs,
-    -- and bottom-aligned with that same rail so it reads as belonging to
-    -- the same column, at the very bottom of it.
-    local settingsBtn = SB.Theme.CreateMiniControlButton(main, 36)
-    settingsBtn:SetHeight(34)
-    settingsBtn:SetPoint("BOTTOM", outputRail, "BOTTOM", 0, 0)
-    local settingsIcon = settingsBtn:CreateTexture(nil, "ARTWORK")
-    settingsIcon:SetPoint("TOPLEFT", 4, -4)
-    settingsIcon:SetPoint("BOTTOMRIGHT", -4, 4)
-    settingsIcon:SetTexture(SB.SETTINGS_ICON)
-    settingsIcon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    settingsBtn:SetScript("OnClick", ToggleSettings)
-    SB.Theme.AttachTooltip(settingsBtn, "Settings")
-    main.settingsBtn = settingsBtn
+    BuildBroadcastTabs(main)
+    BuildUtilityTabs(main)
 
     local libraryScroll = SB.Theme.CreateScrollFrame(main)
-    libraryScroll.scroll:SetPoint("TOPLEFT", outputRail, "TOPRIGHT", 8, 0)
+    libraryScroll.scroll:SetPoint("TOPLEFT", tagFilterBar, "BOTTOMLEFT", 0, -8)
     libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -10, 10)
     -- Theme.CreateScrollFrame never sets its own content child's width -
     -- every other caller in this addon does that itself. A ScrollFrame's
@@ -2391,7 +2569,6 @@ function SB:RefreshMainWindow()
         end
         emptyHint:Hide()
         main.libraryScroll.scroll:Hide()
-        main.outputRail:Hide()
         main.tagFilterBar:Hide()
         for i = 1, #entryButtons do entryButtons[i]:Hide() end
         for i = 1, #sectionHeaders do sectionHeaders[i]:Hide() end
@@ -2399,11 +2576,16 @@ function SB:RefreshMainWindow()
         settingsPanel:Hide()
         adminPanel:Hide()
         main.libraryScroll.scroll:Show()
-        main.outputRail:Show()
         main.tagFilterBar:Show()
         RefreshLibrary()
     end
-    RefreshOutputRail()
+    -- The right-side tabs (both groups) stay visible/usable regardless of
+    -- which internal view is showing - explicit requirement: Settings/
+    -- Admin's own tabs must always be clickable to get back to the
+    -- Library, and "who do I send to" is a persistent global choice that
+    -- isn't tied to which panel happens to be open.
+    RefreshBroadcastTabs()
+    RefreshUtilityTabs()
 end
 
 function SB:ShowMainWindow()
@@ -2424,10 +2606,10 @@ function SB:ShowMainWindow()
     main:Show()
     SB:RefreshMainWindow()
     -- Safety net: re-run one tick later too, in case the Library's multi-
-    -- hop anchor chain (main -> toolbar -> tagFilterBar -> outputRail ->
-    -- libraryScroll.scroll - see RefreshLibrary's own comment) hadn't
-    -- fully resolved widths yet on this first synchronous pass. Cheap
-    -- (one extra layout pass) and always safe to repeat.
+    -- hop anchor chain (main -> toolbar -> tagFilterBar -> libraryScroll.
+    -- scroll - see RefreshLibrary's own comment) hadn't fully resolved
+    -- widths yet on this first synchronous pass. Cheap (one extra layout
+    -- pass) and always safe to repeat.
     C_Timer.After(0, function()
         if main and main:IsShown() then SB:RefreshMainWindow() end
     end)
@@ -2525,13 +2707,18 @@ SB:On("CATEGORY_CHANGED", function()
     if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
 end)
 
--- Keeps the Admin button's own visibility in sync with the player's
--- current role - a Raid Lead can hand off lead, an Assist can be demoted,
--- or the player can simply leave the group entirely, all mid-session.
-local adminVisibilityFrame = CreateFrame("Frame")
-adminVisibilityFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
-adminVisibilityFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
-adminVisibilityFrame:SetScript("OnEvent", function()
+-- Keeps the Admin tab's own visibility in sync with the player's current
+-- role (a Raid Lead can hand off lead, an Assist can be demoted, or the
+-- player can simply leave the group entirely, all mid-session), and the
+-- broadcast tabs' own eligible/selected counts fresh - explicit
+-- requirement: recompute on Guild roster update, Party/Raid update and
+-- Friends state update, event-driven only, never a permanent poll.
+local rosterEventFrame = CreateFrame("Frame")
+rosterEventFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+rosterEventFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+rosterEventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
+rosterEventFrame:RegisterEvent("FRIENDLIST_UPDATE")
+rosterEventFrame:SetScript("OnEvent", function()
     SB:RefreshAdminTabVisibility()
-    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshOutputRail() end
+    if main and main:IsShown() then RefreshBroadcastTabs() end
 end)
