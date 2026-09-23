@@ -443,3 +443,112 @@ behaviour with a genuinely unreliable `C_Sound.IsPlaying` on some client
 build (the scenario `MAX_TRACKED_LIFETIME`/`NEVER_STARTED_TIMEOUT` exist
 to bound) is logically covered but not something this environment can
 reproduce against a real client either.
+
+---
+
+## Round 7 - Settings blank-content regression, Settings header, Output Rail unification
+
+### 1. Settings view rendering empty
+
+**Root cause**: `SB.BuildSettingsPanel`'s five section `content` frames were
+never given an explicit/provisional height at creation. `FitSettingsPanelHeight`
+computes the real height from `content:GetTop()` minus the lowest child's
+`GetBottom()`, guarded by `if top and bottom then ... end` - in real WoW,
+`GetTop()`/`GetBottom()` can legitimately return `nil` before a frame has
+ever actually been shown/laid out, and that guard just silently no-ops in
+that case rather than falling back to anything. `BuildSettingsPanel` calls
+`ShowSettingsSection` + `FitSettingsPanelHeight` synchronously at the end of
+its own construction, which itself runs inside `BuildMainFrame` - i.e.
+before the Main window has ever been shown once. That's exactly the nil-
+geometry window. Every section's content frame was left at a fresh frame's
+default (effectively zero) height: `Shown = true`, but functionally
+invisible inside the ScrollFrame - tab buttons and the empty Help/version
+footer were the only things with an explicit height, hence "tab buttons
+present, content area almost entirely empty."
+
+**Fix**: restored a provisional height on both the scroll child
+(`SetSize(1, 2000)`) and each section's `content` frame (`SetHeight(2000)`)
+at construction time - the same defensive pattern the pre-restructure
+single-page Settings.lua used and which the 5-tab rewrite had dropped
+without a replacement - plus floored the real computed height in
+`FitSettingsPanelHeight` (`math.max(60, ...)`) so a bad transient reading
+can never collapse it back to near-zero again.
+
+**Also fixed in the same pass** (both were real, previously-unnoticed bugs,
+not new regressions from this fix): Search and the Output Rail (broadcast
+tabs) stayed visible and interactive while Settings/Admin/Keybind Mode
+owned the content area - `RefreshMainWindow` hid the Library grid/filter
+bar when switching to a panel view, but never touched `searchBox`,
+`searchPlaceholder`, or `broadcastTabButtons`. Both are now hidden/shown in
+lockstep with the panel state.
+
+### 2. Settings: dedicated header
+
+Settings/Admin/Keybind Mode now replace the Library's title row with
+`[< Library]` + a context label naming the active view, instead of leaving
+the "Soundbook" product title sitting above an unrelated internal view.
+Same row/position as the title it replaces; Search is already hidden at
+the same time (above), so the header reads as "you are in Settings now,"
+not "the Library header, minus a working search box."
+
+### 3. Output Rail: coherent segmented control
+
+The five broadcast targets (All / Guild / Raid-Party / Friends / Self
+Only) previously each drew their own independent backdrop and border,
+stacked with a small gap - explicitly reported as "still looks like five
+old-style bordered rectangles attached outside the window" despite already
+having filled selected-state backgrounds, an accent strip, and a glow from
+an earlier round. They now live inside one shared container frame that
+draws a single background/border; each segment is borderless and
+separated from its neighbour by a thin 1px divider line instead of a gap,
+so it reads as one control with five selectable zones. Selected-state
+visuals (filled Arcane-tinted background, brighter text, left-edge accent
+marker, soft glow) and the dynamic Party/Raid label are unchanged from the
+prior round, since neither was actually the reported problem - the
+container-level bordering was.
+
+### Verification
+
+All 8 mock regression scripts (`loader.lua`, `loader2.lua`,
+`loader_broadcast.lua`, `loader_favgrid.lua`, `loader_popout.lua`,
+`loader_raidadmin.lua`, `loader_settings.lua`, `loader_playback.lua`) pass.
+`loader_settings.lua` gained two new checks this round: one that walks the
+real frame tree (not just "did it error") down to the Settings scroll
+child and asserts its actual `GetHeight()` never collapses below 60px
+across all five sections - this is the check that would have caught the
+blank-Settings bug originally, since the mock's own `GetTop`/`GetBottom`
+always return numeric fallbacks and never reproduce real WoW's nil-before-
+first-Show behaviour on their own - and one that drives the Settings tab
+open/closed via a real button click and asserts the title/back-button/
+context-label swap happens correctly in both directions.
+
+### Still gated on a live client
+
+Both fixes above are verified by construction (the height floor
+mathematically cannot produce a near-zero value again) and by a mock
+harness test that reads the same frame tree and geometry API real WoW
+exposes, but this environment has no live WoW client. The specific
+nil-before-first-Show state that caused the original bug is not something
+the current mock can spontaneously reproduce (it always returns a numeric
+fallback), so this round's regression test asserts the *value* directly
+rather than relying on the mock to hit that edge case naturally - that
+gap is a real limitation of the test harness itself, not just this
+feature, and is worth closing if another geometry-timing bug surfaces
+again. The Output Rail's visual result (does it actually read as "one
+control" against WoW's real rendering, spacing, and font metrics) still
+needs one in-game screenshot pass, same as every prior round's UI-only
+changes.
+
+The broader redesign items from this round's request beyond the three
+above - header/title typography restraint, Search preferred/max width,
+unified header-action states, filter-row grid alignment, a full named-
+metrics design-system pass, and a fresh re-verification of the Announcer
+popup/Edit Sound/Icon Picker/playback-truncation fixes already shipped in
+earlier rounds - were not revisited this round. Code inspection confirms
+the Search min/max width clamp (`SEARCH_MIN_W`/`SEARCH_MAX_W`), the
+restrained (non-oversized) title treatment, and the shared header-action
+button component were already implemented in Round 5's header rework, and
+`loader_popout.lua`/`loader_playback.lua` continue to pass every existing
+assertion for popup direction, idle drag preview, and playback truncation
+- but none of that was re-derived or re-tested fresh this round, only
+re-run against the existing suite.
