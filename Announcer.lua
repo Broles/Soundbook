@@ -579,11 +579,14 @@ end
 
 ------------------------------------------------------------------------
 -- Favourites quick-play menu - explicit request: left-click the icon
--- opens up to 20 Favourites as a scrollable list, titled with exactly
--- where a click will actually send them ("Send Sound to Guild (2):",
--- matching the Output Rail's own current selection). Picking one plays
--- it through SB:TriggerSound with no override, identical to a normal
--- Library click.
+-- opens up to 20 Favourites as an icon grid (2 or 3 columns, same
+-- icon+name row style as the Library's own entries - see UI.lua's
+-- LayoutEntries), titled with exactly where a click will actually send
+-- them ("Send Sound to Guild (2):", matching the Output Rail's own
+-- current selection). Column count follows the Announcer Size setting
+-- (SB.db.ui.announcer.scale) - a bigger Announcer gets the wider 3-column
+-- grid. Picking a sound plays it through SB:TriggerSound with no
+-- override, identical to a normal Library click.
 ------------------------------------------------------------------------
 
 local favMenu
@@ -621,28 +624,47 @@ local function GetSendTargetLabel()
     return "Send Sound:"
 end
 
+-- Up to 8 rows visible before scrolling (24px each) - "wenn zu lang dann
+-- scrollbar" - taller than that and the thumb (already part of
+-- Theme.CreateScrollFrame) takes over, same as every other scroll area
+-- in this addon. Declared here (above every function that closes over it)
+-- so those functions actually capture it as an upvalue - a local declared
+-- below the function that references it would instead resolve to a global.
+local FAV_MENU_VISIBLE_ROWS = 8
+local FAV_MENU_ROW_H = 24
+
+-- Column count mirrors UI.lua's own 2-vs-3 column switch, but keyed off
+-- the Announcer Size slider (SB.db.ui.announcer.scale, 0.7-1.6) instead of
+-- the Library's window width - explicit request: "zwei bzw drei Spaltig,
+-- je nach dem wie groß die size eingestellt ist beim announcer". 1.15 is
+-- simply the midpoint of that slider's range.
+local FAV_COL_W = { [2] = 150, [3] = 118 }
+local function GetFavMenuColumns()
+    local scale = (SB.db.ui.announcer and SB.db.ui.announcer.scale) or 1
+    return scale >= 1.15 and 3 or 2
+end
+
+-- Icon+name row, same visual language as UI.lua's CreateEntryButton (icon
+-- left, name right, flat accent hover) just compact enough to tile 2-3 per
+-- line. The keybind moved to a hover tooltip instead of its own label -
+-- there isn't enough per-tile width left for it once the row is narrowed
+-- down to a grid column.
 local function GetOrCreateFavMenuRow(index)
     if favMenu.rows[index] then return favMenu.rows[index] end
-    local row = CreateFrame("Button", nil, favMenu.content)
-    row:SetHeight(24)
+    local row = CreateFrame("Button", nil, favMenu.scroll.content)
+    row:SetHeight(FAV_MENU_ROW_H)
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.15)
     local icon = row:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(18, 18)
-    icon:SetPoint("LEFT", 6, 0)
+    icon:SetSize(20, 20)
+    icon:SetPoint("LEFT", 4, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     row.icon = icon
-    local keybind = row:CreateFontString(nil, "OVERLAY")
-    keybind:SetFontObject(SB.Fonts.DisableSmall)
-    keybind:SetPoint("RIGHT", -6, 0)
-    keybind:SetJustifyH("RIGHT")
-    keybind:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-    row.keybind = keybind
     local text = row:CreateFontString(nil, "OVERLAY")
     text:SetFontObject(SB.Fonts.HighlightSmall)
-    text:SetPoint("LEFT", icon, "RIGHT", 6, 0)
-    text:SetPoint("RIGHT", keybind, "LEFT", -4, 0)
+    text:SetPoint("LEFT", icon, "RIGHT", 5, 0)
+    text:SetPoint("RIGHT", -4, 0)
     text:SetJustifyH("LEFT")
     text:SetWordWrap(false)
     row.text = text
@@ -650,6 +672,14 @@ local function GetOrCreateFavMenuRow(index)
         if self.soundID then SB:TriggerSound(self.soundID) end
         favMenu:Hide()
     end)
+    row:SetScript("OnEnter", function(self)
+        if self.hotkey and self.hotkey ~= "" then
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:AddLine(self.hotkey, 1, 1, 1)
+            GameTooltip:Show()
+        end
+    end)
+    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
     favMenu.rows[index] = row
     return row
 end
@@ -657,7 +687,10 @@ end
 local function BuildFavMenu()
     if favMenu then return favMenu end
     favMenu = SB.CreateFrame("Frame", "SoundbookFavMenu", UIParent)
-    favMenu:SetWidth(220)
+    -- Real width is set every PopulateFavMenu call once the column count
+    -- (2 or 3) is known; this is just a sane initial value before the
+    -- first populate.
+    favMenu:SetWidth(FAV_COL_W[2] * 2 + 8)
     favMenu:SetFrameStrata("DIALOG")
     Theme.CleanPanel(favMenu)
     favMenu:SetClampedToScreen(true)
@@ -709,41 +742,43 @@ local function BuildFavMenu()
     return favMenu
 end
 
--- Up to 8 rows visible before scrolling (24px each) - "wenn zu lang dann
--- scrollbar" - taller than that and the thumb (already part of
--- Theme.CreateScrollFrame) takes over, same as every other scroll area
--- in this addon.
-local FAV_MENU_VISIBLE_ROWS = 8
-local FAV_MENU_ROW_H = 24
-
 local function PopulateFavMenu()
     favMenu.title:SetText(GetSendTargetLabel())
 
+    -- Grid width/columns first, everything below positions against it.
+    local columns = GetFavMenuColumns()
+    local colW = FAV_COL_W[columns]
+    local gridW = columns * colW
+    favMenu:SetWidth(gridW + 8)
+    favMenu.scroll.content:SetWidth(gridW)
+
     local favourites = SB.GetFavourites and SB:GetFavourites() or {}
     local shown = 0
-    local y = 0
     for slot = 1, SB.MAX_FAVOURITES do
         local soundID = favourites[slot]
         if soundID then
             shown = shown + 1
             local row = GetOrCreateFavMenuRow(shown)
+            -- Same col/row grid math as UI.lua's LayoutEntries.
+            local col = (shown - 1) % columns
+            local gridRow = math.floor((shown - 1) / columns)
             row:ClearAllPoints()
-            row:SetPoint("TOPLEFT", 0, -y)
-            row:SetPoint("RIGHT", 0, 0)
+            row:SetSize(colW, FAV_MENU_ROW_H)
+            row:SetPoint("TOPLEFT", col * colW, -(gridRow * FAV_MENU_ROW_H))
             row.soundID = soundID
             row.icon:SetTexture(SB:GetSoundIcon(soundID))
             row.text:SetText(SB:GetSoundDisplayName(soundID))
-            local hotkey = SB.GetFavouriteHotkeyLabel and SB:GetFavouriteHotkeyLabel(slot)
-            row.keybind:SetText(hotkey or "")
+            row.hotkey = (SB.GetFavouriteHotkeyLabel and SB:GetFavouriteHotkeyLabel(slot)) or ""
             row:Show()
-            y = y + FAV_MENU_ROW_H
         end
     end
     for i = shown + 1, #favMenu.rows do favMenu.rows[i]:Hide() end
 
     favMenu.emptyText:SetShown(shown == 0)
-    favMenu.scroll.content:SetHeight(math.max(1, y))
-    local visibleH = math.min(shown, FAV_MENU_VISIBLE_ROWS) * FAV_MENU_ROW_H
+    local totalRows = math.ceil(shown / columns)
+    favMenu.scroll.content:SetHeight(math.max(1, totalRows * FAV_MENU_ROW_H))
+    local visibleRows = math.min(totalRows, FAV_MENU_VISIBLE_ROWS)
+    local visibleH = visibleRows * FAV_MENU_ROW_H
     favMenu.scroll.scroll:SetHeight(math.max(FAV_MENU_ROW_H, visibleH))
     favMenu.scroll.UpdateThumb()
 
