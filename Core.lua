@@ -9,7 +9,7 @@ _G.Soundbook = SB -- convenience global, e.g. for /run Soundbook:PlaySound(...)
 -- Constants
 ------------------------------------------------------------------------
 SB.ADDON_NAME       = ADDON_NAME
-SB.DB_VERSION       = 27
+SB.DB_VERSION       = 28
 -- Read straight from the .toc's own "## Version:" line (single source of
 -- truth, see Soundbook.toc) rather than a separately hand-typed constant
 -- that could drift out of sync with a real release - used by "/sb doctor"
@@ -738,7 +738,20 @@ local function GetDefaultDB()
                 shown = true,
                 alphaIdle = 100,
                 alphaHover = 100,
+                -- Announcer Size (targeted correction round: split into two
+                -- independent scales - this one covers ONLY the Announcer's
+                -- own visuals: the Preview, Now Playing/Last Sound, and the
+                -- announcer text - never the favourite-area UI. See
+                -- favScale below for that. Both 0.5-2.0 (50%-200%).
                 scale = 1.0,
+                -- Mini Soundbook Size - covers ONLY the favourite-area UI
+                -- (favourite item/control dimensions, icons, sound-name
+                -- text, dropdown/name-area width) - never the Announcer
+                -- itself. A brand-new install gets 1.0 directly here;
+                -- an upgrading install's existing `scale` is copied into
+                -- this field once by MigrateDB (v27->v28) instead, so
+                -- nobody's favourites silently change size on upgrade.
+                favScale = 1.0,
             },
             -- Global layout lock (3.0 shell) - separate concept from the
             -- Announcer's own `locked` above (that one only ever existed as
@@ -1302,6 +1315,24 @@ local function MigrateDB(db)
             -- ui.layoutLocked (3.0 spec section 16 - one lock covers the
             -- Main shell and the Announcer's movement together).
             if old.favLocked ~= nil then db.ui.layoutLocked = old.favLocked end
+        end
+    end
+
+    if fromVersion < 28 then
+        -- v27 -> v28: targeted correction round - "Announcer Size" used to
+        -- also drive the Favourites popup's own column-count/width scaling
+        -- (GetFavMenuColumns in Announcer.lua), which is wrong - resizing
+        -- the Announcer shouldn't resize favourites and vice versa. Split
+        -- into two independent fields; seed the new favScale from whatever
+        -- the single prior `scale` already was, ONCE, so an upgrading
+        -- player's favourites don't silently change size - a fresh install
+        -- never hits this block at all and just gets GetDefaultDB()'s own
+        -- favScale = 1.0 via ApplyDefaults below.
+        if db.ui and db.ui.announcer and db.ui.announcer.favScale == nil then
+            local prior = tonumber(db.ui.announcer.scale)
+            if prior then
+                db.ui.announcer.favScale = math.max(0.5, math.min(2.0, prior))
+            end
         end
     end
 

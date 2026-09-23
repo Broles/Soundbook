@@ -426,7 +426,7 @@ function SB.ResolvePopoutDirection(anchorFrame)
     -- frame's effective-scale pixels) - comparing them directly only
     -- works when anchorFrame and UIParent share the same effective
     -- scale. The Announcer icon carries its own independent SetScale
-    -- (the Announcer Size slider, 0.7-1.6 - see SB:RefreshAnnouncerScale),
+    -- (the Announcer Size slider, 0.5-2.0 - see SB:RefreshAnnouncerScale),
     -- so at any non-1.0 size this silently skewed cx/cy and could resolve
     -- an icon genuinely sitting at a screen edge into the centre band,
     -- opening the popup vertically instead of horizontally toward the
@@ -1072,11 +1072,13 @@ end
 -- below the function that references it would instead resolve to a global.
 local FAV_MENU_ROW_H = 24
 
--- Column count mirrors UI.lua's own 2-vs-3 column switch, but keyed off
--- the Announcer Size slider (SB.db.ui.announcer.scale, 0.7-1.6) instead of
--- the Library's window width - explicit request: "zwei bzw drei Spaltig,
--- je nach dem wie groß die size eingestellt ist beim announcer". 1.15 is
--- simply the midpoint of that slider's range.
+-- Column count mirrors UI.lua's own 2-vs-3 column switch, keyed off the
+-- Mini Soundbook Size slider (SB.db.ui.announcer.favScale, 0.5-2.0) -
+-- targeted correction round: this used to key off the Announcer Size
+-- slider, which was wrong (resizing the Announcer resized favourites
+-- too) - favScale is the independent scale that owns the favourite-area
+-- UI exclusively. 1.15 is the same relative midpoint as before, just
+-- against the new field.
 -- Widened 10% (explicit requirement: "increase its usable width by 10%
 -- relative to the current build... give the sound-name text the
 -- additional width... existing names that fit within the enlarged
@@ -1084,18 +1086,22 @@ local FAV_MENU_ROW_H = 24
 -- font size; row height (FAV_MENU_ROW_H) and every interaction below are
 -- unchanged. GetOrCreateFavMenuRow's own name text already derives its
 -- available width from this column width (colW - icon - gaps), so
--- widening it here is the one change that actually grows the text.
+-- widening it here is the one change that actually grows the text. The
+-- whole favMenu frame is additionally SetScale'd by favScale (see
+-- SB:RefreshMiniSoundbookScale below) for the continuous 50%-200% range -
+-- these fixed base widths are what that scale multiplies from.
 local FAV_COL_W = { [2] = 165, [3] = 130 }
 -- `count` (optional - the number of Favourites about to be laid out) adds
 -- an adaptive safety net on top of the scale-based choice above (3.0 QA
 -- round, section 4): now that the popup never scrolls and always shows
 -- every entry at once, 2 columns' worth of a large list could still grow
 -- into an awkwardly tall popup on a short screen. Only ever escalates
--- 2->3 (never overrides an explicit large-Announcer-Size 3 back down to
--- 2) - column WIDTH readability is already handled by FAV_COL_W's fixed,
--- pre-tuned values, this only ever reacts to available screen HEIGHT.
+-- 2->3 (never overrides an explicit large-Mini-Soundbook-Size 3 back down
+-- to 2) - column WIDTH readability is already handled by FAV_COL_W's
+-- fixed, pre-tuned values, this only ever reacts to available screen
+-- HEIGHT.
 local function GetFavMenuColumns(count)
-    local scale = (SB.db.ui.announcer and SB.db.ui.announcer.scale) or 1
+    local scale = (SB.db.ui.announcer and SB.db.ui.announcer.favScale) or 1
     local columns = scale >= 1.15 and 3 or 2
     if columns == 2 and count and count > 0 then
         local screenH = UIParent:GetHeight() or 768
@@ -1311,11 +1317,24 @@ end
 -- already used successfully here).
 function SB.ShowFavMenu(anchor)
     BuildFavMenu()
+    SB:RefreshMiniSoundbookScale()
     PopulateFavMenu()
     favMenu.__anchor = anchor
     SB.PositionRelativeToIcon(favMenu, anchor, SB.ResolvePopoutDirection(anchor))
     favMenu.catcher:Show()
     favMenu:Show()
+end
+
+-- Mini Soundbook Size - independent of Announcer Size (SB:RefreshAnnouncerScale
+-- above): scales ONLY the favourite-area popup (icons, sound-name text,
+-- dropdown/name-area width, spacing) via a plain frame SetScale, same
+-- technique the Announcer itself uses for its own scale. Safe to call
+-- before the popup has ever been built (BuildFavMenu hasn't run yet, e.g.
+-- Settings -> Mini's slider before the icon is ever right-clicked) - just
+-- no-ops until the frame exists, exactly like SB:RefreshAnnouncerScale's
+-- own icon/banner guards.
+function SB:RefreshMiniSoundbookScale()
+    if favMenu then favMenu:SetScale(SB.db.ui.announcer.favScale or 1.0) end
 end
 
 -- Explicit requirement (section 19): if the right-side broadcast tabs'
@@ -1445,7 +1464,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- preview banner is shown here any more (targeted correction
         -- round: the Preview must only ever appear during the icon's own
         -- reposition drag, never from changing a Mini Soundbook option).
-        local sizeSlider = Theme.CreateSlider(quickMenu, 70, 160, 5, 120, function(value)
+        local sizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)

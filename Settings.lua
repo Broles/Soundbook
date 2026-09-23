@@ -624,7 +624,48 @@ local function BuildMiniSoundbookSection(content, topAnchor)
     end)
     lockCheck:SetChecked(SB.db.ui.layoutLocked)
 
-    local opacityHeader = Section(content, "Opacity", lockCheck, -16)
+    -- Two independent scales (targeted correction round, explicit
+    -- requirement): Announcer Size affects ONLY the Announcer itself
+    -- (Preview, Now Playing/Last Sound, announcer text); Mini Soundbook
+    -- Size affects ONLY the favourite-area UI (favourite icons, sound-name
+    -- text, dropdown/name-area width). Neither is coupled to the other,
+    -- and neither is coupled to the Mini Soundbook window's own manual
+    -- drag-resize dimensions - purely persisted SetScale multipliers on
+    -- their own frames. See Core.lua's `announcer.scale`/`announcer.
+    -- favScale` defaults and the v27->v28 migration that seeds favScale
+    -- from a pre-split installation's single prior scale.
+    local sizeHeader = Section(content, "Size", lockCheck, -16)
+    local announcerSizeLabel = content:CreateFontString(nil, "OVERLAY")
+    announcerSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    announcerSizeLabel:SetPoint("TOPLEFT", sizeHeader, "BOTTOMLEFT", 0, -8)
+    announcerSizeLabel:SetText("Announcer Size")
+
+    local announcerSizeSlider = SB.Theme.CreateSlider(content, 50, 200, 10, CONTENT_W - 120, function(value)
+        SB.db.ui.announcer.scale = value / 100
+        SB:RefreshAnnouncerScale()
+    end)
+    announcerSizeSlider:SetPoint("TOPLEFT", announcerSizeLabel, "BOTTOMLEFT", 0, -10)
+    announcerSizeSlider:SetValue(math.floor((SB.db.ui.announcer.scale or 1.0) * 100 + 0.5))
+    announcerSizeSlider:Refresh()
+    Help(announcerSizeSlider, "Announcer Size",
+        "Scale the Announcer itself - the Preview, Now Playing/Last Sound, and the announcer text. Does not affect the size of your favourites.")
+
+    local miniSizeLabel = content:CreateFontString(nil, "OVERLAY")
+    miniSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    miniSizeLabel:SetPoint("TOPLEFT", announcerSizeSlider, "BOTTOMLEFT", 0, -14)
+    miniSizeLabel:SetText("Mini Soundbook Size")
+
+    local miniSizeSlider = SB.Theme.CreateSlider(content, 50, 200, 10, CONTENT_W - 120, function(value)
+        SB.db.ui.announcer.favScale = value / 100
+        SB:RefreshMiniSoundbookScale()
+    end)
+    miniSizeSlider:SetPoint("TOPLEFT", miniSizeLabel, "BOTTOMLEFT", 0, -10)
+    miniSizeSlider:SetValue(math.floor((SB.db.ui.announcer.favScale or 1.0) * 100 + 0.5))
+    miniSizeSlider:Refresh()
+    Help(miniSizeSlider, "Mini Soundbook Size",
+        "Scale your favourites - icons, sound-name text, and the name area's width, useful for avoiding truncated names. Does not affect the Announcer.")
+
+    local opacityHeader = Section(content, "Opacity", miniSizeSlider, -16)
     local alphaIdleLabel = content:CreateFontString(nil, "OVERLAY")
     alphaIdleLabel:SetFontObject(SB.Fonts.HighlightSmall)
     alphaIdleLabel:SetPoint("TOPLEFT", opacityHeader, "BOTTOMLEFT", 0, -8)
