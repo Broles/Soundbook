@@ -830,13 +830,29 @@ local function CreateEntryButton(index)
     btn.slot = slot
     btn.icon = slot.texture
 
-    -- Favourites-only 130% icon preview. It is a separate overlay so only
-    -- the icon grows; the row and its text remain perfectly aligned. The
-    -- decorative texture is cropped to its painted bounds and exists only
-    -- while hovering this page.
-    local favouriteHover = SB.CreateFrame("Frame", nil, btn)
+    -- Enlarged icon preview on hover (every row, not just Favourites - see
+    -- OnEnter below). A separate overlay so only the icon grows; the row
+    -- and its text remain perfectly aligned. The decorative texture is
+    -- cropped to its painted bounds and exists only while hovering this row.
+    --
+    -- BUGFIX (explicit report): parented to `main` directly, NOT `btn` -
+    -- `btn` lives inside the Library's own ScrollFrame content, and WoW
+    -- clips anything nested under a ScrollFrame's content to that
+    -- ScrollFrame's own viewport rectangle, by ancestry, regardless of
+    -- FrameLevel. The enlarged ornament (150% of the icon, see
+    -- LayoutEntries' own SetSize calls) is deliberately bigger than its
+    -- row, so on the very first visible row its top edge could extend
+    -- above the viewport's own top edge and get clipped there - worse
+    -- with the tag filter bar visible, which shrinks the viewport further.
+    -- FrameLevel alone (the previous fix attempt, btn:GetFrameLevel()+30)
+    -- cannot escape ScrollFrame clipping - only being outside that
+    -- ancestry chain can. `slot` (inside the scroll content) remains the
+    -- layout anchor via SetPoint below - only this decoration's PARENT
+    -- changed, its on-screen position still tracks the real icon exactly,
+    -- including while scrolled.
+    local favouriteHover = SB.CreateFrame("Frame", nil, main)
     favouriteHover:SetPoint("CENTER", slot, "CENTER", 0, 0)
-    favouriteHover:SetFrameLevel(btn:GetFrameLevel() + 30)
+    favouriteHover:SetFrameLevel(main:GetFrameLevel() + 100)
     favouriteHover:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
     favouriteHover:SetBackdropBorderColor(unpack(SB.Theme.GOLD))
     favouriteHover:EnableMouse(false)
@@ -1499,7 +1515,17 @@ local function RefreshLibraryImpl()
         end
     end
 
-    for i = usedEntries + 1, #entryButtons do entryButtons[i]:Hide() end
+    -- favouriteHover is no longer a child of the entry button (reparented
+    -- to `main` so its enlarged decoration can escape the Library
+    -- ScrollFrame's own clipping - see CreateEntryButton's own comment),
+    -- so hiding the button no longer implicitly hides it too - must be
+    -- done explicitly here, or a row hovered right when it's recycled/
+    -- hidden (not via a real mouse-leave) would leave the enlarged
+    -- decoration orphaned on screen.
+    for i = usedEntries + 1, #entryButtons do
+        entryButtons[i]:Hide()
+        if entryButtons[i].favouriteHover then entryButtons[i].favouriteHover:Hide() end
+    end
     for i = usedHeaders + 1, #sectionHeaders do sectionHeaders[i]:Hide() end
 
     scroll.content:SetHeight(math.max(1, y))
@@ -2653,7 +2679,14 @@ function SB:RefreshMainWindow()
         emptyHint:Hide()
         main.libraryScroll.scroll:Hide()
         main.tagFilterBar:Hide()
-        for i = 1, #entryButtons do entryButtons[i]:Hide() end
+        -- Same reasoning as RefreshLibraryImpl's own pool-recycling loop -
+        -- favouriteHover is parented to `main`, not the entry button, so
+        -- it needs hiding explicitly here too (switching to Settings/
+        -- Admin/Keybind Mode while a row happens to be hovered).
+        for i = 1, #entryButtons do
+            entryButtons[i]:Hide()
+            if entryButtons[i].favouriteHover then entryButtons[i].favouriteHover:Hide() end
+        end
         for i = 1, #sectionHeaders do sectionHeaders[i]:Hide() end
     else
         settingsPanel:Hide()
@@ -2751,18 +2784,50 @@ SB:On("SOUND_DISPLAY_CHANGED", function()
     if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
 end)
 
+-- The specific playback instance (SoundPlayer.lua handle) currently
+-- backing playingSoundID, if known - lets PLAYBACK_PROGRESS_ENDED below
+-- clear the highlight the instant THIS instance's real audio ends,
+-- scoped so a stale/older or unrelated handle can never touch it.
+local playingHandle
+
+local function ClearPlayingState()
+    if playingStateTimer then
+        playingStateTimer:Cancel()
+        playingStateTimer = nil
+    end
+    playingSoundID = nil
+    playingHandle = nil
+    if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
+end
+
+-- BUGFIX (explicit report: "Kids Saying Yay" - a real ~8s sound - kept
+-- showing as actively playing for several seconds AFTER the audio had
+-- already ended). Root cause: this used to be driven ENTIRELY by
+-- announceDuration's fixed timer, with no connection whatsoever to the
+-- real playback handle - for anyone with announceDuration set longer
+-- than a given sound's actual length, the highlight would always outlive
+-- the audio by the difference. Real handle state (SoundPlayer.lua) is now
+-- authoritative whenever it's available: PLAYBACK_PROGRESS_ENDED (below)
+-- clears the highlight the moment the tracked instance's audio genuinely
+-- finishes. announceDuration's timer is kept as a SAFETY-NET ceiling only
+-- - whichever of the two fires first wins - so a client where handle
+-- tracking isn't available (SoundPlayer.lua's canTrackPlayback false)
+-- still behaves exactly as before, and the setting keeps its existing
+-- role/behaviour for the common case where it's shorter than the sound.
 local function SetPlayingState(soundID)
     if playingStateTimer then
         playingStateTimer:Cancel()
         playingStateTimer = nil
     end
     playingSoundID = soundID
+    playingHandle = SB.GetPrimaryPlaybackHandle and SB:GetPrimaryPlaybackHandle() or nil
     if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
     local duration = tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
     if soundID and duration > 0 then
         playingStateTimer = C_Timer.NewTimer(duration, function()
             playingStateTimer = nil
             playingSoundID = nil
+            playingHandle = nil
             if main and main:IsShown() and not isSettingsOpen and not isAdminOpen then RefreshLibrary() end
         end)
     end
@@ -2772,8 +2837,19 @@ SB:On("LOCAL_SOUND_PLAYED", SetPlayingState)
 
 SB:On("REMOTE_SOUND_PLAYED", SetPlayingState)
 
-SB:On("PLAYBACK_STOPPED", function()
-    SetPlayingState(nil)
+SB:On("PLAYBACK_STOPPED", ClearPlayingState)
+
+-- Instance-scoped (explicit requirement: "cleanup must be scoped to the
+-- specific playback instance so an old timer/poll cannot interfere with a
+-- newer playback") - only clears the highlight if the handle that just
+-- ended is the exact one that started it. A stale/older handle's natural
+-- end can never clear a NEWER instance's highlight, and retriggering the
+-- same sound before the previous instance finished keeps showing
+-- "playing" until the NEW instance's own end - every retrigger gets its
+-- own fresh handle in SoundPlayer.lua's TrackNewPlayback, never reused.
+SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
+    if not state or not playingHandle or state.handle ~= playingHandle then return end
+    ClearPlayingState()
 end)
 
 SB:On("CATEGORY_CHANGED", function()

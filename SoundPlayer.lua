@@ -319,6 +319,19 @@ function SB:PromoteTrackedHandle(handle)
     primaryHandle = handle
 end
 
+--- The handle most recently started via TrackNewPlayback, regardless of
+--- source (local/remote/test) - lets a caller correlate an event that
+--- doesn't itself carry a handle (LOCAL_SOUND_PLAYED/REMOTE_SOUND_PLAYED
+--- fire right after SB:PlaySound returns, with no handle argument) back
+--- to the exact playback instance it just started, so cleanup can later
+--- be scoped to that one instance via PLAYBACK_PROGRESS_ENDED's own
+--- state.handle instead of a soundID-only (and therefore stale-instance-
+--- prone) match. Nil if handle tracking isn't available on this client
+--- (canTrackPlayback false) or nothing has played yet this session.
+function SB:GetPrimaryPlaybackHandle()
+    return primaryHandle
+end
+
 local function GetChannel()
     local ch = SB.db and SB.db.settings and SB.db.settings.channel
     if ch and SB.VALID_CHANNELS[ch] then return ch end
