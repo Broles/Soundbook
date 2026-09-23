@@ -1390,11 +1390,28 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         quickMenu.muteBtn = AddRow("Mute Incoming", function()
             if SB:IsReceiveMuted() then SB:StopReceiveMute() else SB:StartReceiveMute(nil, nil) end
         end)
+        -- Timed mute durations (Settings restructure, explicit requirement):
+        -- these used to be three standalone buttons on the old Settings
+        -- page - removed from there entirely (timed/global muting is a
+        -- runtime action, not persistent configuration) and relocated here,
+        -- the Mini Soundbook's own mute interaction, alongside the
+        -- indefinite toggle above. Same SB:StartReceiveMute calls Settings
+        -- used to make; behaviour is unchanged, only where you reach it from.
+        AddRow("Mute 30 min", function() SB:StartReceiveMute(30 * 60, 30) end)
+        AddRow("Mute 60 min", function() SB:StartReceiveMute(60 * 60, 60) end)
         quickMenu.lockBtn = AddRow("Lock Interface", function()
             SB:SetAnnouncerLocked(not SB.db.ui.layoutLocked)
         end)
         AddRow("Muted Players...", function()
             if SB.OpenMutePlayersMenu then SB.OpenMutePlayersMenu() end
+        end)
+        -- Settings restructure, explicit requirement: History belongs on
+        -- the launcher icons' own context menu (this one - shared by the
+        -- Announcer icon's Shift+Right-click and the Main toolbar's Quick
+        -- Audio button), directly above Open Settings, not inside Settings
+        -- itself (History is content/navigation, not configuration).
+        AddRow("Sound History", function()
+            if SB.ShowHistoryWindow then SB:ShowHistoryWindow() end
         end)
         -- Deep-linking straight to the Settings tab needs UI.lua to expose
         -- its (currently local) ToggleSettings - later 3.0 stage, once

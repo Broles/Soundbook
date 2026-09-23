@@ -67,6 +67,8 @@ local settingsPanel
 local isSettingsOpen = false
 local adminPanel
 local isAdminOpen = false
+local keybindModePanel
+local isKeybindModeOpen = false
 local lockToolbarBtn
 local selectedSoundID
 local playingSoundID
@@ -1221,7 +1223,7 @@ local function CreateSectionHeaderRow(index)
     -- Favourites-only shortcut, replacing count in that one row.
     local keybindsBtn = SB.Theme.CreateFlatButton(hdr, "Keybinds", 90, 18)
     keybindsBtn:SetPoint("RIGHT", -4, 0)
-    keybindsBtn:SetScript("OnClick", function() SB:OpenSettingsAtKeybindings() end)
+    keybindsBtn:SetScript("OnClick", function() SB:ToggleKeybindMode() end)
     keybindsBtn:Hide()
     hdr.keybindsBtn = keybindsBtn
 
@@ -1365,7 +1367,7 @@ local function BuildFavouritesEntries()
 end
 
 local function RefreshLibraryImpl()
-    if isSettingsOpen or isAdminOpen then return end
+    if isSettingsOpen or isAdminOpen or isKeybindModeOpen then return end
     SB:Debug("RefreshLibrary: isFiltering=%s searching=%s tagFilterCount=%s scrollW=%s scrollH=%s contentH=%s vscroll=%s",
         tostring(IsFiltering()), tostring(IsSearching()),
         tostring(next(SB.db.ui.tagFilters) and "yes" or "no"),
@@ -2240,6 +2242,7 @@ local function ToggleAdmin()
     isAdminOpen = not isAdminOpen
     if isAdminOpen then
         isSettingsOpen = false
+        isKeybindModeOpen = false
         ClearFiltering()
     end
     SB:RefreshMainWindow()
@@ -2248,6 +2251,22 @@ end
 local function ToggleSettings()
     isSettingsOpen = not isSettingsOpen
     if isSettingsOpen then
+        isAdminOpen = false
+        isKeybindModeOpen = false
+        ClearFiltering()
+    end
+    SB:RefreshMainWindow()
+end
+
+-- Settings restructure: the Favourites view's own "Keybindings" shortcut
+-- (CreateSectionHeaderRow's keybindsBtn) now enters this mode directly
+-- instead of jumping into Settings (which no longer has a keybinding
+-- section at all - keybindings live with Favourite management). Mutually
+-- exclusive with Settings/Admin, same pattern as those two.
+function SB:ToggleKeybindMode()
+    isKeybindModeOpen = not isKeybindModeOpen
+    if isKeybindModeOpen then
+        isSettingsOpen = false
         isAdminOpen = false
         ClearFiltering()
     end
@@ -2592,6 +2611,9 @@ local function BuildMainFrame()
     settingsPanel:Hide()
     adminPanel = SB.BuildAdminPanel(main, content)
     adminPanel:Hide()
+    keybindModePanel = SB.BuildKeybindModePanel(main, content)
+    keybindModePanel:Hide()
+    keybindModePanel.doneBtn:SetScript("OnClick", function() SB:ToggleKeybindMode() end)
     SB:RefreshAdminTabVisibility()
     RefreshLockVisual()
 
@@ -2610,7 +2632,7 @@ end
 -- closes the other one itself, at the moment it's clicked.
 function SB:RefreshMainWindow()
     if not main then return end
-    if isSettingsOpen or isAdminOpen then
+    if isSettingsOpen or isAdminOpen or isKeybindModeOpen then
         if isSettingsOpen then
             settingsPanel:Show()
             if SB.RefreshChannelMatrix then SB:RefreshChannelMatrix() end
@@ -2623,6 +2645,11 @@ function SB:RefreshMainWindow()
         else
             adminPanel:Hide()
         end
+        if isKeybindModeOpen then
+            keybindModePanel:Show()
+        else
+            keybindModePanel:Hide()
+        end
         emptyHint:Hide()
         main.libraryScroll.scroll:Hide()
         main.tagFilterBar:Hide()
@@ -2631,6 +2658,7 @@ function SB:RefreshMainWindow()
     else
         settingsPanel:Hide()
         adminPanel:Hide()
+        keybindModePanel:Hide()
         main.libraryScroll.scroll:Show()
         main.tagFilterBar:Show()
         RefreshLibrary()
@@ -2655,6 +2683,7 @@ function SB:ShowMainWindow()
     -- already does for its own onboarding entry point.
     isSettingsOpen = false
     isAdminOpen = false
+    isKeybindModeOpen = false
     -- Explicit request: the virtual Hide section always starts collapsed
     -- again on a fresh open, even if it was expanded earlier this session.
     hideSectionExpanded = false
@@ -2677,6 +2706,7 @@ function SB:ShowDefaultSounds()
     if not main then BuildMainFrame() end
     isSettingsOpen = false
     isAdminOpen = false
+    isKeybindModeOpen = false
     if searchBox then searchBox:SetText("") end
     wipe(SB.db.ui.tagFilters)
     SB.db.ui.categoryCollapsed["Legacy"] = nil
@@ -2697,19 +2727,6 @@ function SB:ToggleMainWindow()
         SB:HideMainWindow()
     else
         SB:ShowMainWindow()
-    end
-end
-
--- Explicit compatibility entry point - Settings.lua's Favourite Keybinds
--- section lives inside the same Settings panel as before; this just opens
--- straight to it instead of leaving the player to find it manually.
-function SB:OpenSettingsAtKeybindings()
-    isSettingsOpen = true
-    isAdminOpen = false
-    ClearFiltering()
-    SB:RefreshMainWindow()
-    if SB.FocusFavouriteKeybindings then
-        C_Timer.After(0, SB.FocusFavouriteKeybindings)
     end
 end
 

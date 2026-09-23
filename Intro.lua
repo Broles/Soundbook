@@ -2,8 +2,8 @@
 -- One-time first-run popup (Soundbook 1.9.1, "safer first start") -
 -- explains local playback, sending, and Favourites in a few short lines,
 -- then marks itself seen and never shows again unless manually restarted
--- from Settings -> Debug -> "Restart Intro". Deliberately small and
--- temporary - not a permanent fixture, never overloads the main window.
+-- from Settings -> Help & Information -> "Replay Introduction". Deliberately
+-- small and temporary - not a permanent fixture, never overloads the main window.
 -- Only ever auto-shown for a genuinely fresh install (SB.isFreshInstall,
 -- Core.lua) - an existing install's own introSeen defaults to true, so
 -- ApplyDefaults never turns this on retroactively for someone already
@@ -272,7 +272,7 @@ local function BuildPopup()
 end
 
 --- Shows the intro popup right now - used both for the real first-run
---- trigger below and Settings -> Debug -> "Restart Intro".
+--- trigger below and Settings -> Help & Information -> "Replay Introduction".
 function SB:ShowIntro()
     BuildPopup()
     popup:Show()
