@@ -552,3 +552,139 @@ button component were already implemented in Round 5's header rework, and
 assertion for popup direction, idle drag preview, and playback truncation
 - but none of that was re-derived or re-tested fresh this round, only
 re-run against the existing suite.
+
+---
+
+## Round 8 - UI/UX polish pass: shared design system across Main, Settings, Edit Sound, Keybindings
+
+A layout/design-system pass, not a feature redesign - preserves every
+existing workflow, keybinding, SavedVariables field and multiplayer
+protocol untouched.
+
+### 1. Shared foundation (Theme.lua / Core.lua)
+
+- **New `Title` font tier**: a ~30% larger variant of `NormalLarge`,
+  created once in Core.lua alongside the addon's other font objects (so
+  it survives the user's own font/scale settings the same way every other
+  Soundbook font object already does). Used for every screen's primary
+  heading.
+- **`Theme.ApplyTitleStyle`**: applies that font tier plus the exact
+  colour/shadow `Theme.CreateHeader`'s own title already used (the
+  established Edit Sound look) to a caller-built FontString - the "one
+  primary title treatment" the request asked for, instead of each screen
+  picking its own colour.
+- **`Theme.LAYOUT`**: a small named spacing/sizing table (`SAFE_INSET`,
+  `GAP_S/M/L/XL`, `CONTROL_H`, `HEADER_H`, `ICON_BTN`, `TAB_H`) that Main,
+  Settings and Keybindings now read from instead of each re-deriving its
+  own magic offsets.
+- **`Theme.CreateTabButton`**: a genuine 4-state tab control
+  (idle/hover/active/disabled). Replaces Settings' previous tab strip,
+  which reused `CreateFlatButton` (only idle/hover/disabled) with a
+  manually-toggled underline bolted on - its "active" state was literally
+  the same fill a plain hover on any OTHER tab already produced, so a
+  hovered inactive tab and the real active one looked identical.
+
+### 2. Main Soundbook header
+
+- Title row grown from 22px to 32px (`Theme.LAYOUT.HEADER_H`); "Soundbook"
+  now renders in the shared `Title` tier with the Edit-Sound-matching
+  colour/shadow instead of a smaller flat gold label - "clearly more
+  prominent, comparable in visual quality and hierarchy to Edit Sound's
+  title" without importing Edit Sound's own crest bar (no added
+  ornamentation, per the request's own "do not add more ornamentation").
+- Outer safe inset grew from 8px to 14px (`Theme.LAYOUT.SAFE_INSET`) -
+  search, the header icons and the filter pills no longer sit flush
+  against the decorative frame.
+- The Settings/Admin/Keybind Mode "< Library" + context-label header that
+  swaps into the same slot uses the identical title treatment, so
+  switching views never changes which font/colour "the current screen's
+  name" renders in.
+- Close/Lock/Quick Audio re-centred within the taller title row
+  (unchanged chrome, just repositioned).
+
+### 3. Main Library
+
+- Favourites section header: caret -> icon -> title -> Keybinds action
+  now sit with deliberate `GAP_S`/`GAP_M`-based spacing instead of a
+  tight, hard-coded 2px pairing; the Keybinds button uses the same
+  secondary-button chrome Settings/Edit Sound already use, sized to
+  clear the taller row comfortably.
+- Sound rows: icon/name/hotkey/tag margins widened from 4/8px to the
+  shared `GRID_LEFT_PAD`/`GAP_S` values (6px) - same row height and
+  density as before (explicit requirement: "keep density"), just less
+  visually compressed at the edges.
+- Filter pills: now left-aligned to the same content guide the Library's
+  own section headers and sound rows start from (`GRID_LEFT_PAD`),
+  instead of centring independently across the toolbar's full width.
+- Output Rail's Admin/Settings utility tabs (previously two individually
+  bordered tiles sitting next to the now-unified broadcast-tab rail from
+  the prior round) now live inside their own single shared bordered
+  container, using the same borderless-segment-plus-divider treatment -
+  the whole right-side dock reads as one design language again instead
+  of one unified group next to two leftover old-style tiles.
+
+### 4. Settings
+
+- Tab strip rebuilt on `Theme.CreateTabButton` - the active tab now has
+  a visibly distinct look (filled gold-tinted background + underline)
+  from a merely-hovered inactive one, verified by a new regression check
+  that exactly one tab reports active at a time after switching sections.
+- Content column widened from 450px to 480px. Verified by hand against
+  the real geometry chain (Main's minimum window width -> content region
+  -> `FitSettingsPanelHeight`'s own scrollbar/margin reservations) to
+  stay safely inside the actual scroll child width even at the Main
+  window's smallest resizable size (560px) - not just "looks fine at the
+  screenshot's window size."
+- Tab row / scroll / footer margins now read from the same shared
+  `Theme.LAYOUT` gaps Main's own toolbar uses.
+
+### 5. Keybindings
+
+- Removed the redundant in-panel "Favourite Keybindings" title - the
+  Main toolbar's own context header (added last round) already names
+  this screen using the identical shared title treatment, so the old
+  second heading was pure duplication and part of what made the hint
+  text/title/Done button compete for space.
+- Rows restructured into clearer slot-number / icon+name / binding /
+  Clear columns with a real left safe-area inset, plus the same
+  alternating-row-tint and separator language the Main Library's own
+  sound rows use - reads as the same product family instead of a bare,
+  undecorated list.
+
+### 6. Edit Sound
+
+Deliberately left structurally untouched beyond inheriting the shared
+`Title` font tier automatically through `Theme.CreateHeader` (which it
+already used) - it was already the acknowledged reference for this
+round's header treatment, already built on the same shared component
+library (`Theme.CreateCheckbox`/`CreateInputBox`/`CreateSecondaryButton`/
+`CreateIconSlot`) every other screen uses, and the request explicitly
+asked to "preserve compactness; do not make it bigger unless required to
+fix layout problems" - no layout problem was reported here.
+
+### Verification
+
+All 8 mock regression scripts pass (`loader.lua`, `loader2.lua`,
+`loader_broadcast.lua`, `loader_favgrid.lua`, `loader_popout.lua`,
+`loader_raidadmin.lua`, `loader_settings.lua`, `loader_playback.lua`).
+`loader_settings.lua` gained a new check this round: walks the Settings
+tab row's real children and asserts exactly one `Theme.CreateTabButton`
+reports `IsActive() == true` after switching sections, and that it's the
+one matching the section actually shown - this is the check that would
+have caught the old "active looks like hover" issue, since every
+previous test only checked "the right section's content is Shown", never
+what the TAB ITSELF looked like.
+
+### Still gated on a live client
+
+This is a pure layout/typography/spacing pass verified by code reading,
+manual geometry arithmetic (the Settings content-width safety margin
+specifically), and the mock harness reading back real anchor/size values
+where the harness's own geometry model supports it. This environment has
+no live WoW client. Every spacing/sizing number above was chosen and
+cross-checked by hand against the actual anchor chains and Main window's
+real min/max resizable bounds (560-720 width), not eyeballed from a
+screenshot - but the final "does this actually look premium and
+cohesive" judgment call still needs one in-game pass, at more than one
+window size and UI scale, the same residual gap every prior visual round
+has disclosed.
