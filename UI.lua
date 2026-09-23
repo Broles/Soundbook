@@ -74,6 +74,7 @@ local isAdminOpen = false
 local keybindModePanel
 local isKeybindModeOpen = false
 local lockToolbarBtn
+local mainResizeGrip
 local mainTitle
 local backToLibraryBtn
 local selectedSoundID
@@ -96,7 +97,7 @@ local usedEntries, usedHeaders
 
 local function TabDisplayInfo(tab)
     if tab.isFavourites then
-        return "Favourites", SB.FAVOURITES_ICON
+        return "My Favourites", SB.FAVOURITES_ICON
     end
     if tab.isPrivate then
         return SB.PRIVATE_TAB_NAME, SB.PRIVATE_TAB_ICON
@@ -1272,12 +1273,30 @@ local function CreateSectionHeaderRow(index)
             return
         end
         -- "favourites" here is a reserved internal persistence key, never
-        -- the visible label ("Favourites") - explicit requirement, so a
+        -- the visible label ("My Favourites") - explicit requirement, so a
         -- future label/rename never silently resets this collapse state.
         local key = tostring(self.sectionKey)
         SB.db.ui.categoryCollapsed[key] = (not SB.db.ui.categoryCollapsed[key]) or nil
         RefreshLibrary()
     end)
+
+    -- Category-header tooltips (explicit requirement) - same title+body
+    -- tooltip styling Theme.AttachTooltip uses everywhere else in the
+    -- addon (gold title, wrapped grey body), but wired directly here
+    -- instead of through AttachTooltip itself: a pooled header row is
+    -- reused across different sections as the Library re-renders, and
+    -- AttachTooltip's hooks are meant to be attached once with fixed
+    -- text, not re-attached (and stacked) on every refresh. The text is
+    -- dynamic per section (hdr.tooltipTitle/tooltipBody, set in
+    -- ConfigureHeader below).
+    hdr:SetScript("OnEnter", function(self)
+        if not self.tooltipBody then return end
+        GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+        GameTooltip:SetText(self.tooltipTitle or "Category", 1, 0.82, 0)
+        GameTooltip:AddLine(self.tooltipBody, 0.86, 0.90, 0.96, true)
+        GameTooltip:Show()
+    end)
+    hdr:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     return hdr
 end
@@ -1289,9 +1308,22 @@ local function GetOrCreateHeader(index)
     return sectionHeaders[index]
 end
 
+-- Category-header tooltip bodies (explicit requirement, exact wording).
+local HIDE_TOOLTIP_BODY = "Click to collapse or expand. Hide a sound from Edit Sound by enabling Hide."
+local FAVOURITES_TOOLTIP_BODY = "Click to collapse or expand. Add favourites with Shift + Click, or enable Favourite in Edit Sound."
+local DEFAULT_TOOLTIP_BODY = "Click to collapse or expand this category."
+
 local function ConfigureHeader(hdr, sectionKey, title, icon, collapsed, count, isFavourites)
     hdr.sectionKey = sectionKey
     hdr.title:SetText(title)
+    hdr.tooltipTitle = title
+    if isFavourites then
+        hdr.tooltipBody = FAVOURITES_TOOLTIP_BODY
+    elseif sectionKey == "hide" then
+        hdr.tooltipBody = HIDE_TOOLTIP_BODY
+    else
+        hdr.tooltipBody = DEFAULT_TOOLTIP_BODY
+    end
     if icon then
         hdr.icon:SetTexture(icon)
         hdr.icon:Show()
@@ -1471,10 +1503,10 @@ local function RefreshLibraryImpl()
             hdr:SetPoint("TOPLEFT", scroll.content, "TOPLEFT", 0, -y)
             hdr:SetPoint("RIGHT", scroll.content, "RIGHT", 0, 0)
             -- "favourites" is a reserved internal key (see the header's own
-            -- OnClick above) - never the visible "Favourites" label.
+            -- OnClick above) - never the visible "My Favourites" label.
             local favCollapsed = SB.db.ui.categoryCollapsed["favourites"] and true or false
             local favCount = SB:GetFavouriteCount()
-            ConfigureHeader(hdr, "favourites", "Favourites", SB.FAVOURITES_ICON, favCollapsed, favCount, true)
+            ConfigureHeader(hdr, "favourites", "My Favourites", SB.FAVOURITES_ICON, favCollapsed, favCount, true)
             y = y + SECTION_HEADER_H
             totalShown = totalShown + favCount
             if favCollapsed then
@@ -1650,17 +1682,29 @@ end
 -- (Admin/Settings), built right after this section (BuildUtilityTabs).
 ------------------------------------------------------------------------
 
+-- Targeted correction round (explicit requirement): exact colours for
+-- this ONE selector, given as hex - #F2F5FF/#B88CF2 are specific to this
+-- control (All's near-white and Friends' colour here are NOT the same as
+-- SB.CHANNEL_COLOR.FRIENDS - explicit choice, not a mistake); Guild/Raid/
+-- Self Only happen to already match SB.CHANNEL_COLOR exactly, spelled out
+-- here too so this table is the one place that fully defines this
+-- control's own palette rather than partly deferring to a different
+-- context's colours.
+local function HexColor(hex)
+    return { tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255, tonumber(hex:sub(5, 6), 16) / 255 }
+end
+
 local BROADCAST_TABS = {
-    { key = "ALL", label = "All", tooltip = "Select everyone currently reachable across Guild, Raid/Party and Friends.",
-      color = SB.Theme.V3.ARCANE_CYAN },
+    { key = "ALL", label = "All", tooltip = "Play for yourself and send to all enabled Soundbook channels.",
+      color = HexColor("F2F5FF") },
     { key = "GUILD", label = "Guild", bucket = "GUILD",
-      color = { SB.CHANNEL_COLOR.GUILD.r, SB.CHANNEL_COLOR.GUILD.g, SB.CHANNEL_COLOR.GUILD.b } },
-    { key = "RAID", label = "Raid / Party", bucket = "RAID",
-      color = { SB.CHANNEL_COLOR.RAID.r, SB.CHANNEL_COLOR.RAID.g, SB.CHANNEL_COLOR.RAID.b } },
+      color = HexColor("8CE09E") },
+    { key = "RAID", label = "Raid", bucket = "RAID",
+      color = HexColor("FAB87A") },
     { key = "FRIENDS", label = "Friends", bucket = "FRIENDS",
-      color = { SB.CHANNEL_COLOR.FRIENDS.r, SB.CHANNEL_COLOR.FRIENDS.g, SB.CHANNEL_COLOR.FRIENDS.b } },
-    { key = "SELF", label = "Self Only", tooltip = "Local playback only - nothing is sent.",
-      color = { SB.CHANNEL_COLOR.SELF.r, SB.CHANNEL_COLOR.SELF.g, SB.CHANNEL_COLOR.SELF.b } },
+      color = HexColor("B88CF2") },
+    { key = "SELF", label = "Self Only", tooltip = "Play only for yourself. Nothing is sent to other players.",
+      color = HexColor("7A7A80") },
 }
 
 local function IsRailBucketAvailable(bucket)
@@ -1751,6 +1795,14 @@ function SB.SetBroadcastBucketAllSelected(bucket, allSelected)
     else
         rail.selected[bucket] = {}
     end
+    -- Explicit requirement: the channel tab must read as selected even
+    -- with zero eligible recipients ("zero recipients means zero remote
+    -- recipients, do not auto-fallback" - it's still the chosen output).
+    -- rail.selected[bucket] being an empty array can't distinguish
+    -- "explicitly selected, nobody eligible" from "never touched", so a
+    -- small separate flag carries that intent instead.
+    rail.channelSelected = rail.channelSelected or {}
+    rail.channelSelected[bucket] = allSelected and true or false
     SB:Fire("OUTPUT_SELECTION_CHANGED")
 end
 
@@ -1978,6 +2030,9 @@ function SB.SelectSelfOnly()
     local rail = SB.db.ui.outputRail
     rail.selfOnly = true
     rail.selected.GUILD, rail.selected.RAID, rail.selected.FRIENDS = {}, {}, {}
+    if rail.channelSelected then
+        rail.channelSelected.GUILD, rail.channelSelected.RAID, rail.channelSelected.FRIENDS = false, false, false
+    end
     SB:Fire("OUTPUT_SELECTION_CHANGED")
 end
 
@@ -1995,9 +2050,17 @@ end
 
 local function ApplyTabVisual(btn, active, color)
     if active then
+        -- Explicit requirement: "selected state must remain visually
+        -- obvious even with zero recipients... full channel-color text;
+        -- subtle same-color background/tint; clear same-color accent
+        -- indicator - do not rely on hover alone." Label text now uses
+        -- the channel's own colour at full strength (was plain white,
+        -- which read identically for every channel - the whole point of
+        -- per-channel colour was lost on the one element a player
+        -- actually reads).
         btn:SetBackdropColor(color[1] * 0.30, color[2] * 0.30, color[3] * 0.30, 0.96)
         btn:SetBackdropBorderColor(color[1], color[2], color[3], 1)
-        btn.label:SetTextColor(1, 1, 1)
+        btn.label:SetTextColor(color[1], color[2], color[3])
         btn.accent:SetVertexColor(color[1], color[2], color[3], 1)
         btn.glow:SetVertexColor(color[1], color[2], color[3], 0.35)
         btn.glow:Show()
@@ -2036,13 +2099,20 @@ RefreshBroadcastTabs = function()
         else
             available = IsRailBucketAvailable(entry.bucket)
             count = SelectedCount(entry.bucket)
-            active = count > 0
+            -- Explicit requirement: the channel stays visibly selected
+            -- even with zero eligible recipients - count alone can't
+            -- distinguish "explicitly selected, nobody eligible" from
+            -- "never touched" (both leave rail.selected[bucket] empty),
+            -- so rail.channelSelected (set by SB.SetBroadcastBucketAllSelected)
+            -- covers that case. "Do not rely on hover alone."
+            active = count > 0 or (rail.channelSelected and rail.channelSelected[entry.bucket]) or false
         end
 
-        local label = entry.label
-        if entry.key == "RAID" then
-            label = IsInRaid() and "Raid" or (IsInGroup() and "Party" or "Raid / Party")
-        end
+        -- Explicit requirement: always "Raid" in this selector, never
+        -- "Party" or "Raid / Party" - the underlying Raid/Party transport
+        -- semantics (Communication.lua's SB.ResolveGroupChannel) are
+        -- completely unaffected, this only simplifies the displayed word.
+        local label = (entry.key == "RAID") and "Raid" or entry.label
         if count and count > 0 then
             label = label .. " (" .. count .. ")"
         end
@@ -2111,6 +2181,19 @@ local TAG_FILTER_BAR_H = 22
 -- of sync with the real layout - explicit requirement, section 10:
 -- "vertically aligned with Library content".
 local RAIL_TOP_OFFSET = HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP + SEARCH_H + SEARCH_GAP_BOTTOM + TAG_FILTER_BAR_H + SECTION_GAP
+
+-- Targeted correction round (explicit requirement): Settings' own category
+-- strip must sit at the exact same Y position the first Library row does,
+-- "reusing the same content-top/layout reference... instead of an
+-- unrelated magic Y coordinate". Settings.lua's panel is already
+-- SetAllPoints to the same content frame the Library scroll uses, which
+-- SHOULD already resolve to this same offset - but that's an indirect,
+-- multi-hop live anchor chain through the header/Search/filter row (some
+-- of which are Hidden, not just repositioned, while Settings owns the
+-- content area). Exposing the same already-computed pixel value directly
+-- removes any dependency on that chain resolving through hidden
+-- intermediate frames, rather than trusting it implicitly.
+SB.LIBRARY_CONTENT_TOP_OFFSET = RAIL_TOP_OFFSET
 
 ------------------------------------------------------------------------
 -- Shared "attached tab" button builder - used for BOTH the upper
@@ -2226,6 +2309,16 @@ local function BuildBroadcastTabs(parent)
             elseif broadcastFlyout and broadcastFlyout:IsShown() and broadcastFlyout.__bucket == entry.bucket then
                 CloseBroadcastFlyout()
             else
+                -- Explicit requirement: clicking Guild/Raid/Friends
+                -- immediately selects the WHOLE channel as current
+                -- output (not just opens an empty picker the player then
+                -- has to also tick "All X" in themselves) AND opens its
+                -- member dropdown, already showing that as checked. Zero
+                -- eligible members still selects the channel - the
+                -- dropdown just shows its own empty state
+                -- (PopulateBroadcastFlyout already handles that).
+                SB.SetBroadcastBucketAllSelected(entry.bucket, true)
+                RefreshBroadcastTabs()
                 OpenBroadcastFlyout(btn, entry.bucket)
             end
         end)
@@ -2235,9 +2328,27 @@ local function BuildBroadcastTabs(parent)
             -- flyout instead, so hovering never produces tooltip+flyout
             -- at once (explicit requirement).
             if entry.tooltip then
-                GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+                -- Explicit requirement: appears to the RIGHT of the
+                -- selector (anchored from its own right edge, ~8px gap),
+                -- never covering the Library when there's room - the
+                -- previous ANCHOR_LEFT constant positions relative to
+                -- the CURSOR, not this button, and could show the
+                -- tooltip back over the Library content on the right-
+                -- edge-attached Output Rail. Flips left only when the
+                -- screen genuinely has no room on the right, same
+                -- GetRight()-vs-GetScreenWidth() pattern OpenBroadcastFlyout
+                -- already uses for the exact same reason.
+                GameTooltip:SetOwner(self, "ANCHOR_NONE")
                 GameTooltip:SetText(entry.label, 1, 1, 1)
                 GameTooltip:AddLine(entry.tooltip, 0.8, 0.85, 0.95, true)
+                local screenW = (type(GetScreenWidth) == "function" and GetScreenWidth()) or 1024
+                local selfRight = self:GetRight() or 0
+                GameTooltip:ClearAllPoints()
+                if selfRight + 8 + (GameTooltip:GetWidth() or 200) <= screenW then
+                    GameTooltip:SetPoint("TOPLEFT", self, "TOPRIGHT", 8, 0)
+                else
+                    GameTooltip:SetPoint("TOPRIGHT", self, "TOPLEFT", -8, 0)
+                end
                 GameTooltip:Show()
             end
         end)
@@ -2476,9 +2587,22 @@ local function RestorePosition()
     main:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
 end
 
+-- Targeted correction round (explicit requirement): locking Main no
+-- longer disables moving it - only resizing. When locked, the resize
+-- grip is fully hidden AND its click region cleared (EnableMouse(false)
+-- plus zeroed SetHitRectInsets) so no invisible hit area is left behind
+-- for the mouse to still catch - "hidden resize grip must not retain an
+-- invisible mouse/hit area". Unlocking restores both immediately.
 local function RefreshLockVisual()
-    if not lockToolbarBtn then return end
-    lockToolbarBtn:SetLocked(SB.db.ui.layoutLocked and true or false)
+    if lockToolbarBtn then
+        lockToolbarBtn:SetLocked(SB.db.ui.layoutLocked and true or false)
+    end
+    if mainResizeGrip then
+        local locked = SB.db.ui.layoutLocked and true or false
+        mainResizeGrip:SetShown(not locked)
+        mainResizeGrip:EnableMouse(not locked)
+        mainResizeGrip:SetHitRectInsets(0, 0, 0, 0)
+    end
 end
 
 local function BuildMainFrame()
@@ -2501,8 +2625,12 @@ local function BuildMainFrame()
     end
     main:EnableMouse(true)
     main:RegisterForDrag("LeftButton")
+    -- Targeted correction round (explicit requirement): Lock no longer
+    -- blocks moving Main - "Main Soundbook must still be movable by
+    -- dragging its header" while locked, only resizing is disabled now.
+    -- Mini Soundbook's own lock (FavouritesWindow.lua) is untouched and
+    -- still blocks both move and resize - this change is Main-only.
     main:SetScript("OnDragStart", function()
-        if SB.db.ui.layoutLocked then return end
         main:StartMoving()
     end)
     main:SetScript("OnDragStop", function()
@@ -2580,7 +2708,11 @@ local function BuildMainFrame()
         SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
         RefreshLockVisual()
     end)
-    SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent moving/resizing the Main Soundbook and the Announcer.")
+    main.lockBtn = lockToolbarBtn
+    -- Targeted correction round: locking no longer blocks moving Main -
+    -- only resizing - tooltip text corrected to match (was "Prevent
+    -- moving/resizing").
+    SB.Theme.AttachTooltip(lockToolbarBtn, "Lock Interface", "Prevent resizing the Main Soundbook. It can still be moved. Also locks the Announcer.")
 
     -- "Quick Audio" - reuses the Announcer's own Quick Options menu (mute
     -- incoming / lock / muted players / open Soundbook / Announcer size /
@@ -2662,7 +2794,12 @@ local function BuildMainFrame()
     -- Right inset is a little wider than SAFE_INSET alone - clearance for
     -- the scrollbar itself (explicit requirement: a "scrollbar safe
     -- area"), not just the frame's own decorative border.
-    libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -(SAFE_INSET + 2), SAFE_INSET)
+    -- Targeted correction round (explicit requirement): ~10px more
+    -- breathing room between the final row and the decorative frame's
+    -- own bottom edge than before - left/right insets (both handled via
+    -- tagFilterBar/the "+2" scrollbar clearance above) are unchanged,
+    -- only the bottom grew.
+    libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -(SAFE_INSET + 2), SAFE_INSET + 10)
     -- Theme.CreateScrollFrame never sets its own content child's width -
     -- every other caller in this addon does that itself. A ScrollFrame's
     -- scroll child must get that width via SetWidth (done in
@@ -2730,33 +2867,65 @@ local function BuildMainFrame()
     resizeGrip:GetNormalTexture():SetAllPoints()
     resizeGrip:GetHighlightTexture():SetAllPoints()
     resizeGrip:GetPushedTexture():SetAllPoints()
-    -- BUGFIX (explicit report): a plain click (mouse down + up with no
-    -- real drag) could expand/"maximize" the window. Root cause -
-    -- OnMouseDown called main:StartSizing("BOTTOMRIGHT") unconditionally,
-    -- and WoW's native StartSizing ties the given corner DIRECTLY to the
-    -- cursor's current screen position from that instant on, every frame,
-    -- for as long as sizing is active - it does not track a delta from
-    -- where the click started. resizeGrip's own hit region is 34x34 but
-    -- deliberately inset from the window's true corner (explicit earlier
-    -- report: "too small/hard to click"), so a click anywhere in that
-    -- padding is already several pixels away from the real corner -
-    -- engaging StartSizing right on mousedown made the window's corner
-    -- snap to wherever inside the grip you happened to click, even with
-    -- zero mouse movement afterward. RegisterForDrag/OnDragStart fixes
-    -- this for free: WoW's own drag detection already requires a real
-    -- mouse-move-while-held before OnDragStart fires - a plain click never
-    -- reaches it at all - exactly the "mouse down + drag starts manual
-    -- resizing; a simple click does not change size" behaviour required,
-    -- with no custom threshold-tracking code needed (the same pattern
-    -- `main` itself already uses for window-move, just never applied here).
+    -- BUGFIX (explicit report, second pass): a plain click could still
+    -- visibly jump/expand the window even after switching to
+    -- RegisterForDrag - that fix stopped a zero-movement click from
+    -- engaging resize, but the underlying mechanism (main:StartSizing)
+    -- was still the real problem: WoW ties the given corner DIRECTLY to
+    -- the cursor's live screen position from the instant StartSizing
+    -- engages, every frame, for as long as it's active - never a delta
+    -- from where the drag itself started. resizeGrip's own hit region is
+    -- deliberately larger than and inset from the window's true corner
+    -- (an earlier "too small to click" fix), so the moment a real drag
+    -- crosses WoW's own drag-start threshold, the corner snaps to
+    -- wherever the cursor is AT THAT INSTANT - which can already be
+    -- several pixels into the grip's padding, away from the true corner -
+    -- producing a visible jump on what reads to the player as "I just
+    -- clicked it".
+    --
+    -- Root-cause fix: resize is now driven entirely by hand, never
+    -- through main:StartSizing at all. On drag start, the window's
+    -- current on-screen TOPLEFT is captured and main is re-anchored to
+    -- that exact fixed point (so growing/shrinking never shifts the
+    -- top-left corner the way a raw SetSize on a CENTER-anchored frame
+    -- would); every subsequent frame, the width/height are recomputed
+    -- directly from the cursor's own MOVEMENT since the drag started
+    -- (not its absolute position), clamped to the existing min/max
+    -- bounds, and applied via SetSize. A plain click never starts an
+    -- OnUpdate at all (WoW's own drag-threshold, same as before), and a
+    -- real drag can only ever move the size by exactly as much as the
+    -- cursor itself moved - never jump to max from a click, by
+    -- construction, regardless of where inside the grip the drag began.
+    local RESIZE_MIN_W, RESIZE_MIN_H, RESIZE_MAX_W, RESIZE_MAX_H = 560, 560, 720, 760
+    local resizeStartCursorX, resizeStartCursorY, resizeStartW, resizeStartH
+    local function ResizeOnUpdate()
+        local scale = main:GetEffectiveScale() or 1
+        local cx, cy = GetCursorPosition()
+        cx, cy = cx / scale, cy / scale
+        local dx = cx - resizeStartCursorX
+        local dy = resizeStartCursorY - cy
+        local newW = math.max(RESIZE_MIN_W, math.min(RESIZE_MAX_W, resizeStartW + dx))
+        local newH = math.max(RESIZE_MIN_H, math.min(RESIZE_MAX_H, resizeStartH + dy))
+        main:SetSize(newW, newH)
+    end
     resizeGrip:RegisterForDrag("LeftButton")
     resizeGrip:SetScript("OnDragStart", function()
         if SB.db.ui.layoutLocked then return end
-        main:StartSizing("BOTTOMRIGHT")
+        local scale = main:GetEffectiveScale() or 1
+        local left, top = main:GetLeft(), main:GetTop()
+        if left and top then
+            main:ClearAllPoints()
+            main:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left, top)
+        end
+        local cx, cy = GetCursorPosition()
+        resizeStartCursorX, resizeStartCursorY = cx / scale, cy / scale
+        resizeStartW, resizeStartH = main:GetWidth(), main:GetHeight()
+        resizeGrip:SetScript("OnUpdate", ResizeOnUpdate)
     end)
     resizeGrip:SetScript("OnDragStop", function()
-        main:StopMovingOrSizing()
+        resizeGrip:SetScript("OnUpdate", nil)
         SaveSize()
+        SavePosition()
         if main.layoutRefreshTimer then
             main.layoutRefreshTimer:Cancel()
             main.layoutRefreshTimer = nil
@@ -2765,6 +2934,7 @@ local function BuildMainFrame()
         if settingsPanel and settingsPanel:IsShown() and SB.FitSettingsPanelHeight then SB:FitSettingsPanelHeight() end
     end)
     main.resizeGrip = resizeGrip
+    mainResizeGrip = resizeGrip
     main:SetScript("OnSizeChanged", function()
         if not main.content then return end
         -- Search's own centred width is cheap to recompute (no layout

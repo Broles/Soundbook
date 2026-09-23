@@ -934,8 +934,20 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
     -- requirement, section 7).
     local L = SB.Theme.LAYOUT
     local tabRow = BuildTabStrip(panel)
-    tabRow:SetPoint("TOPLEFT", L.GAP_S, -L.GAP_S)
-    tabRow:SetPoint("RIGHT", -L.GAP_S, 0)
+    -- Targeted correction round (explicit requirement): the category
+    -- strip's Y position must match exactly where the first Library row
+    -- begins, not just "close to it" - anchored directly off `mainFrame`
+    -- using the SAME already-computed pixel offset the Library's own
+    -- content region uses (SB.LIBRARY_CONTENT_TOP_OFFSET, UI.lua),
+    -- instead of trusting the panel's own multi-hop SetAllPoints chain
+    -- (which runs through the header/Search/filter row - some of them
+    -- Hidden, not just repositioned, while Settings is the active view).
+    -- LEFT/RIGHT still come from `panel` itself (untouched, unaffected -
+    -- panel's horizontal bounds were never in question).
+    local topOffset = (SB.LIBRARY_CONTENT_TOP_OFFSET or 0) + L.GAP_S
+    tabRow:SetPoint("LEFT", panel, "LEFT", L.GAP_S, 0)
+    tabRow:SetPoint("TOP", mainFrame, "TOP", 0, -topOffset)
+    tabRow:SetPoint("RIGHT", panel, "RIGHT", -L.GAP_S, 0)
     panel.tabRow = tabRow
 
     -- Targeted correction round (explicit requirement): the old
