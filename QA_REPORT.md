@@ -213,3 +213,80 @@ behavior are not something a Lua-only mock can fully replicate. In
 particular: the Popout Direction fix's real-world correctness at actual
 screen edges, and the Icon Picker's left/right fallback placement, are
 logically verified but should get one in-game pass each.
+
+---
+
+## Soundbook 3.0 QA continuation - Settings restructure (2026-09-23)
+
+Additive, same as Round 5 above. Covers the information-architecture
+rework of Settings.lua and the relocation of Favourite Keybindings, Sound
+History, and timed Receive Mute out of it, per the explicit task spec.
+
+### What changed
+
+Settings is now five sections behind a compact tab strip (Sound &
+Playback, Sharing & Receiving, Mini Soundbook, Library & Appearance,
+Advanced) instead of one continuous scroll, plus a persistent Help &
+Information footer. No SavedVariables key changed; this is presentation/
+navigation only. Three things moved out of Settings to where the task
+spec asked for them (Favourite Keybindings -> a new Keybinding Mode on
+the Main Soundbook's Favourites view; Sound History -> the shared Quick
+Options menu, above Open Settings; timed 30/60-minute Receive Mute ->
+the same Quick Options menu, next to the existing indefinite toggle), and
+two things were removed outright rather than relocated, per an explicit
+"do not expose analytics anywhere in Settings" instruction: the analytics
+opt-out checkbox and the Community Analytics window button. The window
+itself is untouched and still reachable via `/sb analytics`.
+
+### Two judgment calls worth flagging explicitly
+
+**"Now Playing / Announcement Duration."** The task spec describes this
+control as governing a "Now Playing -> Last Sound" transition inside the
+Mini Soundbook. That description matches the OLD pre-3.0 Favourites
+window (FavouritesWindow.lua) exactly - which is dead code, not in the
+`.toc`, never loads. In the current 3.0 Announcer, that separate "Last
+Sound" display state doesn't exist any more; the setting this task refers
+to (`SB.db.settings.announceDuration`) is still live, but now drives a
+different thing entirely - how long the Library grid keeps its own
+"just played" gold highlight on a sound's tile (`UI.lua`'s
+`SetPlayingState`). I re-exposed the control under Mini Soundbook > Now
+Playing with an honest description of what it actually does today,
+preserving the underlying 0-15s range and its "0 = off" floor exactly.
+Flagging this rather than silently mislabeling the control to match a
+description that no longer corresponds to live behaviour.
+
+**"Right-click Mini Soundbook icon" / "right-click Quick Audio icon."**
+An earlier round of this same session explicitly rebound the Announcer
+icon's clicks (Left = Favourites, Right = open Main Soundbook, Shift+Right
+= Quick Options) at the user's own request. Rather than overriding that
+established scheme to add a literal new plain-right-click menu, "Sound
+History" and the mute durations were added to the Quick Options menu that
+already existed at that Shift+Right-click / Quick-Audio-button
+interaction - the one place in the addon that already had an "Open
+Settings" row for History to sit above. Functionally reachable from both
+launcher icons as specified (and still reachable via the Main toolbar's
+Quick Audio button when the Mini Soundbook itself is hidden, satisfying
+that specific requirement), just not literally bound to a bare right-click
+on the Announcer icon.
+
+### Verification
+
+Extended the mock WoW API harness with a new `loader_settings.lua`:
+switches through all 5 sections without error; starts and stops a timed
+Receive Mute and confirms the compact info state appears/disappears
+correctly; enters and exits Keybinding Mode via the same public toggle the
+Favourites view's "Keybinds" button now calls; assigns a binding to both
+an occupied slot and a genuinely empty one (confirming bindings still
+don't depend on slot occupancy) and clears one; confirms the relocated
+Quick Options rows exist. This surfaced a real, previously-unexercised
+mock gap (`ClearOverrideBindings`/`SetOverrideBindingClick`/
+`GetBindingKey`/`IsControlKeyDown`/`IsAltKeyDown` were never stubbed,
+because no existing test had ever called `SB:SetFavouriteKeybind`
+directly) - patched in the mock, not a product bug.
+
+### Still gated on a live client
+
+Same boundary as every round above - the exact visual balance of the new
+tab strip, the Keybinding Mode grid's real-world row layout at different
+window sizes, and genuine key-capture (`OnKeyDown` behavior, override
+binding precedence against other addons/UI) all need one in-game pass.
