@@ -741,6 +741,24 @@ local function GetDefaultDB()
             -- identifier (SB.CATEGORIES entries / "favourites" / private
             -- tab name), never a display name - see 3.0 spec section 85.
             categoryCollapsed = {},
+            -- BUGFIX (3.0 QA round) - this was missing from the defaults
+            -- table entirely, even though Database.lua's SanitizeDatabase
+            -- has always built/expected ui.outputRail (the right-side
+            -- broadcast tabs' multi-select state). Every brand-new
+            -- player's very first RefreshBroadcastTabs() call crashed on
+            -- `SB.db.ui.outputRail` itself being nil - an upgrading
+            -- player never hit this since MigrateDatabaseInPlace/
+            -- SanitizeDatabase always run for them, which is why it went
+            -- unnoticed until now. Deliberately left EMPTY here, same as
+            -- tagFilters/categoryCollapsed above - SanitizeDatabase (see
+            -- PrepareDatabase's fresh-install fast path, which now always
+            -- runs it) is what actually fills in `selected`/`selfOnly`.
+            -- Pre-filling `selected` here directly would make
+            -- SanitizeDatabase's own "still on the old mode/recipients
+            -- shape?" migration check (type(ui.outputRail.selected) ~=
+            -- "table") see an already-table value and silently skip
+            -- migrating an upgrading player's real saved recipients.
+            outputRail = {},
         },
     }
 end

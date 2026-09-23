@@ -300,6 +300,41 @@ function SB.OpenIconPicker(callback, currentPath)
     activeCallback = callback
     popup.grid:Populate()
     popup.grid:SetSelectedIcon(currentPath)
+
+    -- QA round fix (section 12): this used to always centre on the exact
+    -- same point as Edit Sound itself (when opened from its Change Icon
+    -- button) and rely on a fixed, arbitrary frame level (300) "hopefully"
+    -- being high enough - reported opening behind Edit Sound's own modal
+    -- blocker regardless. Anchored relative to Edit Sound directly when
+    -- it's the one open (SoundbookEditWindow - same global-name pattern
+    -- SoundbookMainFrame already uses across files for this) - sticky to
+    -- its LEFT with a small gap, falling back to the RIGHT if there isn't
+    -- room on screen, roughly level with its upper/content region, and a
+    -- frame level computed FROM Edit Sound's own CURRENT level rather
+    -- than a fixed guess. Conceptually Main < Edit's modal blocker <
+    -- Edit Sound < Icon Picker, satisfied by construction instead of
+    -- hoping any fixed number is always high enough. Falls back to the
+    -- original centred-on-Main placement for every other caller (e.g.
+    -- Settings' Category icon picker), which has no Edit Sound to anchor to.
+    local editWin = _G.SoundbookEditWindow
+    popup:ClearAllPoints()
+    if editWin and editWin:IsShown() then
+        popup:SetFrameStrata(editWin:GetFrameStrata())
+        popup:SetFrameLevel((editWin:GetFrameLevel() or 1) + 10)
+        local gap = 6
+        local popupW = popup:GetWidth() or 0
+        local editLeft = editWin:GetLeft() or 0
+        if editLeft - popupW - gap >= 0 then
+            popup:SetPoint("TOPRIGHT", editWin, "TOPLEFT", -gap, 0)
+        else
+            popup:SetPoint("TOPLEFT", editWin, "TOPRIGHT", gap, 0)
+        end
+    else
+        popup:SetFrameStrata("DIALOG")
+        popup:SetFrameLevel(300)
+        popup:SetPoint("CENTER", SoundbookMainFrame or UIParent, "CENTER")
+    end
+
     popup:Show()
     -- Explicit report ("kann das Icon nicht ändern") - root cause found
     -- and fixed above (popup had no SetPoint at all). Kept as a diagnostic

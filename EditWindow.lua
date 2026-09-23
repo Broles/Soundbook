@@ -19,12 +19,24 @@ local CONTENT_LEFT = CONTENT_MARGIN
 local CONTENT_W = WINDOW_W - CONTENT_MARGIN * 2
 
 -- The icon/Change Icon column on the left of the Display Name row -
--- Change Icon (needs ~90px for its label) is wider than the icon itself
--- (64px, per spec), so the icon is centered within this column rather
--- than the column being exactly icon-width.
+-- Change Icon (needs ~90px for its label) is wider than the icon itself,
+-- so the icon is centered within this column rather than the column
+-- being exactly icon-width.
 local ICON_COL_W = 92
-local ICON_SIZE = 64
+-- QA round refinement (section 11): reduced from 64 - disproportionately
+-- large next to the 16-22px controls that sit right beside/below it.
+-- Still within the explicitly requested 56-64px range, chosen to leave
+-- Change Icon's own column comfortably wider than the icon again.
+local ICON_SIZE = 56
 local NAME_COL_X = CONTENT_LEFT + ICON_COL_W + 12
+
+-- QA round refinement (section 11) - named gaps instead of each row
+-- re-deriving its own one-off offset, so the vertical rhythm reads as
+-- deliberate rather than a pile of slightly-different magic numbers.
+local TOP_CONTENT_Y = -70   -- was -62 - more breathing room below the header/divider
+local CHANGE_ICON_GAP = 8   -- icon -> its own Change Icon button
+local BLOCK_GAP = 14        -- between major stacked sections (identity block -> checkboxes -> Routing -> Macro)
+local CHECKBOX_GAP = 22     -- horizontal gap between adjacent checkboxes in the Favourite/Muted/Hide row
 
 -- Macro Command and Macro Output side by side, same row (explicit request -
 -- Ctrl+C copying never worked reliably enough to earn its own dedicated
@@ -203,12 +215,12 @@ local function BuildFrame()
     -- safe area; Display Name is the second column, consuming the rest
     -- of the content width.
     local iconSlot = SB.Theme.CreateIconSlot(edit, ICON_SIZE)
-    iconSlot:SetPoint("TOPLEFT", CONTENT_LEFT + math.floor((ICON_COL_W - ICON_SIZE) / 2), -62)
+    iconSlot:SetPoint("TOPLEFT", CONTENT_LEFT + math.floor((ICON_COL_W - ICON_SIZE) / 2), TOP_CONTENT_Y)
     edit.iconPreview = iconSlot.texture
     edit.iconSlot = iconSlot
 
     local changeIconBtn = SB.Theme.CreateSecondaryButton(edit, "Change Icon", ICON_COL_W, 20)
-    changeIconBtn:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT, -62 - ICON_SIZE - 8)
+    changeIconBtn:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT, TOP_CONTENT_Y - ICON_SIZE - CHANGE_ICON_GAP)
     changeIconBtn:SetScript("OnClick", function()
         if not currentSoundID then return end
         SB.OpenIconPicker(function(path)
@@ -221,7 +233,7 @@ local function BuildFrame()
 
     local nameLabel = edit:CreateFontString(nil, "OVERLAY")
     nameLabel:SetFontObject(SB.Fonts.HighlightSmall)
-    nameLabel:SetPoint("TOPLEFT", edit, "TOPLEFT", NAME_COL_X, -62)
+    nameLabel:SetPoint("TOPLEFT", edit, "TOPLEFT", NAME_COL_X, TOP_CONTENT_Y)
     nameLabel:SetText("Display Name")
     nameLabel:SetTextColor(0.60, 0.80, 1.0)
 
@@ -242,21 +254,30 @@ local function BuildFrame()
     -- not chained off each other's rendered width.
     -- (forward-declared so the onClick closure below - defined as part of
     -- creating it - can still refer to it by the time it's actually clicked)
+    local CHECKBOX_ROW_Y = TOP_CONTENT_Y - ICON_SIZE - CHANGE_ICON_GAP - 20 - BLOCK_GAP
+
     local favCheck
     favCheck = SB.Theme.CreateCheckbox(edit, "Favourite", function(checked)
         if not currentSoundID then return end
         draft.favourite = checked and true or false
         RecomputeDirty()
     end)
-    favCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT, -62 - ICON_SIZE - 8 - 20 - 20)
+    favCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT, CHECKBOX_ROW_Y)
     edit.favCheck = favCheck
 
+    -- Chained off Favourite's own actual rendered width (glyph + label
+    -- text), not a fixed absolute X slot (QA round, section 11 - "very
+    -- large horizontal gaps" - the old fixed 110/200px slots were sized
+    -- for a hypothetical long label, wasting most of that width for
+    -- "Favourite"/"Muted"). GetStringWidth is reliable immediately after
+    -- SetText, both labels are static (never player-editable), so this
+    -- is deterministic, not a post-layout guess.
     local muteCheck = SB.Theme.CreateCheckbox(edit, "Muted", function(checked)
         if not currentSoundID then return end
         draft.muted = checked and true or false
         RecomputeDirty()
     end)
-    muteCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT + 110, -62 - ICON_SIZE - 8 - 20 - 20)
+    muteCheck:SetPoint("LEFT", favCheck.text, "LEFT", (favCheck.text:GetStringWidth() or 40) + CHECKBOX_GAP, 0)
     edit.muteCheck = muteCheck
 
     -- "Hide" (explicit request) - a new virtual "Hide" category at the very
@@ -270,7 +291,7 @@ local function BuildFrame()
         draft.hidden = checked and true or false
         RecomputeDirty()
     end)
-    hideCheck:SetPoint("TOPLEFT", edit, "TOPLEFT", CONTENT_LEFT + 200, -62 - ICON_SIZE - 8 - 20 - 20)
+    hideCheck:SetPoint("LEFT", muteCheck.text, "LEFT", (muteCheck.text:GetStringWidth() or 32) + CHECKBOX_GAP, 0)
     edit.hideCheck = hideCheck
     SB.Theme.AttachTooltip(hideCheck, "Hide",
         "Removes this sound from its category - still reachable under Hide at the bottom of the Library.")

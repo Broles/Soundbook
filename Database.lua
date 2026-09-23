@@ -347,6 +347,20 @@ end
 function SB:PrepareDatabase(rawDatabase)
     local defaults = SB.GetDefaultDatabase()
     if type(rawDatabase) ~= "table" then
+        -- BUGFIX (3.0 QA round): this used to return the raw defaults
+        -- table completely unsanitized. GetDefaultDatabase() is meant to
+        -- hold plain, minimal defaults (empty tables like ui.outputRail/
+        -- ui.tagFilters, not their fully-built-out shape) - SanitizeDatabase
+        -- below is what actually finishes those into what the rest of the
+        -- addon expects (ui.outputRail.selected/selfOnly, for one - see
+        -- Core.lua's GetDefaultDB comment on ui.outputRail). Every
+        -- upgrading player already went through Sanitize normally; only a
+        -- genuinely fresh install took this shortcut and skipped it,
+        -- which is exactly why the gap went unnoticed until now. Running
+        -- it here keeps both paths structurally consistent instead of
+        -- requiring the defaults table to be hand-kept in sync with
+        -- whatever shape Sanitize expects.
+        SanitizeDatabase(defaults, defaults)
         return defaults, { commit = true, fresh = true }
     end
 

@@ -2008,6 +2008,28 @@ RefreshBroadcastTabs = function()
 end
 
 ------------------------------------------------------------------------
+-- Shared Main-shell layout metrics (3.0 QA round, sections 5-10) - one
+-- place every header/toolbar/content measurement below reads from,
+-- instead of each row picking its own ad-hoc padding number. Doesn't
+-- change the window's own min/max resizable size, just how the fixed
+-- header rows and the gaps between major sections (title -> toolbar ->
+-- filters -> Library/Output Rail) are spaced within it.
+------------------------------------------------------------------------
+local SAFE_INSET = 8    -- clear of the frame's own decorative border/corner ornament
+local TOOLBAR_H = 68     -- title row + search/action row, combined
+local SECTION_GAP = 10   -- vertical gap between major sections (toolbar -> filters -> library)
+local SEARCH_MIN_W = 140 -- never shrinks narrower than this stays usable
+local SEARCH_MAX_W = 320 -- never grows wider than this on a wide window - stays the
+                          -- primary Library input without dominating the header
+local TAG_FILTER_BAR_H = 20
+-- Output Rail's own top offset (broadcast tabs) - deliberately the SAME
+-- vertical position Library content starts at (toolbar + gap + filter
+-- row + gap), so the rail reads as aligned WITH the Library rather than
+-- floating alongside the title/toolbar area above it (explicit
+-- requirement, section 10: "vertically aligned with Library content").
+local RAIL_TOP_OFFSET = SAFE_INSET + TOOLBAR_H + SECTION_GAP + TAG_FILTER_BAR_H + SECTION_GAP
+
+------------------------------------------------------------------------
 -- Shared "attached tab" button builder - used for BOTH the upper
 -- broadcast tabs and the lower utility (Admin/Settings) tabs below, so
 -- they read as one visual family while their own colour/behaviour differ.
@@ -2068,7 +2090,7 @@ local function BuildBroadcastTabs(parent)
         -- the toolbar/tagFilterBar) clears the frame's own decorative
         -- corner ornament and keeps every tab's position independent of
         -- window height, unlike the old rail's anchor chain.
-        btn:SetPoint("TOPLEFT", parent, "TOPRIGHT", -3, -(30 + (i - 1) * (TAB_H + TAB_GAP)))
+        btn:SetPoint("TOPLEFT", parent, "TOPRIGHT", -3, -(RAIL_TOP_OFFSET + (i - 1) * (TAB_H + TAB_GAP)))
         btn.tabEntry = entry
 
         btn:SetScript("OnClick", function()
@@ -2110,7 +2132,7 @@ end
 
 local function BuildTagFilterBar(parent)
     local tagFilterBar = SB.CreateFrame("Frame", nil, parent)
-    tagFilterBar:SetHeight(20)
+    tagFilterBar:SetHeight(TAG_FILTER_BAR_H)
     main.tagFilterBar = tagFilterBar
     main.tagFilterUpdaters = {}
 
@@ -2341,39 +2363,52 @@ local function BuildMainFrame()
     -- tabs (BuildUtilityTabs below).
     ------------------------------------------------------------------
     local toolbar = SB.CreateFrame("Frame", nil, main)
-    toolbar:SetPoint("TOPLEFT", 8, -8)
-    toolbar:SetPoint("TOPRIGHT", -8, -8)
-    toolbar:SetHeight(62)
+    toolbar:SetPoint("TOPLEFT", SAFE_INSET, -SAFE_INSET)
+    toolbar:SetPoint("TOPRIGHT", -SAFE_INSET, -SAFE_INSET)
+    toolbar:SetHeight(TOOLBAR_H)
     main.toolbar = toolbar
 
     -- Row 1: product identity. Compact and readable rather than a large
     -- ornamental crest (explicit "avoid a giant banner" requirement) -
     -- one FontString a size up from a normal label, plus a thin Arcane
-    -- divider line standing in for "a subtle Arcane crest".
+    -- divider line standing in for "a subtle Arcane crest". Left-aligned
+    -- (explicit requirement, section 6 - unlike Edit Sound's centred
+    -- title, this one doesn't need to be centred), with its own small
+    -- left inset ON TOP of the toolbar's own SAFE_INSET so it never
+    -- visually collides with the frame's corner ornament, and vertically
+    -- centred within its own row rather than pinned flush to the very top.
+    local TITLE_ROW_H = 22
     local title = toolbar:CreateFontString(nil, "OVERLAY")
     title:SetFontObject(SB.Fonts.NormalLarge)
-    title:SetPoint("TOPLEFT", 2, 0)
+    title:SetPoint("TOPLEFT", 4, -math.floor((TITLE_ROW_H - (SB.Fonts.NormalLarge.baseSize or 16)) / 2))
     title:SetText("Soundbook")
     title:SetTextColor(unpack(SB.Theme.GOLD))
 
-    local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, 20)
-    closeBtn:SetPoint("TOPRIGHT", 0, -1)
+    -- Every header-action icon (Close/Lock/Audio) shares identical
+    -- geometry (size, hitbox, padding) via Theme.CreateMiniControlButton's
+    -- one chrome - explicit requirement (section 8). Close keeps that same
+    -- geometry but gets its own distinct destructive hover tint (red,
+    -- instead of the shared gold) so it still reads as "this one closes
+    -- the window", not just another utility icon.
+    local HEADER_ICON_SIZE = 24
+    local closeBtn = SB.Theme.CreateCloseGlyph(toolbar, HEADER_ICON_SIZE)
+    closeBtn:SetPoint("TOPRIGHT", 0, 0)
+    closeBtn:HookScript("OnEnter", function() closeBtn:SetBackdropBorderColor(1, 0.35, 0.35, 1) end)
     closeBtn:SetScript("OnClick", function() main:Hide() end)
 
     local titleLine = toolbar:CreateTexture(nil, "ARTWORK")
-    titleLine:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -5)
+    titleLine:SetPoint("TOPLEFT", 0, -(TITLE_ROW_H + 2))
     titleLine:SetPoint("RIGHT", 0, 0)
     titleLine:SetHeight(1)
     titleLine:SetTexture("Interface\\Buttons\\WHITE8X8")
     titleLine:SetVertexColor(SB.Theme.GOLD[1], SB.Theme.GOLD[2], SB.Theme.GOLD[3], 0.55)
 
     -- Row 2: Search is the primary interaction here - explicit request:
-    -- taller (32px, within the 30-36px target), wider left padding, and
-    -- it consumes most of the row's width. Quick Audio/Lock are secondary
-    -- - smaller, clustered at the right edge, never competing with Search
-    -- or the title for attention.
-    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, 24)
-    lockToolbarBtn:SetPoint("BOTTOMRIGHT", toolbar, "BOTTOMRIGHT", 0, 4)
+    -- taller (32px, within the 30-36px target). Quick Audio/Lock are
+    -- secondary - smaller, clustered at the right edge, never competing
+    -- with Search or the title for attention.
+    lockToolbarBtn = SB.Theme.CreateLockGlyph(toolbar, HEADER_ICON_SIZE)
+    lockToolbarBtn:SetPoint("BOTTOMRIGHT", toolbar, "BOTTOMRIGHT", 0, 0)
     lockToolbarBtn:SetScript("OnClick", function()
         SB.db.ui.layoutLocked = not SB.db.ui.layoutLocked
         RefreshLockVisual()
@@ -2384,7 +2419,7 @@ local function BuildMainFrame()
     -- (mute incoming / lock / muted players / open Soundbook / Announcer
     -- size / Popout Direction), so there is exactly one such menu in the
     -- whole addon rather than two diverging copies.
-    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, 24)
+    local audioBtn = SB.Theme.CreateMiniControlButton(toolbar, HEADER_ICON_SIZE)
     audioBtn:SetPoint("BOTTOMRIGHT", lockToolbarBtn, "BOTTOMLEFT", -4, 0)
     local audioIcon = audioBtn:CreateTexture(nil, "ARTWORK")
     audioIcon:SetPoint("TOPLEFT", 2, -2)
@@ -2396,9 +2431,8 @@ local function BuildMainFrame()
     end)
     SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
 
-    searchBox = SB.Theme.CreateInputBox(toolbar, 100, 32)
+    searchBox = SB.Theme.CreateInputBox(toolbar, SEARCH_MIN_W, 32)
     searchBox:SetPoint("BOTTOMLEFT", toolbar, "BOTTOMLEFT", 0, 0)
-    searchBox:SetPoint("RIGHT", audioBtn, "LEFT", -8, 0)
     searchBox:SetTextInsets(10, 8, 0, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -2409,17 +2443,36 @@ local function BuildMainFrame()
     end)
     main.searchBox = searchBox
 
+    -- Responsive Min/Preferred/Max width (explicit requirement, section
+    -- 7) - Search fills whatever space is left after the action icons on
+    -- a narrow window (down to SEARCH_MIN_W), but stops growing past
+    -- SEARCH_MAX_W on a wide one instead of stretching edge-to-edge, so
+    -- there's always room left for the title/navigation and it never
+    -- dominates the header. Anchored by explicit SetWidth (not a second
+    -- RIGHT-edge SetPoint) recomputed on toolbar resize - the same
+    -- "single anchor + explicit width, never two anchor points" rule
+    -- this addon's other resizable content already follows.
+    local function ResizeSearchBox()
+        local available = (toolbar:GetWidth() or 0) - (audioBtn:GetWidth() or 0) - (lockToolbarBtn:GetWidth() or 0) - 12
+        searchBox:SetWidth(math.max(SEARCH_MIN_W, math.min(SEARCH_MAX_W, available)))
+    end
+    toolbar:SetScript("OnSizeChanged", ResizeSearchBox)
+    ResizeSearchBox()
+
     searchPlaceholder = searchBox:CreateFontString(nil, "OVERLAY")
     searchPlaceholder:SetFontObject(SB.Fonts.DisableSmall)
     searchPlaceholder:SetPoint("LEFT", 10, 0)
     searchPlaceholder:SetText("Find a sound...")
 
     ------------------------------------------------------------------
-    -- Tag filter row, directly under the toolbar.
+    -- Tag filter row, directly under the toolbar - explicit hierarchy
+    -- (section 9): current view -> Search/toolbar -> filters -> Library,
+    -- so filters sit visually BELOW Search with a clear, consistent
+    -- SECTION_GAP rather than crowding the same row.
     ------------------------------------------------------------------
     local tagFilterBar = BuildTagFilterBar(main)
-    tagFilterBar:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -6)
-    tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -8, 0)
+    tagFilterBar:SetPoint("TOPLEFT", toolbar, "BOTTOMLEFT", 0, -SECTION_GAP)
+    tagFilterBar:SetPoint("RIGHT", main, "RIGHT", -SAFE_INSET, 0)
 
     ------------------------------------------------------------------
     -- Right-side attached tabs (outside the content area entirely - see
@@ -2432,8 +2485,11 @@ local function BuildMainFrame()
     BuildUtilityTabs(main)
 
     local libraryScroll = SB.Theme.CreateScrollFrame(main)
-    libraryScroll.scroll:SetPoint("TOPLEFT", tagFilterBar, "BOTTOMLEFT", 0, -8)
-    libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -10, 10)
+    libraryScroll.scroll:SetPoint("TOPLEFT", tagFilterBar, "BOTTOMLEFT", 0, -SECTION_GAP)
+    -- Right inset is a little wider than SAFE_INSET alone - clearance for
+    -- the scrollbar itself (explicit requirement: a "scrollbar safe
+    -- area"), not just the frame's own decorative border.
+    libraryScroll.scroll:SetPoint("BOTTOMRIGHT", main, "BOTTOMRIGHT", -(SAFE_INSET + 2), SAFE_INSET)
     -- Theme.CreateScrollFrame never sets its own content child's width -
     -- every other caller in this addon does that itself. A ScrollFrame's
     -- scroll child must get that width via SetWidth (done in

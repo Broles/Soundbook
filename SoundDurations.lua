@@ -19,7 +19,15 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Are you lost"] = 1.515,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Auf Alkohol"] = 6.661,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Awolnation Run"] = 10.318,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Bad To The Bone"] = 2.247,
+    -- REGENERATED 2026-09-23 - the shipped file measures 1.027s of actual
+    -- MPEG audio (verified by walking every frame header), not the 2.247s
+    -- this used to say. That stale value predates whatever replaced this
+    -- file on disk (it now ends in ~200 bytes of repeated padding, not a
+    -- normal encoder footer - a truncated/corrupted encode, not a shorter
+    -- edit done on purpose). See the 3.0 QA report for the full writeup;
+    -- replace the file with a full-length encode and regenerate this line
+    -- again if/when a correct one is available.
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Bad To The Bone"] = 1.027,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Cant Touch This"] = 20.193,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Celebration"] = 10.214,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Charge Army"] = 7.497,
@@ -29,7 +37,10 @@ SB.SoundDurations = {
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Deja Vu"] = 6.296,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dexter Meme"] = 10.71,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Donkey Hee Haw"] = 1.489,
-    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dry Fart"] = 0.392,
+    -- REGENERATED 2026-09-23 - same class of stale-vs-actual-file mismatch
+    -- as "Bad To The Bone" just above (measured 0.183s, not 0.392s).
+    -- Smaller drift, likely wasn't noticed yet, flagged proactively.
+    ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Dry Fart"] = 0.183,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Einfach Geil"] = 2.873,
     ["Interface\\AddOns\\Soundbook\\Sounds\\German Memes\\Du bist gut genug"] = 7.367,
     ["Interface\\AddOns\\Soundbook\\Sounds\\Legacy\\Emotional Damage"] = 3.396,

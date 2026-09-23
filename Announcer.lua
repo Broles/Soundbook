@@ -418,6 +418,21 @@ function SB.ResolvePopoutDirection(anchorFrame)
     local cx, cy = anchorFrame:GetCenter()
     if screenW <= 0 or screenH <= 0 or not cx or not cy then return "RIGHT" end
 
+    -- BUGFIX (3.0 QA round): GetCenter() and GetWidth()/GetHeight() are
+    -- each returned in their OWN frame's local unit space (1 unit = that
+    -- frame's effective-scale pixels) - comparing them directly only
+    -- works when anchorFrame and UIParent share the same effective
+    -- scale. The Announcer icon carries its own independent SetScale
+    -- (the Announcer Size slider, 0.7-1.6 - see SB:RefreshAnnouncerScale),
+    -- so at any non-1.0 size this silently skewed cx/cy and could resolve
+    -- an icon genuinely sitting at a screen edge into the centre band,
+    -- opening the popup vertically instead of horizontally toward the
+    -- centre. Converting into UIParent's own coordinate space first fixes
+    -- this at every Announcer Size, not just the default one.
+    local scaleRatio = (anchorFrame:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
+    cx = cx * scaleRatio
+    cy = cy * scaleRatio
+
     local xPct = cx / screenW
     -- WoW's coordinate origin is bottom-up, so a larger cy IS the upper
     -- half - no separate flip needed to match the user-facing diagram.
@@ -549,6 +564,12 @@ local function ShowRaidMuteBanner()
     end
 
     LayoutBanner()
+    -- Same stale-alpha fix as ShowDemoBanner/StartIconDragPreview above -
+    -- this can fire right after CollapseToIdle's own fade-to-0 (a mute
+    -- expiring and this immediately re-showing the "still restricted"
+    -- state, for instance), which would otherwise leave it invisible too.
+    if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
+    banner:SetAlpha(1)
     banner:Show()
     icon:SetAlpha(1)
 end
@@ -856,6 +877,18 @@ local function ShowDemoBanner()
     banner.fill:SetWidth(trackW * 0.6)
     banner.timeText:SetText("6.0 / 10.0")
     LayoutBanner()
+    -- BUGFIX (3.0 QA round, section 3): unlike RenderPrimary's own Show
+    -- (which always explicitly fades TO alpha 1 regardless of where it
+    -- starts from), this used to call banner:Show() with no alpha reset
+    -- at all - CollapseToIdle's fade-OUT (UIFrameFadeOut ... to 0) leaves
+    -- the banner sitting at alpha 0 once idle, and a bare Show() never
+    -- undid that, so this preview rendered fully invisible while idle
+    -- even though IsShown() was true. Cancelling any fade still in
+    -- flight (not just setting alpha) matters too - one could still be
+    -- animating alpha back toward 0 for a few more frames right after a
+    -- sound just ended.
+    if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
+    banner:SetAlpha(1)
     banner:Show()
     icon:SetAlpha(1)
 end
@@ -942,6 +975,18 @@ function StartIconDragPreview()
     dragCandidateSounds = nil
     PopulatePreviewBanner()
     LayoutBanner()
+    -- BUGFIX (3.0 QA round, section 3) - "idle drag shows no preview, but
+    -- dragging while a sound plays works": the actual root cause was
+    -- never playback state at all, it was stale alpha. CollapseToIdle
+    -- fades the banner to alpha 0 and then Hides it once nothing real is
+    -- left to show; a bare banner:Show() (what this used to do) leaves
+    -- that alpha 0 in place, so an idle drag's preview was technically
+    -- shown but fully transparent. Dragging DURING active playback never
+    -- hit this because RenderPrimary's own fade always finishes at alpha
+    -- 1 first. See ShowDemoBanner's identical fix just above for the
+    -- same reasoning.
+    if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
+    banner:SetAlpha(1)
     banner:Show()
     icon:SetAlpha(1)
     icon:SetScript("OnUpdate", DragPreviewOnUpdate)
@@ -1055,7 +1100,6 @@ end
 -- in this addon. Declared here (above every function that closes over it)
 -- so those functions actually capture it as an upvalue - a local declared
 -- below the function that references it would instead resolve to a global.
-local FAV_MENU_VISIBLE_ROWS = 8
 local FAV_MENU_ROW_H = 24
 
 -- Column count mirrors UI.lua's own 2-vs-3 column switch, but keyed off
@@ -1064,9 +1108,25 @@ local FAV_MENU_ROW_H = 24
 -- je nach dem wie groß die size eingestellt ist beim announcer". 1.15 is
 -- simply the midpoint of that slider's range.
 local FAV_COL_W = { [2] = 150, [3] = 118 }
-local function GetFavMenuColumns()
+-- `count` (optional - the number of Favourites about to be laid out) adds
+-- an adaptive safety net on top of the scale-based choice above (3.0 QA
+-- round, section 4): now that the popup never scrolls and always shows
+-- every entry at once, 2 columns' worth of a large list could still grow
+-- into an awkwardly tall popup on a short screen. Only ever escalates
+-- 2->3 (never overrides an explicit large-Announcer-Size 3 back down to
+-- 2) - column WIDTH readability is already handled by FAV_COL_W's fixed,
+-- pre-tuned values, this only ever reacts to available screen HEIGHT.
+local function GetFavMenuColumns(count)
     local scale = (SB.db.ui.announcer and SB.db.ui.announcer.scale) or 1
-    return scale >= 1.15 and 3 or 2
+    local columns = scale >= 1.15 and 3 or 2
+    if columns == 2 and count and count > 0 then
+        local screenH = UIParent:GetHeight() or 768
+        local rows2 = math.ceil(count / 2)
+        if rows2 * FAV_MENU_ROW_H > screenH * 0.6 then
+            columns = 3
+        end
+    end
+    return columns
 end
 
 -- Icon+name row, same visual language as UI.lua's CreateEntryButton (icon
@@ -1076,7 +1136,7 @@ end
 -- down to a grid column.
 local function GetOrCreateFavMenuRow(index)
     if favMenu.rows[index] then return favMenu.rows[index] end
-    local row = CreateFrame("Button", nil, favMenu.scroll.content)
+    local row = CreateFrame("Button", nil, favMenu.content)
     row:SetHeight(FAV_MENU_ROW_H)
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
@@ -1179,19 +1239,15 @@ local function BuildFavMenu()
     favMenu.emptyText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     favMenu.emptyText:Hide()
 
-    local sf = SB.Theme.CreateScrollFrame(favMenu)
-    sf.scroll:SetPoint("TOPLEFT", 4, -30)
-    sf.scroll:SetPoint("BOTTOMRIGHT", -4, 8)
-    -- Single TOPLEFT anchor + explicit SetWidth on the scroll child, never
-    -- a second (RIGHT-edge) anchor point - a ScrollFrame's own scroll
-    -- child breaks (GetLeft/GetTop go unresolvable, everything anchored
-    -- off it collapses) the moment it's ever actually scrolled if it has
-    -- two anchor points instead of one. This exact bug already cost a
-    -- long debugging session on the Library's own ScrollFrame earlier -
-    -- see UI.lua's RefreshLibraryImpl for the full writeup.
-    sf.content:SetPoint("TOPLEFT", 0, 0)
-    sf.content:SetWidth(206)
-    favMenu.scroll = sf
+    -- No ScrollFrame (3.0 QA round, section 4, explicit requirement): the
+    -- popup shows every current Favourite at once (max SB.MAX_FAVOURITES,
+    -- 20) with no scrollbar - PopulateFavMenu sizes both `content` and
+    -- `favMenu` itself from the actual row count every time it runs, so
+    -- fewer Favourites always means a smaller popup, never a fixed/
+    -- clipped viewport.
+    local content = CreateFrame("Frame", nil, favMenu)
+    content:SetPoint("TOPLEFT", 4, -30)
+    favMenu.content = content
     favMenu.rows = {}
 
     return favMenu
@@ -1209,17 +1265,21 @@ local function PopulateFavMenu()
     local subtitleH = secondary and ((favMenu.subtitle:GetHeight() or 0) + 2) or 0
     local topOffset = 30 + subtitleH
 
+    local favourites = SB.GetFavourites and SB:GetFavourites() or {}
+    local favCount = 0
+    for slot = 1, SB.MAX_FAVOURITES do
+        if favourites[slot] then favCount = favCount + 1 end
+    end
+
     -- Grid width/columns first, everything below positions against it.
-    local columns = GetFavMenuColumns()
+    local columns = GetFavMenuColumns(favCount)
     local colW = FAV_COL_W[columns]
     local gridW = columns * colW
     favMenu:SetWidth(gridW + 8)
-    favMenu.scroll.content:SetWidth(gridW)
-    favMenu.scroll.scroll:ClearAllPoints()
-    favMenu.scroll.scroll:SetPoint("TOPLEFT", 4, -topOffset)
-    favMenu.scroll.scroll:SetPoint("BOTTOMRIGHT", -4, 8)
+    favMenu.content:ClearAllPoints()
+    favMenu.content:SetPoint("TOPLEFT", 4, -topOffset)
+    favMenu.content:SetWidth(gridW)
 
-    local favourites = SB.GetFavourites and SB:GetFavourites() or {}
     local shown = 0
     for slot = 1, SB.MAX_FAVOURITES do
         local soundID = favourites[slot]
@@ -1251,15 +1311,19 @@ local function PopulateFavMenu()
     favMenu.emptyText:ClearAllPoints()
     favMenu.emptyText:SetPoint("TOPLEFT", 10, -topOffset - 2)
     favMenu.emptyText:SetShown(shown == 0)
+
+    -- No scrollbar/viewport cap (3.0 QA round, section 4) - every row is
+    -- always laid out and shown above, so `content` and the popup itself
+    -- both just grow to fit ALL of them: max SB.MAX_FAVOURITES (20) is
+    -- 10 rows at 2 columns or 7 at 3, either comfortably on-screen
+    -- without ever needing to scroll. Fewer Favourites -> fewer rows ->
+    -- a smaller popup, every time this runs.
     local totalRows = math.ceil(shown / columns)
-    favMenu.scroll.content:SetHeight(math.max(1, totalRows * FAV_MENU_ROW_H))
-    local visibleRows = math.min(totalRows, FAV_MENU_VISIBLE_ROWS)
-    local visibleH = visibleRows * FAV_MENU_ROW_H
-    favMenu.scroll.scroll:SetHeight(math.max(FAV_MENU_ROW_H, visibleH))
-    favMenu.scroll.UpdateThumb()
+    local contentH = totalRows * FAV_MENU_ROW_H
+    favMenu.content:SetHeight(math.max(1, contentH))
 
     local titleH = (shown == 0) and 46 or 24
-    favMenu:SetHeight(topOffset + math.max(titleH - 22, visibleH == 0 and 24 or visibleH) + 10)
+    favMenu:SetHeight(topOffset + math.max(titleH - 22, contentH == 0 and 24 or contentH) + 10)
 end
 
 -- Exposed on SB (not a plain local) - BuildIcon's OnClick handler above
