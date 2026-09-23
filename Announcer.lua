@@ -25,22 +25,25 @@ local raidDot        -- small indicator: raid-admin currently restricts you
 -- BEFORE that machinery in this file - can call them as plain upvalues,
 -- same forward-reference idiom already used elsewhere in this file.
 local StartIconDragPreview, StopIconDragPreview
--- True while the banner is showing PREVIEW content - either the Announcer
--- Size slider's resize preview (ShowDemoBanner/HideDemoBanner below) or
--- the icon-drag preview (StartIconDragPreview/StopIconDragPreview) -
--- rather than an actual playing sound. Unlike before 3.0's Popout
+-- True while the banner is showing PREVIEW content - the icon-drag preview
+-- (StartIconDragPreview/StopIconDragPreview) - rather than an actual
+-- playing sound. This is the ONLY preview trigger (targeted correction
+-- round, section "Mini Soundbook Announcer Preview bug"): the Preview
+-- must never be tied to the options-menu open state or to changing any
+-- Mini Soundbook option, including the Announcer Size slider - it shows
+-- exclusively while the player is actively repositioning the icon via
+-- its own existing move/reposition drag. Unlike before 3.0's Popout
 -- Direction work, a real sound starting mid-preview no longer force-kills
--- either flag (explicit requirement: "real Announcer event must not
+-- this flag (explicit requirement: "real Announcer event must not
 -- overwrite preview positioning/content during active configuration") -
 -- RenderPrimary/CollapseToIdle themselves check IsPreviewActive() below
--- and simply skip repainting the banner while either preview owns it;
+-- and simply skip repainting the banner while the preview owns it;
 -- activeDisplays keeps tracking real playback normally underneath, and
 -- RestoreRealAnnouncerState() catches it up the moment the preview ends.
-local demoBannerActive = false
 local dragPreviewActive = false
 
 local function IsPreviewActive()
-    return demoBannerActive or dragPreviewActive
+    return dragPreviewActive
 end
 
 -- The most recently seen PLAYBACK_PROGRESS_STARTED, consumed by the very
@@ -564,7 +567,7 @@ local function ShowRaidMuteBanner()
     end
 
     LayoutBanner()
-    -- Same stale-alpha fix as ShowDemoBanner/StartIconDragPreview above -
+    -- Same stale-alpha fix as StartIconDragPreview above -
     -- this can fire right after CollapseToIdle's own fade-to-0 (a mute
     -- expiring and this immediately re-showing the "still restricted"
     -- state, for instance), which would otherwise leave it invisible too.
@@ -863,42 +866,6 @@ local function PopulatePreviewBanner()
     banner.fill:Show()
 end
 
--- Explicit request: while adjusting the Announcer Size slider, show a
--- populated preview banner so the player can actually judge the size and
--- layout. No longer declines just because a real sound happens to be
--- playing (explicit requirement, section 21) - RenderPrimary/
--- CollapseToIdle themselves now defer to whichever preview is active,
--- and RestoreRealAnnouncerState catches the banner back up the instant
--- this ends (HideDemoBanner below).
-local function ShowDemoBanner()
-    demoBannerActive = true
-    PopulatePreviewBanner()
-    local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2)
-    banner.fill:SetWidth(trackW * 0.6)
-    banner.timeText:SetText("6.0 / 10.0")
-    LayoutBanner()
-    -- BUGFIX (3.0 QA round, section 3): unlike RenderPrimary's own Show
-    -- (which always explicitly fades TO alpha 1 regardless of where it
-    -- starts from), this used to call banner:Show() with no alpha reset
-    -- at all - CollapseToIdle's fade-OUT (UIFrameFadeOut ... to 0) leaves
-    -- the banner sitting at alpha 0 once idle, and a bare Show() never
-    -- undid that, so this preview rendered fully invisible while idle
-    -- even though IsShown() was true. Cancelling any fade still in
-    -- flight (not just setting alpha) matters too - one could still be
-    -- animating alpha back toward 0 for a few more frames right after a
-    -- sound just ended.
-    if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
-    banner:SetAlpha(1)
-    banner:Show()
-    icon:SetAlpha(1)
-end
-
-local function HideDemoBanner()
-    if not demoBannerActive then return end
-    demoBannerActive = false
-    RestoreRealAnnouncerState()
-end
-
 ------------------------------------------------------------------------
 -- Icon-drag preview - explicit request: while Popout Direction is
 -- Automatic and the player drags the Soundbook icon, show the same
@@ -983,8 +950,7 @@ function StartIconDragPreview()
     -- that alpha 0 in place, so an idle drag's preview was technically
     -- shown but fully transparent. Dragging DURING active playback never
     -- hit this because RenderPrimary's own fade always finishes at alpha
-    -- 1 first. See ShowDemoBanner's identical fix just above for the
-    -- same reasoning.
+    -- 1 first.
     if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
     banner:SetAlpha(1)
     banner:Show()
@@ -1380,7 +1346,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         catcher:Hide()
         catcher:SetScript("OnClick", function() quickMenu:Hide(); catcher:Hide() end)
         quickMenu.catcher = catcher
-        quickMenu:SetScript("OnHide", function() catcher:Hide(); HideDemoBanner() end)
+        quickMenu:SetScript("OnHide", function() catcher:Hide() end)
 
         local rows = {}
         local function AddRow(label, onClick)
@@ -1474,18 +1440,13 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         sizeLabel:SetText("Announcer Size")
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
-        -- The value/label update live (Theme.CreateSlider's own Refresh),
-        -- and now the PREVIEW banner's own scale does too (explicit
-        -- requirement, section 15 - "resize reflects layout live") - but
-        -- the real icon/banner still only actually rescale on mouse-up.
-        -- This is NOT the same jitter bug this menu's own anchor hit
-        -- before: THIS menu is anchored to the icon (which never rescales
-        -- live), while the preview banner is a separate frame the mouse
-        -- isn't over and isn't housing the slider, so rescaling IT live
-        -- has nothing to jitter.
+        -- The value/label update live (Theme.CreateSlider's own Refresh);
+        -- the real icon/banner only actually rescale on mouse-up. No
+        -- preview banner is shown here any more (targeted correction
+        -- round: the Preview must only ever appear during the icon's own
+        -- reposition drag, never from changing a Mini Soundbook option).
         local sizeSlider = Theme.CreateSlider(quickMenu, 70, 160, 5, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
-            if demoBannerActive and banner then banner:SetScale(value / 100) end
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
@@ -1504,7 +1465,6 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     SB.PositionRelativeToIcon(quickMenu, anchor, SB.ResolvePopoutDirection(anchor))
     quickMenu.catcher:Show()
     quickMenu:Show()
-    ShowDemoBanner()
 end
 
 -- Explicit requirement (section 22): if Popout Direction changes while
