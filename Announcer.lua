@@ -98,6 +98,51 @@ local function RaidOverrideDurationText()
 end
 
 ------------------------------------------------------------------------
+-- Hover re-arm gate (interaction-priority fix)
+------------------------------------------------------------------------
+
+-- Every transient popup this module owns (favMenu, quickMenu) shows a
+-- full-screen catcher at a strata ABOVE the icon's own "MEDIUM" strata
+-- while open (favMenu/quickMenu's catchers are "DIALOG"; SendMenu.lua's
+-- context menu, opened from a favMenu row, goes further still -
+-- "TOOLTIP" - see its own OpenSendMenu comment: "the icon should stay
+-- visibly zoomed... for as long as this popup covers it and steals the
+-- real mouse focus"). WoW hit-tests by strata first, so for as long as
+-- any of these is open the icon simply cannot be the topmost frame under
+-- the cursor, wherever the cursor actually is - meaning the icon
+-- reliably fires a real OnLeave the instant such a popup appears and a
+-- real OnEnter the instant it's gone, even though the cursor may never
+-- have physically moved. Native OnEnter/OnLeave pairing alone therefore
+-- cannot distinguish "the user is genuinely hovering again" from "some
+-- popup just stopped covering the icon" - this explicit gate is that
+-- distinction instead. Disarmed the moment an explicit interaction opens
+-- one of these popups; a popup closing never re-arms it by itself
+-- (bullet: "popup close does not re-arm it") - only a LEAVE where the
+-- cursor is verified to really be outside the icon's own bounds re-arms
+-- it (icon's OnLeave hook below), so the very next genuine enter is what
+-- gets to open the Mini Soundbook again.
+local miniHoverGateArmed = true
+
+local function IsCursorActuallyOnIcon()
+    if not (icon and icon.GetLeft) then return false end
+    local l, r, t, b = icon:GetLeft(), icon:GetRight(), icon:GetTop(), icon:GetBottom()
+    if not (l and r and t and b) then return false end
+    local scale = icon:GetEffectiveScale()
+    if not scale or scale == 0 then scale = 1 end
+    local x, y = GetCursorPosition()
+    x, y = x / scale, y / scale
+    return x >= l and x <= r and y >= b and y <= t
+end
+
+-- Exposed so other transient-popup owners (SendMenu.lua's context menu)
+-- can disarm the same gate their own popup requires - any surface with a
+-- full-screen catcher steals real mouse hover from the icon the same way
+-- Quick Options does (see this section's own comment above).
+function SB.SuppressMiniHoverGate()
+    miniHoverGateArmed = false
+end
+
+------------------------------------------------------------------------
 -- Frame construction
 ------------------------------------------------------------------------
 
@@ -228,14 +273,30 @@ local function BuildIcon()
         end
     end)
 
-    -- Hover-open, gated by SB.db.ui.announcer.openOnHover - purely native
-    -- OnEnter-edge-triggered (fires once per genuine transition into the
-    -- icon's bounds, never on a poll), so nothing re-opens the menu just
-    -- because the cursor is still resting on the icon after some OTHER
-    -- surface closed - a new open only follows a real OnLeave. Left-click
-    -- keeps working regardless of this setting; this hook only ADDS the
-    -- hover trigger. HandleMiniIconHoverEnter is defined later alongside the
-    -- proximity/surface system and referenced here as a forward-declared upvalue.
+    -- Re-arms the hover gate (see this file's own "Hover re-arm gate"
+    -- section above) only on a LEAVE where the cursor is verified to
+    -- really be off the icon - an OnLeave that fires while a popup's
+    -- catcher is simply stacking above the icon (cursor never actually
+    -- moved) must not count, or the very next spurious OnEnter that
+    -- follows the popup closing would incorrectly reopen the Mini
+    -- Soundbook underneath it.
+    icon:HookScript("OnLeave", function()
+        if not IsCursorActuallyOnIcon() then
+            miniHoverGateArmed = true
+        end
+    end)
+
+    -- Hover-open, gated by SB.db.ui.announcer.openOnHover AND the re-arm
+    -- gate above - purely native OnEnter-edge-triggered (fires once per
+    -- genuine transition into the icon's bounds), but a genuine-looking
+    -- OnEnter is not by itself enough proof of a genuine hover: a
+    -- full-screen popup catcher closing while the cursor still rests on
+    -- the icon also fires one, with no real mouse movement at all (see
+    -- the gate section above) - the gate is what tells those two apart.
+    -- Left-click keeps working regardless of this setting; this hook
+    -- only ADDS the hover trigger. HandleMiniIconHoverEnter is defined
+    -- later alongside the proximity/surface system and referenced here
+    -- as a forward-declared upvalue.
     icon:HookScript("OnEnter", function()
         if HandleMiniIconHoverEnter then HandleMiniIconHoverEnter() end
     end)
@@ -1478,15 +1539,17 @@ NoteMiniSurfaceHidden = function()
 end
 
 -- The icon's native OnEnter hook (BuildIcon above) fires once per
--- genuine transition into the icon's bounds, never on a poll. Gated by
--- both the persisted setting AND Quick Options' own open state: opening
--- Quick Options suppresses automatic hover-opening, and nothing re-opens
--- it just because the cursor is still resting on the icon after Quick
--- Options closes elsewhere - only a genuine new OnEnter (after a real
--- OnLeave) does.
+-- transition into the icon's bounds - but, per this file's "Hover
+-- re-arm gate" section, not every one of those is a genuine hover, so
+-- the gate is checked first, ahead of the persisted setting and Quick
+-- Options' own open state. Already-open favMenu is also a no-op return
+-- (not just harmless) - avoids a redundant rebuild/reposition/reshow on
+-- a spurious re-enter that the gate happens to still allow through.
 HandleMiniIconHoverEnter = function()
+    if not miniHoverGateArmed then return end
     if not (SB.db and SB.db.ui and SB.db.ui.announcer and SB.db.ui.announcer.openOnHover) then return end
     if quickMenu and quickMenu:IsShown() then return end
+    if favMenu and favMenu:IsShown() then return end
     if SB.ShowFavMenu then SB.ShowFavMenu(icon) end
 end
 
@@ -1611,6 +1674,13 @@ function SB.CloseAnnouncerQuickOptions()
 end
 
 function SB.ShowAnnouncerQuickOptions(anchor)
+    -- Interaction priority: an explicit Quick Options open/close always
+    -- disarms the hover gate, whichever branch below runs - suppresses
+    -- hover immediately on open, and (toggle-close branch) makes sure a
+    -- right-click that closes Quick Options again still requires a real
+    -- leave+re-enter before hover can fire, same as closing it any other
+    -- way.
+    SB.SuppressMiniHoverGate()
     if quickMenu and quickMenu:IsShown() then
         SB.CloseAnnouncerQuickOptions()
         return
@@ -1686,11 +1756,17 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- Mini Soundbook activation mode: writes the same persisted field
         -- (SB.db.ui.announcer.openOnHover) Settings -> Mini's own checkbox
         -- uses. No extra refresh needed - the icon's OnEnter handler reads
-        -- this field live on every hover.
-        local hoverCheck = Theme.CreateCheckbox(quickMenu, "Open Mini Soundbook on Hover", function(checked)
+        -- this field live on every hover. Label is the short "Open on
+        -- Hover" here (this popup is only 184px wide - the full "Open
+        -- Mini Soundbook on Hover" overflows it); Settings -> Mini keeps
+        -- the full descriptive label, room permitting there. Same
+        -- checkbox component, same setting, just a shorter caption.
+        local hoverCheck = Theme.CreateCheckbox(quickMenu, "Open on Hover", function(checked)
             SB.db.ui.announcer.openOnHover = checked and true or false
         end)
         hoverCheck:SetPoint("TOP", rows[#rows], "BOTTOM", -8, -10)
+        Theme.AttachTooltip(hoverCheck, "Open on Hover",
+            "Open the Mini Soundbook when hovering its icon instead of requiring a left-click.")
         quickMenu.hoverCheck = hoverCheck
 
         -- Popout Direction: one shared setting for every surface that opens

@@ -391,6 +391,11 @@ function SB.OpenSendMenu(soundID, sourceSlot)
     -- alone here - the context menu is opened FROM one of its rows and
     -- is meant to coexist with it.
     if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
+    -- Interaction priority (Mini Soundbook hover regression fix): this
+    -- menu's own catcher (below) is "TOOLTIP" strata, well above the
+    -- icon's - opening it steals real mouse hover from the icon exactly
+    -- like Quick Options does, so it disarms the same re-arm gate.
+    if SB.SuppressMiniHoverGate then SB.SuppressMiniHoverGate() end
     -- Stale presence pruning happens inside SB.ComputeReachablePlayers
     -- itself now (BuildMenu -> BuildGroups below), not duplicated here.
     EnsureMenu()

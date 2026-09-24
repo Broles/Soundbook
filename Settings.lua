@@ -977,6 +977,23 @@ end
 -- language as the rest of the addon's controls.
 local NAV_ROW_H = 31
 
+-- Row inset from the sidebar's own edges (requirement: 8-10px, "span most
+-- of sidebar width" rather than edge-to-edge) - this is what keeps the
+-- nav's own background/divider (BuildSectionNav below) reading as a
+-- distinct column behind the rows instead of a second frame-in-frame
+-- border on the rows themselves.
+local NAV_ROW_INSET = 9
+local NAV_ROW_W = NAV_W - (NAV_ROW_INSET * 2)
+
+-- One consistent indicator/hover colour for every row (gold - already the
+-- addon's primary chrome accent, and free to reuse here since no section
+-- has been assigned Gold since Favourites merged into General, see
+-- SECTION_ORDER's own comment). Each entry's own `color` still exists for
+-- callers that may want a section's identity colour, but the nav chrome
+-- itself deliberately no longer tints per-section - six saturated fills
+-- read as coloured pills rather than restrained navigation.
+local NAV_ACCENT = SB.Theme.GOLD
+
 local function CreateNavRow(parent, entry)
     -- Bugfix (live-client crash report): the raw WoW CreateFrame() global
     -- was used here instead of SB.CreateFrame - on every currently
@@ -988,45 +1005,52 @@ local function CreateNavRow(parent, entry)
     -- harness never caught this because its own CreateFrame stub doesn't
     -- distinguish backdrop-template frames from plain ones.
     local btn = SB.CreateFrame("Button", nil, parent)
-    btn:SetSize(NAV_W, NAV_ROW_H)
+    btn:SetSize(NAV_ROW_W, NAV_ROW_H)
     btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
     btn:SetBackdropColor(0, 0, 0, 0)
 
     -- Active-side marker, same visual language as UI.lua's own attached-
     -- tab accent strip - a thin colour-coded edge rather than tinting the
-    -- whole row.
+    -- whole row. 3px (top of the 2-3px requirement) so it stays legible
+    -- next to the row's own now-narrower inset width.
     local accent = btn:CreateTexture(nil, "ARTWORK")
     accent:SetPoint("TOPLEFT", 0, 0)
     accent:SetPoint("BOTTOMLEFT", 0, 0)
-    accent:SetWidth(2)
+    accent:SetWidth(3)
     accent:SetTexture("Interface\\Buttons\\WHITE8X8")
-    accent:SetVertexColor(entry.color[1], entry.color[2], entry.color[3], 1)
+    accent:SetVertexColor(NAV_ACCENT[1], NAV_ACCENT[2], NAV_ACCENT[3], 1)
     accent:Hide()
     btn.accent = accent
 
     local label = btn:CreateFontString(nil, "OVERLAY")
     label:SetFontObject(SB.Fonts.HighlightSmall)
-    label:SetPoint("LEFT", 10, 0)
+    label:SetPoint("LEFT", 8, 0)
     label:SetPoint("RIGHT", -6, 0)
     label:SetJustifyH("LEFT")
     label:SetWordWrap(false)
     label:SetText(entry.label)
     btn.label = label
 
+    local V3 = SB.Theme.V3
     local function Idle()
         btn:SetBackdropColor(0, 0, 0, 0)
         accent:Hide()
         label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     end
     local function Hover()
-        btn:SetBackdropColor(1, 1, 1, 0.05)
+        -- "subtle arcane-blue/navy fill" - a light wash of the same
+        -- arcane-blue token used elsewhere (V3.ARCANE_BLUE), not a plain
+        -- white overlay.
+        btn:SetBackdropColor(V3.ARCANE_BLUE[1], V3.ARCANE_BLUE[2], V3.ARCANE_BLUE[3], 0.12)
         accent:Hide()
         label:SetTextColor(unpack(SB.Theme.TEXT))
     end
     local function ActiveVisual()
-        btn:SetBackdropColor(entry.color[1] * 0.22, entry.color[2] * 0.22, entry.color[3] * 0.22, 0.9)
+        -- "raised dark-blue fill" - V3.HOVER_RAISED literally is that
+        -- token; clearly stronger/more opaque than Hover's 0.12 wash above.
+        btn:SetBackdropColor(V3.HOVER_RAISED[1], V3.HOVER_RAISED[2], V3.HOVER_RAISED[3], 0.95)
         accent:Show()
-        label:SetTextColor(entry.color[1], entry.color[2], entry.color[3])
+        label:SetTextColor(unpack(V3.TEXT_PRIMARY))
     end
 
     function btn:SetActive(active)
@@ -1047,9 +1071,69 @@ local function CreateNavRow(parent, entry)
     return btn
 end
 
+-- Footer text size/colour requirement: ~9-10px, nearest existing readable
+-- size - DisableSmall (GameFontDisableSmall-based) is exactly that; the
+-- Advanced section's own version line (above) already uses it for the
+-- same reason. Twitch purple is a one-off brand colour with no existing
+-- Theme token and no other caller, so it stays a local constant here
+-- rather than a new addition to the shared Theme table - restrained
+-- (slightly desaturated) rather than the fully saturated brand hex.
+local TWITCH_PURPLE = { 0.62, 0.40, 0.86 }
+
+-- Parented to `hostParent` (the panel, not `nav` itself) purely so the
+-- existing "nav has exactly N section-row children" regression check
+-- (mock harness, counts nav:GetNumChildren()) keeps meaning what it says
+-- - the footer's own anchors below are still expressed entirely relative
+-- to `nav`, so it stays visually pinned to the sidebar regardless of
+-- which frame technically parents it.
+local function BuildSidebarFooter(nav, hostParent)
+    local footer = CreateFrame("Frame", nil, hostParent)
+    footer:SetFrameLevel(nav:GetFrameLevel() + 1)
+    footer:SetPoint("BOTTOMLEFT", nav, "BOTTOMLEFT", NAV_ROW_INSET, 8)
+    footer:SetPoint("RIGHT", nav, "RIGHT", -NAV_ROW_INSET, 0)
+    footer:SetHeight(28)
+
+    local twitchLine = footer:CreateFontString(nil, "OVERLAY")
+    twitchLine:SetFontObject(SB.Fonts.DisableSmall)
+    twitchLine:SetPoint("BOTTOMLEFT", 0, 0)
+    twitchLine:SetJustifyH("LEFT")
+    twitchLine:SetText("twitch.tv/broles87")
+    twitchLine:SetTextColor(TWITCH_PURPLE[1], TWITCH_PURPLE[2], TWITCH_PURPLE[3])
+
+    local versionLine = footer:CreateFontString(nil, "OVERLAY")
+    versionLine:SetFontObject(SB.Fonts.DisableSmall)
+    versionLine:SetPoint("BOTTOMLEFT", twitchLine, "TOPLEFT", 0, 3)
+    versionLine:SetJustifyH("LEFT")
+    -- Dynamic, same pattern as the Advanced section's own version line -
+    -- never a hardcoded literal.
+    versionLine:SetText("Soundbook v" .. tostring(SB.VERSION or "?"))
+    versionLine:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    return footer
+end
+
 local function BuildSectionNav(parent)
     local nav = CreateFrame("Frame", nil, parent)
     nav:SetWidth(NAV_W)
+
+    -- Sidebar background + divider (requirement: visually distinct from
+    -- the content pane, restrained gold divider, no frame-inside-frame).
+    -- Plain BACKGROUND-layer textures rather than SetBackdrop - nav only
+    -- ever needs a flat fill and a 1px edge line, and a raw CreateFrame()
+    -- here has no BackdropTemplate mixin (see CreateNavRow's own bugfix
+    -- comment on that exact trap).
+    local V3 = SB.Theme.V3
+    local bg = nav:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(nav)
+    bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    bg:SetVertexColor(V3.RAISED_NAVY[1], V3.RAISED_NAVY[2], V3.RAISED_NAVY[3], 0.9)
+
+    local divider = nav:CreateTexture(nil, "BORDER")
+    divider:SetPoint("TOPRIGHT", nav, "TOPRIGHT", 0, 0)
+    divider:SetPoint("BOTTOMRIGHT", nav, "BOTTOMRIGHT", 0, 0)
+    divider:SetWidth(1)
+    divider:SetTexture("Interface\\Buttons\\WHITE8X8")
+    divider:SetVertexColor(unpack(SB.Theme.BORDER_DIM))
 
     local function ApplySelection()
         for key, btn in pairs(sectionTabButtons) do
@@ -1066,12 +1150,21 @@ local function BuildSectionNav(parent)
         if lastRow then
             btn:SetPoint("TOPLEFT", lastRow, "BOTTOMLEFT", 0, 0)
         else
-            btn:SetPoint("TOPLEFT", nav, "TOPLEFT", 0, 0)
+            btn:SetPoint("TOPLEFT", nav, "TOPLEFT", NAV_ROW_INSET, 0)
         end
         sectionTabButtons[entry.key] = btn
         lastRow = btn
     end
-    nav:SetHeight(#SECTION_ORDER * NAV_ROW_H)
+
+    -- Sidebar itself is stretched to the full panel height by
+    -- BuildSettingsPanel (LEFT/TOP/BOTTOM anchors) so the background,
+    -- divider and this footer all reach the panel's true bottom edge
+    -- regardless of Main window size - rows stay top-aligned above, the
+    -- footer stays bottom-aligned below, and the large gap between them
+    -- at every supported window size (rows+footer need ~245px; the
+    -- panel is never shorter than roughly 400px even at the Main
+    -- window's minimum resizable size) means they can never collide.
+    BuildSidebarFooter(nav, parent)
 
     nav.ApplySelection = ApplySelection
     return nav
@@ -1161,6 +1254,12 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
         local topOffset = (SB.LIBRARY_CONTENT_TOP_OFFSET or 0) + L.GAP_S
         nav:SetPoint("TOP", mainFrame, "TOP", 0, -topOffset)
     end
+    -- Sidebar refinement: nav now also anchors to panel's own BOTTOM (in
+    -- addition to LEFT/TOP above) so its background/divider/footer span
+    -- the full Settings panel height at any Main window size, instead of
+    -- only as tall as its own row stack - see BuildSectionNav's own
+    -- footer comment for the resulting never-overlap math.
+    nav:SetPoint("BOTTOM", panel, "BOTTOM", 0, 0)
     panel.nav = nav
 
     -- Settings redesign: only the RIGHT content pane scrolls - the LEFT
