@@ -455,48 +455,58 @@ end
 -- see Database.lua's SanitizeDatabase) is left completely untouched; this
 -- is intentionally a fresh, independent, in-memory concept.
 --
--- channelSubset[bucket] is nil until that bucket is first activated this
--- session (SB.ActivateChannelSubset) - nil means "whole channel", the
--- addon's original, always-existing behaviour, and is never persisted or
--- treated as "customized". Once activated it's a concrete array of player
--- names, changed only by an explicit toggle (SB.ToggleChannelMember/
--- ToggleAllChannelMembers) - a later roster change can add new NAMES to
--- what's reachable, but never to what's selected (see
--- SB.ComputeChannelSubsetRecipients), satisfying "new members must not
--- unexpectedly become selected after the user has manually created a
--- subset". Selecting literally everyone reachable is stored the exact
--- same way as any other subset (no separate "whole channel" flag) - full
--- circle back to ordinary whole-channel behaviour, per explicit
--- requirement.
+-- channelSubset[bucket] holds one of THREE distinct states, per explicit
+-- requirement that "all reachable selected" and "an explicit subset that
+-- currently happens to be empty/partial" behave differently as new people
+-- become reachable:
+--   nil        - never activated this session ("whole channel", the
+--                addon's original, always-existing behaviour).
+--   "ALL"      - implicit "everyone currently reachable" - dynamically
+--                recomputed from SB.ComputeReachablePlayers on every read,
+--                so a NEW arrival is automatically included while this
+--                bucket stays active (explicit requirement: "Friends is
+--                3/3 ... a fourth friend comes online -> 4/4").
+--   an array   - an explicit, frozen subset (possibly empty) set by a
+--                deliberate toggle - a later roster change can add new
+--                NAMES to what's reachable, but never to what's selected
+--                (explicit requirement: "2/3 ... a fourth friend comes
+--                online -> 2/4", and "0/3 -> 0/4"), and this is never
+--                mutated by a mere read/refresh, only by
+--                ToggleChannelMember/ToggleAllChannelMembers below.
+-- Whenever such an explicit toggle happens to leave EVERY currently
+-- reachable member selected, it collapses back to "ALL" (see
+-- CollapseToAllIfComplete) - "all selected" is always representable as
+-- the dynamic implicit state, regardless of which gesture produced it,
+-- so it keeps tracking future arrivals from that point on too.
 ------------------------------------------------------------------------
 local channelSubset = { GUILD = nil, RAID = nil, FRIENDS = nil }
 
-local function SubsetKeySet(bucket)
+local function ReachableList(bucket)
+    return SB.ComputeReachablePlayers()[bucket] or {}
+end
+
+local function KeySet(list)
     local set = {}
-    for _, name in ipairs(channelSubset[bucket] or {}) do
-        set[IdentityKey(name)] = true
-    end
+    for _, name in ipairs(list) do set[IdentityKey(name)] = true end
     return set
 end
 
---- True once `bucket` has a concrete subset this session (however large or
---- small, including empty) - false means "whole channel" still applies.
+--- True once `bucket` has been activated this session (whether currently
+--- "ALL" or an explicit subset, however large or small) - false means
+--- "whole channel" still applies.
 function SB.IsChannelSubsetActive(bucket)
     return channelSubset[bucket] ~= nil
 end
 
 --- Activates `bucket`'s subset if it isn't already active this session,
---- snapshotting every currently reachable member as selected (explicit
---- requirement: "on first selecting a channel, all listed members are
---- selected by default"). A no-op once already active, so reopening an
+--- as the implicit "ALL" state (explicit requirement: "on first selecting
+--- a channel, all listed members are selected by default", and stays
+--- live from then on). A no-op once already active, so reopening an
 --- already-customized channel never resets the player's own narrowing.
 function SB.ActivateChannelSubset(bucket)
     if bucket ~= "GUILD" and bucket ~= "RAID" and bucket ~= "FRIENDS" then return end
     if channelSubset[bucket] then return end
-    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
-    local snapshot = {}
-    for _, name in ipairs(reachable) do table.insert(snapshot, name) end
-    channelSubset[bucket] = snapshot
+    channelSubset[bucket] = "ALL"
 end
 
 --- Explicit requirement: "Switching from Guild to Friends/Raid-Party
@@ -509,58 +519,84 @@ function SB.ResetChannelSubsetsExcept(activeBucket)
     end
 end
 
---- Toggles one member of `bucket` on/off, activating the bucket first if
---- this is the very first interaction with it this session.
-function SB.ToggleChannelMember(bucket, name)
-    SB.ActivateChannelSubset(bucket)
-    local list = channelSubset[bucket]
-    if not list then return end
-    local key = IdentityKey(name)
-    for i, existing in ipairs(list) do
-        if IdentityKey(existing) == key then
-            table.remove(list, i)
+--- Sets `bucket` to the given explicit list, or collapses it back to the
+--- dynamic "ALL" state if that list happens to cover every currently
+--- reachable member (see the module comment above) - the ONE place both
+--- ToggleChannelMember and ToggleAllChannelMembers below finish through,
+--- so they can never disagree on when "explicit" becomes "implicit all"
+--- again.
+local function SetExplicitSubset(bucket, list)
+    local reachable = ReachableList(bucket)
+    local selected = KeySet(list)
+    for _, name in ipairs(reachable) do
+        if not selected[IdentityKey(name)] then
+            channelSubset[bucket] = list
             return
         end
     end
-    table.insert(list, name)
+    channelSubset[bucket] = "ALL"
+end
+
+--- Toggles one member of `bucket` on/off, activating the bucket first if
+--- this is the very first interaction with it this session. Toggling
+--- someone off while in the dynamic "ALL" state freezes the CURRENT
+--- reachable set (minus that one person) as an explicit subset - a later
+--- new arrival must NOT retroactively join it (explicit requirement).
+function SB.ToggleChannelMember(bucket, name)
+    SB.ActivateChannelSubset(bucket)
+    local current = channelSubset[bucket]
+    local key = IdentityKey(name)
+    local list = {}
+    if current == "ALL" then
+        for _, existing in ipairs(ReachableList(bucket)) do
+            if IdentityKey(existing) ~= key then table.insert(list, existing) end
+        end
+    else
+        local found = false
+        for _, existing in ipairs(current) do
+            if IdentityKey(existing) == key then found = true else table.insert(list, existing) end
+        end
+        if not found then table.insert(list, name) end
+    end
+    SetExplicitSubset(bucket, list)
 end
 
 --- "Clicking the active channel again toggles all members off/on" -
---- clears to nobody if everyone currently reachable is already selected,
---- otherwise selects everyone currently reachable.
+--- clears to nobody if everyone currently reachable is already selected
+--- (whether that's the dynamic "ALL" state or an explicit subset that
+--- just happens to currently cover everyone), otherwise selects everyone
+--- currently reachable via the dynamic "ALL" state (so it keeps tracking
+--- future arrivals from here on, not a one-time frozen snapshot).
 function SB.ToggleAllChannelMembers(bucket)
-    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
-    local selectedKeys = SubsetKeySet(bucket)
-    local allSelected = channelSubset[bucket] ~= nil and #reachable > 0
-    if allSelected then
-        for _, name in ipairs(reachable) do
-            if not selectedKeys[IdentityKey(name)] then allSelected = false break end
-        end
-    end
-    if allSelected then
+    local current = channelSubset[bucket]
+    if current == "ALL" then
         channelSubset[bucket] = {}
-    else
-        local snapshot = {}
-        for _, name in ipairs(reachable) do table.insert(snapshot, name) end
-        channelSubset[bucket] = snapshot
+        return
     end
+    local reachable = ReachableList(bucket)
+    local selected = KeySet(current or {})
+    local allSelected = #reachable > 0
+    for _, name in ipairs(reachable) do
+        if not selected[IdentityKey(name)] then allSelected = false break end
+    end
+    channelSubset[bucket] = allSelected and {} or "ALL"
 end
 
 --- The dispatch-time recipient list for `bucket`, or nil if the whole
---- channel should be used (unmodified original behaviour). Never includes
---- a stored name that isn't CURRENTLY reachable (offline, left the
---- group/guild) even if it's still sitting in the stored subset - a name
---- coming back reachable later is still honoured, since it was never
---- actually removed from the stored subset, only filtered out of THIS
---- particular call's result.
+--- channel should be used (unmodified original behaviour). The dynamic
+--- "ALL" state always resolves to everyone CURRENTLY reachable; an
+--- explicit subset never includes a stored name that isn't currently
+--- reachable (offline, left the group/guild) even if it's still sitting
+--- in the stored list - a name coming back reachable later is still
+--- honoured, since it was never actually removed from the stored subset,
+--- only filtered out of THIS particular call's result.
 function SB.ComputeChannelSubsetRecipients(bucket)
-    if not channelSubset[bucket] then return nil end
-    local reachableKeys = {}
-    for _, name in ipairs(SB.ComputeReachablePlayers()[bucket] or {}) do
-        reachableKeys[IdentityKey(name)] = true
-    end
+    local current = channelSubset[bucket]
+    if not current then return nil end
+    if current == "ALL" then return ReachableList(bucket) end
+    local reachableKeys = KeySet(ReachableList(bucket))
     local list = {}
-    for _, name in ipairs(channelSubset[bucket]) do
+    for _, name in ipairs(current) do
         if reachableKeys[IdentityKey(name)] then table.insert(list, name) end
     end
     return list
@@ -568,28 +604,34 @@ end
 
 --- Every reachable name for `bucket`, each tagged with whether it's
 --- currently selected - the UI's one source for rendering the expandable
---- member checkbox list. `not active` (whole-channel mode) reports every
---- row as selected, matching "keep existing whole-channel behaviour
---- equivalent to all members selected".
+--- member checkbox list. Both `nil` (whole-channel mode) and "ALL"
+--- report every row as selected, matching "keep existing whole-channel
+--- behaviour equivalent to all members selected".
 function SB.GetChannelMemberRows(bucket)
-    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
-    local selectedKeys = SubsetKeySet(bucket)
-    local active = SB.IsChannelSubsetActive(bucket)
+    local reachable = ReachableList(bucket)
+    local current = channelSubset[bucket]
     local rows = {}
-    for _, name in ipairs(reachable) do
-        table.insert(rows, { name = name, selected = (not active) or (selectedKeys[IdentityKey(name)] == true) })
+    if not current or current == "ALL" then
+        for _, name in ipairs(reachable) do table.insert(rows, { name = name, selected = true }) end
+    else
+        local selectedKeys = KeySet(current)
+        for _, name in ipairs(reachable) do
+            table.insert(rows, { name = name, selected = selectedKeys[IdentityKey(name)] == true })
+        end
     end
     return rows
 end
 
 --- (selectedCount, availableCount) for `bucket`'s channel row - explicit
 --- requirement: "preferably show selected/available count". Available is
---- always the live reachable count; selected only ever counts someone
---- both reachable right now AND in the stored subset.
+--- always the live reachable count; selected is the same count for `nil`/
+--- "ALL", or only counts someone both reachable right now AND in the
+--- stored explicit subset.
 function SB.GetChannelSubsetCount(bucket)
-    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
-    if not channelSubset[bucket] then return #reachable, #reachable end
-    local selectedKeys = SubsetKeySet(bucket)
+    local reachable = ReachableList(bucket)
+    local current = channelSubset[bucket]
+    if not current or current == "ALL" then return #reachable, #reachable end
+    local selectedKeys = KeySet(current)
     local selected = 0
     for _, name in ipairs(reachable) do
         if selectedKeys[IdentityKey(name)] then selected = selected + 1 end
