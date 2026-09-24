@@ -72,6 +72,10 @@ local sectionHeaders = {}
 local searchBox
 local searchPlaceholder
 local defaultOutputDD
+-- Per-player recipient subset flyout (Guild/Raid/Friends only) - see
+-- BuildSubsetPanel/RefreshSubsetChip further below.
+local subsetChip
+local subsetPanel
 local emptyHint
 local emptyHintClear
 local settingsPanel
@@ -2369,13 +2373,242 @@ local function BuildMainFrame()
         end
     end)
     defaultOutputDD:SetValue((SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL")
-    defaultOutputDD:SetOnChange(function(value)
-        SB.db.settings.defaultOutputTarget = value
-        SB:Fire("OUTPUT_SELECTION_CHANGED")
-    end)
+    -- SetOnChange is completed further below (see "Per-player recipient
+    -- subset" section) - it also has to reset the per-channel subset
+    -- state and this dropdown's own subset chip/panel, so both concerns
+    -- live in ONE handler rather than two competing ones (Theme.CreateDropdown
+    -- only ever keeps the LAST one registered).
     SB.Theme.AttachTooltip(defaultOutputDD.button, "Send to",
         "Where a regular click sends a sound by default. A sound's own per-sound Default Output (Edit Sound) overrides this when set.")
     main.defaultOutputDD = defaultOutputDD
+
+    ------------------------------------------------------------------
+    -- Per-player recipient subset (explicit request: restore/extend
+    -- per-player selection for Guild/Raid/Friends) - a small chip sitting
+    -- in the existing gap between the Send-to dropdown and Search, shown
+    -- only while the active Send-to channel is Guild/Raid/Friends
+    -- (a subset only ever applies to those three). Clicking it expands a
+    -- checkbox member list directly below the Send-to control. Entirely
+    -- additive alongside defaultOutputDD - the dropdown still picks WHICH
+    -- channel, this narrows WHO within it, reusing the session-only
+    -- subset state Communication.lua already exposes (no parallel
+    -- discovery/transport of its own).
+    ------------------------------------------------------------------
+    local SUBSET_ROW_H = 20
+    local SUBSET_PANEL_MAX_H = 5 * SUBSET_ROW_H
+    local SUBSET_BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid/Party", FRIENDS = "Friends" }
+
+    local function CurrentSubsetBucket()
+        local target = SB.db.settings and SB.db.settings.defaultOutputTarget
+        if target == "GUILD" or target == "RAID" or target == "FRIENDS" then return target end
+        return nil
+    end
+
+    local function RefreshSubsetChip()
+        local bucket = CurrentSubsetBucket()
+        if not bucket then
+            subsetChip:Hide()
+            return
+        end
+        local selected, avail = SB.GetChannelSubsetCount(bucket)
+        subsetChip.text:SetText(selected .. "/" .. avail)
+        subsetChip:Show()
+    end
+
+    local function RefreshSubsetPanelContent()
+        if not subsetPanel:IsShown() then return end
+        local bucket = CurrentSubsetBucket()
+        if not bucket then
+            subsetPanel:Hide()
+            return
+        end
+
+        subsetPanel.title:SetText(SUBSET_BUCKET_LABEL[bucket] or bucket)
+        local selected, avail = SB.GetChannelSubsetCount(bucket)
+        subsetPanel.count:SetText(selected .. "/" .. avail)
+
+        local rows = SB.GetChannelMemberRows(bucket)
+        local content = subsetPanel.content
+        for i, rowData in ipairs(rows) do
+            local row = subsetPanel.memberRows[i]
+            if not row then
+                row = SB.Theme.CreateCheckbox(content, "", nil)
+                subsetPanel.memberRows[i] = row
+            end
+            row:ClearAllPoints()
+            row:SetPoint("TOPLEFT", 4, -(i - 1) * SUBSET_ROW_H - 2)
+            row.text:SetText(SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(rowData.name) or rowData.name)
+            row:SetChecked(rowData.selected)
+            row:ApplyThemeState()
+            local name = rowData.name
+            row:SetScript("OnClick", function(self)
+                self:ApplyThemeState()
+                SB.ToggleChannelMember(bucket, name)
+                RefreshSubsetPanelContent()
+                RefreshSubsetChip()
+            end)
+            row:Show()
+        end
+        for i = #rows + 1, #subsetPanel.memberRows do
+            subsetPanel.memberRows[i]:Hide()
+        end
+
+        -- Explicit requirement: the member list stays visible even with
+        -- zero SELECTED - only truly empty (nobody reachable at all) gets
+        -- the placeholder instead of an empty scroll area.
+        subsetPanel.emptyLabel:SetShown(#rows == 0)
+
+        content:SetHeight(math.max(1, #rows * SUBSET_ROW_H + 4))
+        local panelH = math.min(SUBSET_PANEL_MAX_H, math.max(SUBSET_ROW_H, #rows * SUBSET_ROW_H)) + 4
+        subsetPanel.scroll:SetHeight(panelH)
+        subsetPanel:SetHeight(subsetPanel.headerH + panelH + 6)
+        subsetPanel.scroll.UpdateThumb()
+    end
+
+    local function CloseSubsetPanel()
+        subsetPanel:Hide()
+        subsetPanel.catcher:Hide()
+    end
+
+    local function ToggleSubsetPanel()
+        local bucket = CurrentSubsetBucket()
+        if not bucket then return end
+        if subsetPanel:IsShown() then
+            CloseSubsetPanel()
+            return
+        end
+        SB.ActivateChannelSubset(bucket)
+        subsetPanel:ClearAllPoints()
+        subsetPanel:SetPoint("TOPLEFT", defaultOutputDD.button, "BOTTOMLEFT", 0, -2)
+        subsetPanel.catcher:Show()
+        subsetPanel:Show()
+        RefreshSubsetPanelContent()
+        RefreshSubsetChip()
+    end
+
+    -- Same backdrop-button shape as defaultOutputDD.button itself
+    -- (Theme.CreateDropdown), just narrower - sits right in the existing
+    -- ROW_ITEM_W/TOP_ROW_GAP gap between it and searchBox.
+    subsetChip = SB.CreateFrame("Button", nil, main)
+    subsetChip:SetSize(TOP_ROW_GAP - 8, SEARCH_H)
+    subsetChip:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    subsetChip:SetBackdropColor(unpack(SB.Theme.BG_INPUT))
+    subsetChip:SetBackdropBorderColor(unpack(SB.Theme.GOLD_DIM))
+    subsetChip:SetPoint("LEFT", defaultOutputDD.button, "RIGHT", 4, 0)
+    local subsetChipText = subsetChip:CreateFontString(nil, "OVERLAY")
+    subsetChipText:SetFontObject(SB.Fonts.DisableSmall)
+    subsetChipText:SetAllPoints()
+    subsetChipText:SetJustifyH("CENTER")
+    subsetChip.text = subsetChipText
+    subsetChip:HookScript("OnEnter", function(self) self:SetBackdropBorderColor(unpack(SB.Theme.GOLD)) end)
+    subsetChip:HookScript("OnLeave", function(self) self:SetBackdropBorderColor(unpack(SB.Theme.GOLD_DIM)) end)
+    subsetChip:SetScript("OnClick", ToggleSubsetPanel)
+    SB.Theme.AttachTooltip(subsetChip, "Recipients",
+        "Choose exactly who within this channel receives a regular click's sound. Click to open the member list; click the header inside to select/deselect everyone at once.")
+    subsetChip:Hide()
+    main.subsetChip = subsetChip
+
+    subsetPanel = SB.CreateFrame("Frame", nil, UIParent)
+    subsetPanel:SetFrameStrata("TOOLTIP")
+    subsetPanel:SetWidth(ROW_ITEM_W)
+    subsetPanel:SetClampedToScreen(true)
+    subsetPanel:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8", edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    subsetPanel:SetBackdropColor(unpack(SB.Theme.BG_RAISED))
+    subsetPanel:SetBackdropBorderColor(SB.Theme.GOLD_DIM[1], SB.Theme.GOLD_DIM[2], SB.Theme.GOLD_DIM[3], 0.72)
+    subsetPanel:Hide()
+
+    local subsetCatcher = SB.CreateFrame("Button", nil, UIParent)
+    subsetCatcher:SetAllPoints(UIParent)
+    subsetCatcher:SetFrameStrata("TOOLTIP")
+    subsetCatcher:SetFrameLevel(math.max(0, (subsetPanel:GetFrameLevel() or 1) - 1))
+    subsetCatcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    subsetCatcher:Hide()
+    subsetCatcher:SetScript("OnClick", CloseSubsetPanel)
+    subsetPanel.catcher = subsetCatcher
+
+    -- Header: title + live "N/M" count, the whole row doubling as the
+    -- "clicking the active channel again toggles all members off/on"
+    -- control (explicit requirement).
+    local subsetHeader = SB.CreateFrame("Button", nil, subsetPanel)
+    subsetHeader:SetPoint("TOPLEFT", 2, -2)
+    subsetHeader:SetPoint("RIGHT", -2, 0)
+    subsetHeader:SetHeight(22)
+    local subsetTitle = subsetHeader:CreateFontString(nil, "OVERLAY")
+    subsetTitle:SetFontObject(SB.Fonts.HighlightSmall)
+    subsetTitle:SetPoint("LEFT", 4, 0)
+    subsetPanel.title = subsetTitle
+    local subsetCount = subsetHeader:CreateFontString(nil, "OVERLAY")
+    subsetCount:SetFontObject(SB.Fonts.DisableSmall)
+    subsetCount:SetPoint("RIGHT", -4, 0)
+    subsetPanel.count = subsetCount
+    subsetHeader:SetScript("OnClick", function()
+        local bucket = CurrentSubsetBucket()
+        if not bucket then return end
+        SB.ToggleAllChannelMembers(bucket)
+        RefreshSubsetPanelContent()
+        RefreshSubsetChip()
+    end)
+    SB.Theme.AttachTooltip(subsetHeader, "Select / Deselect All", "Click to toggle every reachable member on or off at once.")
+    subsetPanel.headerH = 24
+
+    local subsetScrollArea = SB.Theme.CreateScrollFrame(subsetPanel)
+    subsetScrollArea.scroll:SetPoint("TOPLEFT", 0, -subsetPanel.headerH)
+    subsetScrollArea.scroll:SetPoint("RIGHT", 0, 0)
+    subsetScrollArea.content:SetPoint("TOPLEFT", 0, 0)
+    subsetScrollArea.content:SetPoint("RIGHT", subsetScrollArea.scroll, "RIGHT", 0, 0)
+    subsetPanel.scroll = subsetScrollArea.scroll
+    subsetPanel.content = subsetScrollArea.content
+    subsetPanel.memberRows = {}
+
+    local subsetEmptyLabel = subsetScrollArea.content:CreateFontString(nil, "OVERLAY")
+    subsetEmptyLabel:SetFontObject(SB.Fonts.DisableSmall)
+    subsetEmptyLabel:SetPoint("TOPLEFT", 4, -4)
+    subsetEmptyLabel:SetPoint("RIGHT", -4, 0)
+    subsetEmptyLabel:SetJustifyH("LEFT")
+    subsetEmptyLabel:SetWordWrap(true)
+    subsetEmptyLabel:SetText("No reachable Soundbook users in this channel right now.")
+    subsetEmptyLabel:Hide()
+    subsetPanel.emptyLabel = subsetEmptyLabel
+
+    -- Switching the Send-to channel resets subsetChip/panel state -
+    -- explicit requirement: "switching from Guild to Friends/Raid-Party
+    -- immediately clears the previous channel's per-player selection...
+    -- selections must never combine across channels." Re-picking the
+    -- SAME channel that's already active (the dropdown always re-fires
+    -- onChange even for an unchanged value) is exactly "clicking the
+    -- active channel again" - explicit requirement: toggles all its
+    -- members off/on, same action as clicking the open panel's own
+    -- header.
+    local lastOutputTarget = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
+    defaultOutputDD:SetOnChange(function(value)
+        local reselectedActive = (value == lastOutputTarget) and (value == "GUILD" or value == "RAID" or value == "FRIENDS")
+        lastOutputTarget = value
+        SB.db.settings.defaultOutputTarget = value
+        if value == "GUILD" or value == "RAID" or value == "FRIENDS" then
+            SB.ResetChannelSubsetsExcept(value)
+            if reselectedActive then
+                SB.ActivateChannelSubset(value)
+                SB.ToggleAllChannelMembers(value)
+            end
+        else
+            SB.ResetChannelSubsetsExcept(nil)
+        end
+        RefreshSubsetPanelContent()
+        RefreshSubsetChip()
+        SB:Fire("OUTPUT_SELECTION_CHANGED")
+    end)
+    RefreshSubsetChip()
+
+    -- Recipient lists must refresh safely when presence/roster
+    -- information changes (explicit requirement) - reuses the exact same
+    -- OUTPUT_SELECTION_CHANGED event UI.lua's own roster-change listener
+    -- already fires for every relevant WoW event (GROUP_ROSTER_UPDATE/
+    -- GUILD_ROSTER_UPDATE/FRIENDLIST_UPDATE/...), rather than a second,
+    -- parallel refresh trigger.
+    SB:On("OUTPUT_SELECTION_CHANGED", function()
+        RefreshSubsetChip()
+        RefreshSubsetPanelContent()
+    end)
 
     searchBox = SB.Theme.CreateInputBox(main, ROW_ITEM_W, SEARCH_H)
     -- Mirrors defaultOutputDD's own anchor - same fixed width, same row,

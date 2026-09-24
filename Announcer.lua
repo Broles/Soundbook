@@ -1158,7 +1158,16 @@ local function ComputeLiveTargetCounts()
         return 1, {}, false, displayName, false
     end
     if target == "GUILD" or target == "RAID" or target == "FRIENDS" then
-        CountBucket(target)
+        -- A per-player recipient subset (Communication.lua) narrows this
+        -- bucket's live reach below its full reachable count - read
+        -- through SB.GetChannelSubsetCount so the title never overstates
+        -- who's actually about to receive it (it already falls back to
+        -- the plain reachable count when no subset is active).
+        local n = SB.GetChannelSubsetCount and (select(1, SB.GetChannelSubsetCount(target))) or #(reachable[target] or {})
+        if n > 0 then
+            perBucket[target] = n
+            total = n
+        end
         return total, perBucket, total == 0, nil, false
     end
     -- "ALL" (default/fallback) - every currently Send-enabled channel,

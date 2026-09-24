@@ -31,7 +31,7 @@ The WoW Forever beta client (confirmed on builds 1.60.1.69893 and 1.60.1.69913) 
 The Main Soundbook is one continuously scrolling Sound Library, not a paged, right-side-tabbed book:
 
 - **My Favourites first**, then a collapsible section per category (click a section header to expand/collapse it - state is remembered).
-- **Search and tag filters** (New/Trending/Popular/Loved/Legendary/Cringe/Dusty), plus a **"Send to:"** dropdown, sit in a row below the header. "Send to:" is a single-select control choosing where a plain left-click sends a sound: All (whichever channels are enabled under Settings -> Multiplayer), a specific group (Guild/Raid-Party/Friends), a specific player, or Self Only.
+- **Search and tag filters** (New/Trending/Popular/Loved/Legendary/Cringe/Dusty), plus a **"Send to:"** dropdown, sit in a row below the header. "Send to:" is a single-select control choosing where a plain left-click sends a sound: All (whichever channels are enabled under Settings -> Multiplayer), a specific group (Guild/Raid-Party/Friends), a specific player, or Self Only. While Guild, Raid/Party, or Friends is active, a small "N/M" chip next to it opens a checkbox list of that channel's reachable Soundbook users, narrowing a plain click to only the selected people instead of the whole channel - see "Recipients" below.
 - A gear icon at the header's top-left opens **Settings** inside the same window (two-pane layout: General, Playback, Multiplayer, Appearance, Categories, Advanced). Quick Audio, Lock, and Close sit at the header's top-right; Raid Admin appears as its own tab when you have the authority to use it.
 - **Announcer** replaces the old Mini Soundbook window as the always-on HUD - see "Announcer" below.
 - **Edit Sound** is compact - "Change Icon" opens a picker popup instead of permanently embedding the icon grid - and warns before discarding unsaved changes.
@@ -90,6 +90,10 @@ Sound Routing and Multiplayer settings control:
 - raid/party leader controls with recipient acknowledgements.
 
 Soundbook 3.0 validates message size, command, channel, sound ID, player target, and admin duration before acting. Incoming and outgoing traffic use bounded rate limits; playback and control messages take priority over presence and analytics traffic. Unknown commands and unsupported protocol versions are ignored safely.
+
+### Recipients
+
+Guild, Raid/Party, and Friends each support an optional per-player recipient subset on top of the "Send to:" dropdown, session-only (never saved, reset on reload): selecting one of these channels shows a "selected/available" chip next to it, opening a checkbox list of that channel's currently reachable Soundbook users. Every reachable member is selected by default; clicking the chip's header again (or re-picking the already-active channel from the dropdown) toggles everyone off or back on. A narrowed selection persists for the rest of the session and is never silently grown when someone new becomes reachable - only an explicit check adds them. Switching to a different channel discards the previous one's subset; only one channel's subset is ever active at a time. A narrowed Guild/Raid send still travels as individual whispers on the wire (Guild/Raid channel messages can't be addressed to specific people), but is received, gated, and acknowledged exactly like a whole-channel broadcast - never mistaken for a Direct send or a plain Friends whisper. Per-sound Default Output overrides and macro `::Target` sends always reach the whole channel, unaffected by this.
 
 Player identity comparisons are realm-aware. Two characters with the same name on different realms no longer share a mute, cooldown, acknowledgement, or reachable-player entry.
 

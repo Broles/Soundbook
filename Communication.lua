@@ -313,6 +313,40 @@ local function SendToPlayerSilent(soundID, name)
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID .. SEP .. "D", "WHISPER", name)
 end
 
+-- A Guild/Raid channel message can't be narrowed to specific recipients at
+-- the WoW chat-channel level, so a narrowed per-player subset instead goes
+-- out as individual whispers carrying a "SG"/"SR" flag (see
+-- ParsePlayPayload/OnAddonMessage below) - the ONE place OnAddonMessage
+-- remaps a whisper carrying either flag back onto the "GUILD"/"RAID"
+-- channel for every purpose downstream (receive gating, queue priority,
+-- ACK code, chat label), so a recipient's client treats it exactly like a
+-- real channel-wide broadcast - explicit requirement: "preserve the
+-- logical source channel... even if the underlying transport has to use
+-- individual messages." Friends never needs this: a Friends
+-- broadcast/subset was always individual per-friend whispers with no flag
+-- at all (see SendToFriends) - narrowing it to a subset is just sending to
+-- fewer names, no wire change needed.
+--
+-- Same outbound boundary as a genuine whole-channel send
+-- (SendToSingleChannelSilent) - checked ONCE for the whole subset, no
+-- per-recipient Friend exemption, since this is still logically a
+-- Guild/Raid send, not a Direct one.
+local SUBSET_WIRE_FLAG = { GUILD = "SG", RAID = "SR" }
+local function SendSubsetSilent(soundID, names, bucket)
+    local flag = SUBSET_WIRE_FLAG[bucket]
+    if not flag or not SB.registry[soundID] then return end
+    if SB:IsSendBlockedByRaid() then return end
+    local text = SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID .. SEP .. flag
+    local sentAny = false
+    for _, name in ipairs(names) do
+        if SB.IsValidPlayerTarget(name) and not SB:IsIgnored(name) then
+            SB.SendAddonMessage(SB.COMM_PREFIX, text, "WHISPER", name)
+            sentAny = true
+        end
+    end
+    if sentAny then recentBroadcasts[soundID] = GetTime() end
+end
+
 -- Shared option list for Settings -> Default Output Channel (UI.lua's main
 -- dropdown) and EditWindow.lua's per-sound macro "Output" dropdown. Fixed
 -- order All -> Friends -> Guild -> Raid -> Party -> Self, with each
@@ -408,6 +442,159 @@ function SB.ComputeReachablePlayers()
     end)
 
     return result
+end
+
+------------------------------------------------------------------------
+-- Per-player recipient subset for the ACTIVE Send-to channel (explicit
+-- request: restore/extend per-player selection for Guild/Raid/Friends,
+-- reusing SB.ComputeReachablePlayers/the existing transport - no parallel
+-- discovery or send system). Session/UI state only, deliberately never
+-- SavedVariables (explicit requirement) - resets on every login/reload.
+-- The OLD Output Rail's own `SB.db.ui.outputRail.selected` SavedVariables
+-- shape (a different, now-dead always-on multi-select broadcast feature -
+-- see Database.lua's SanitizeDatabase) is left completely untouched; this
+-- is intentionally a fresh, independent, in-memory concept.
+--
+-- channelSubset[bucket] is nil until that bucket is first activated this
+-- session (SB.ActivateChannelSubset) - nil means "whole channel", the
+-- addon's original, always-existing behaviour, and is never persisted or
+-- treated as "customized". Once activated it's a concrete array of player
+-- names, changed only by an explicit toggle (SB.ToggleChannelMember/
+-- ToggleAllChannelMembers) - a later roster change can add new NAMES to
+-- what's reachable, but never to what's selected (see
+-- SB.ComputeChannelSubsetRecipients), satisfying "new members must not
+-- unexpectedly become selected after the user has manually created a
+-- subset". Selecting literally everyone reachable is stored the exact
+-- same way as any other subset (no separate "whole channel" flag) - full
+-- circle back to ordinary whole-channel behaviour, per explicit
+-- requirement.
+------------------------------------------------------------------------
+local channelSubset = { GUILD = nil, RAID = nil, FRIENDS = nil }
+
+local function SubsetKeySet(bucket)
+    local set = {}
+    for _, name in ipairs(channelSubset[bucket] or {}) do
+        set[IdentityKey(name)] = true
+    end
+    return set
+end
+
+--- True once `bucket` has a concrete subset this session (however large or
+--- small, including empty) - false means "whole channel" still applies.
+function SB.IsChannelSubsetActive(bucket)
+    return channelSubset[bucket] ~= nil
+end
+
+--- Activates `bucket`'s subset if it isn't already active this session,
+--- snapshotting every currently reachable member as selected (explicit
+--- requirement: "on first selecting a channel, all listed members are
+--- selected by default"). A no-op once already active, so reopening an
+--- already-customized channel never resets the player's own narrowing.
+function SB.ActivateChannelSubset(bucket)
+    if bucket ~= "GUILD" and bucket ~= "RAID" and bucket ~= "FRIENDS" then return end
+    if channelSubset[bucket] then return end
+    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
+    local snapshot = {}
+    for _, name in ipairs(reachable) do table.insert(snapshot, name) end
+    channelSubset[bucket] = snapshot
+end
+
+--- Explicit requirement: "Switching from Guild to Friends/Raid-Party
+--- immediately clears the previous channel's per-player selection...
+--- Recipient selections must never combine across channels." Pass nil to
+--- clear every bucket (switching to All/Self/a single player).
+function SB.ResetChannelSubsetsExcept(activeBucket)
+    for bucket in pairs(channelSubset) do
+        if bucket ~= activeBucket then channelSubset[bucket] = nil end
+    end
+end
+
+--- Toggles one member of `bucket` on/off, activating the bucket first if
+--- this is the very first interaction with it this session.
+function SB.ToggleChannelMember(bucket, name)
+    SB.ActivateChannelSubset(bucket)
+    local list = channelSubset[bucket]
+    if not list then return end
+    local key = IdentityKey(name)
+    for i, existing in ipairs(list) do
+        if IdentityKey(existing) == key then
+            table.remove(list, i)
+            return
+        end
+    end
+    table.insert(list, name)
+end
+
+--- "Clicking the active channel again toggles all members off/on" -
+--- clears to nobody if everyone currently reachable is already selected,
+--- otherwise selects everyone currently reachable.
+function SB.ToggleAllChannelMembers(bucket)
+    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
+    local selectedKeys = SubsetKeySet(bucket)
+    local allSelected = channelSubset[bucket] ~= nil and #reachable > 0
+    if allSelected then
+        for _, name in ipairs(reachable) do
+            if not selectedKeys[IdentityKey(name)] then allSelected = false break end
+        end
+    end
+    if allSelected then
+        channelSubset[bucket] = {}
+    else
+        local snapshot = {}
+        for _, name in ipairs(reachable) do table.insert(snapshot, name) end
+        channelSubset[bucket] = snapshot
+    end
+end
+
+--- The dispatch-time recipient list for `bucket`, or nil if the whole
+--- channel should be used (unmodified original behaviour). Never includes
+--- a stored name that isn't CURRENTLY reachable (offline, left the
+--- group/guild) even if it's still sitting in the stored subset - a name
+--- coming back reachable later is still honoured, since it was never
+--- actually removed from the stored subset, only filtered out of THIS
+--- particular call's result.
+function SB.ComputeChannelSubsetRecipients(bucket)
+    if not channelSubset[bucket] then return nil end
+    local reachableKeys = {}
+    for _, name in ipairs(SB.ComputeReachablePlayers()[bucket] or {}) do
+        reachableKeys[IdentityKey(name)] = true
+    end
+    local list = {}
+    for _, name in ipairs(channelSubset[bucket]) do
+        if reachableKeys[IdentityKey(name)] then table.insert(list, name) end
+    end
+    return list
+end
+
+--- Every reachable name for `bucket`, each tagged with whether it's
+--- currently selected - the UI's one source for rendering the expandable
+--- member checkbox list. `not active` (whole-channel mode) reports every
+--- row as selected, matching "keep existing whole-channel behaviour
+--- equivalent to all members selected".
+function SB.GetChannelMemberRows(bucket)
+    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
+    local selectedKeys = SubsetKeySet(bucket)
+    local active = SB.IsChannelSubsetActive(bucket)
+    local rows = {}
+    for _, name in ipairs(reachable) do
+        table.insert(rows, { name = name, selected = (not active) or (selectedKeys[IdentityKey(name)] == true) })
+    end
+    return rows
+end
+
+--- (selectedCount, availableCount) for `bucket`'s channel row - explicit
+--- requirement: "preferably show selected/available count". Available is
+--- always the live reachable count; selected only ever counts someone
+--- both reachable right now AND in the stored subset.
+function SB.GetChannelSubsetCount(bucket)
+    local reachable = SB.ComputeReachablePlayers()[bucket] or {}
+    if not channelSubset[bucket] then return #reachable, #reachable end
+    local selectedKeys = SubsetKeySet(bucket)
+    local selected = 0
+    for _, name in ipairs(reachable) do
+        if selectedKeys[IdentityKey(name)] then selected = selected + 1 end
+    end
+    return selected, #reachable
 end
 
 function SB.ComputeOutputTargetOptions()
@@ -564,11 +751,25 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
 
     if SB:IsSendBlockedByRaid() then return end
 
+    -- The per-player recipient subset (SB.ComputeChannelSubsetRecipients
+    -- above) only ever narrows the MAIN "Send to:" selector's own current
+    -- value - never a macro's explicit "::Target" override or a per-sound
+    -- "Default Output" override, both a deliberate, separate choice for
+    -- that one sound/macro that must keep reaching the WHOLE channel
+    -- exactly as before (explicit requirement: preserve existing per-
+    -- sound/macro routing semantics outside this new filtering).
+    local saved = soundID and SB.db and SB.db.sounds and SB.db.sounds[soundID]
+    local hasExplicitOverride = (overrideTarget and SB.IsValidOutputTarget(overrideTarget))
+        or (saved and saved.outputOverride and saved.outputOverride ~= "ALL" and SB.IsValidOutputTarget(saved.outputOverride))
+    local subsetBucket = (target == "GUILD" and "GUILD") or ((target == "RAID" or target == "PARTY") and "RAID") or (target == "FRIENDS" and "FRIENDS") or nil
+    local subset = (not hasExplicitOverride) and subsetBucket and SB.ComputeChannelSubsetRecipients(subsetBucket) or nil
+
     if target == "ALL" then
         SB:BroadcastSound(soundID)
     elseif target == "GUILD" then
-        SendToSingleChannelSilent(soundID, "GUILD")
+        if subset then SendSubsetSilent(soundID, subset, "GUILD") else SendToSingleChannelSilent(soundID, "GUILD") end
     elseif target == "RAID" or target == "PARTY" then
+        if subset then SendSubsetSilent(soundID, subset, "RAID"); return end
         -- "RAID" is the merged Raid/Party target (see
         -- SB.ResolveGroupChannel), resolved to whichever is actually live.
         -- "PARTY" as an input here is not just stale data: the UI itself
@@ -580,7 +781,23 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
         local resolved = SB.ResolveGroupChannel()
         if resolved then SendToSingleChannelSilent(soundID, resolved) end
     elseif target == "FRIENDS" then
-        SendToAllFriendsSilent(soundID)
+        -- Friends was always individual per-friend whispers with no
+        -- channel flag at all (see SendToFriends) - a subset here is just
+        -- SendToFriends' own logic run against fewer names, no protocol
+        -- change needed (unlike Guild/Raid above).
+        if subset then
+            local text = SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID
+            local sentAny = false
+            for _, name in ipairs(subset) do
+                if not SB:IsIgnored(name) then
+                    SB.SendAddonMessage(SB.COMM_PREFIX, text, "WHISPER", name)
+                    sentAny = true
+                end
+            end
+            if sentAny then recentBroadcasts[soundID] = GetTime() end
+        else
+            SendToAllFriendsSilent(soundID)
+        end
     end
 end
 
@@ -1049,20 +1266,26 @@ end
 --- PLAY payload: "soundID" or "soundID|D" (or "soundID|D|<future flag>",
 --- "soundID|<some other future flag>", ...). Only ever soundID is required;
 --- every segment after the first is optional and any we don't recognize
---- (currently just "D", direct-send - see SB:SendSoundToPlayer above) is
---- silently ignored rather than rejecting the message.
--- @return string soundID, boolean isDirect
+--- is silently ignored rather than rejecting the message. Recognized
+--- flags: "D" (direct-send, see SB:SendSoundToPlayer above), "SG"/"SR"
+--- (a per-player Guild/Raid recipient-subset whisper, see
+--- SendSubsetSilent above) - never both at once from a legitimate sender.
+-- @return string soundID, boolean isDirect, string|nil subsetChannel ("GUILD"/"RAID")
 local function ParsePlayPayload(payload)
     local soundID, rest = payload:match("^([^|]*)|?(.*)$")
     soundID = soundID or payload
     local isDirect = false
+    local subsetChannel = nil
     if rest and rest ~= "" then
         for flag in (rest .. SEP):gmatch("([^|]*)" .. SEP) do
-            if flag == "D" then isDirect = true end
+            if flag == "D" then isDirect = true
+            elseif flag == "SG" then subsetChannel = "GUILD"
+            elseif flag == "SR" then subsetChannel = "RAID"
+            end
             -- any other flag: forward-compat no-op.
         end
     end
-    return soundID, isDirect
+    return soundID, isDirect, subsetChannel
 end
 
 --- ACK payload: "soundID|code" - code is the single-letter channel (see
@@ -2149,11 +2372,22 @@ local function OnAddonMessage(prefix, message, channel, sender)
         -- isDirect to tell a Direct send apart from a plain Friends-list
         -- broadcast (both travel as WHISPER, see ReceiveAllowedForChannel
         -- above).
-        local plainID, isDirect = ParsePlayPayload(payload)
+        local plainID, isDirect, subsetChannel = ParsePlayPayload(payload)
         if not SB.IsValidSoundID(plainID) then return end
         -- A direct flag is meaningful only on a real whisper. Never let an
         -- arbitrary raid/guild packet claim the friend/direct exemptions.
         isDirect = isDirect and channel == "WHISPER"
+        -- Same hardening for a Guild/Raid recipient-SUBSET flag (see
+        -- SendSubsetSilent) - only ever honoured on a real whisper, and
+        -- never alongside a Direct flag. Once accepted, `channel` is
+        -- remapped to the LOGICAL "GUILD"/"RAID" it's standing in for, so
+        -- every downstream consumer below (receive gating, queue
+        -- priority, ACK code, chat label) treats it exactly like a real
+        -- channel-wide broadcast, with zero further special-casing -
+        -- explicit requirement: preserve the logical source channel.
+        if subsetChannel and channel == "WHISPER" and not isDirect then
+            channel = subsetChannel
+        end
 
         -- Channel filter - a disabled "Receive Sounds from" channel
         -- (Direct included) must produce literally nothing on THIS (the
