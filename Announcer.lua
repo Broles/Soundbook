@@ -16,6 +16,18 @@ local icon           -- idle/always-visible app icon (a Button, draggable)
 local banner         -- expanding "now playing" content, anchored to icon
 local muteDot        -- small indicator: incoming receive-mute is active
 local raidDot        -- small indicator: raid-admin currently restricts you
+-- Hoisted here (built/populated much further down, in the Favourites
+-- popup section) so BuildIcon's own OnLeave hook (tooltip persistence,
+-- see below) can reference the real frame directly - a `local favMenu`
+-- declared only later in the file would be a DIFFERENT variable than the
+-- one a closure created up here captures.
+local favMenu
+-- True only while favMenu is currently open BECAUSE of icon hover (never
+-- for a left-click or the Mini Soundbook Size slider's forced preview) -
+-- gates both the tightened ~8px proximity tolerance and the tooltip
+-- persistence below, neither of which should apply to a Mini Soundbook
+-- the player opened through its normal, explicit controls.
+local miniOpenedViaHover = false
 -- Forward-declared: defined further down (drag-preview machinery) but
 -- called as upvalues from BuildIcon's OnDragStart/OnDragStop above it.
 local StartIconDragPreview, StopIconDragPreview
@@ -162,8 +174,43 @@ local function PerformMiniIconClick(button)
     elseif IsShiftKeyDown() then
         if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(icon) end
     else
+        -- Bugfix: a plain right-click opening the Main Soundbook never
+        -- closed a hover-opened Mini Soundbook first, so the two could end
+        -- up visibly stacked on top of each other. Right-click already
+        -- ranks above hover in this addon's own interaction priority (see
+        -- the "Hover re-arm gate" section above) - this just makes closing
+        -- the Mini part of that same explicit action, same as opening
+        -- Quick Options already does.
+        if SB.CloseFavMenu then SB.CloseFavMenu() end
         SB:Fire("TOGGLE_MAIN_UI")
     end
+end
+
+-- Bugfix: the icon lost its OWN native mouse ownership (click already
+-- redispatched above, but drag was never covered - a drag needs the icon
+-- itself to receive OnDragStart, which redispatching a finished OnClick
+-- can't provide) for as long as one of its own hover-opened popups
+-- stayed open, because that popup's full-screen catcher sits at DIALOG
+-- strata - above the icon's normal "MEDIUM" - everywhere on screen,
+-- including directly over the icon. Most visible as "the icon can't be
+-- dragged while Open on Hover is enabled", since hovering it is exactly
+-- what opens the covering popup in the first place. Rather than
+-- reimplementing drag manually on the catcher (which would need its own,
+-- error-prone click-vs-drag distinction WoW already gives the icon for
+-- free), the icon is temporarily raised to sit ABOVE its own catcher so
+-- it keeps receiving every native mouse event (click, drag, OnEnter/
+-- OnLeave) exactly as if nothing were covering it - restored the moment
+-- that catcher hides, so every OTHER stacking relationship (icon vs.
+-- Main/Settings, etc.) is completely unaffected.
+local ICON_IDLE_STRATA = "MEDIUM"
+local function RaiseIconAboveCatcher(catcherFrame)
+    if not (icon and catcherFrame) then return end
+    icon:SetFrameStrata("DIALOG")
+    icon:SetFrameLevel((catcherFrame:GetFrameLevel() or 1) + 10)
+end
+local function RestoreIconStrata()
+    if not icon then return end
+    icon:SetFrameStrata(ICON_IDLE_STRATA)
 end
 
 ------------------------------------------------------------------------
@@ -177,7 +224,7 @@ local function BuildIcon()
 
     icon = SB.CreateFrame("Button", "SoundbookAnnouncerIcon", UIParent)
     icon:SetSize(ICON_SIZE, ICON_SIZE)
-    icon:SetFrameStrata("MEDIUM")
+    icon:SetFrameStrata(ICON_IDLE_STRATA)
     icon:SetMovable(true)
     icon:EnableMouse(true)
     icon:RegisterForDrag("LeftButton")
@@ -278,7 +325,20 @@ local function BuildIcon()
         GameTooltip:AddLine("Shift + Right Click: Quick Options", 0.85, 0.9, 1)
         GameTooltip:Show()
     end)
-    icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    icon:SetScript("OnLeave", function()
+        -- Tooltip persistence (explicit requirement): while the Mini
+        -- Soundbook this icon just hover-opened is still up, a leave here
+        -- is very likely the cursor transiting toward it (favMenu is
+        -- anchored immediately adjacent to the icon) - keep the SAME
+        -- tooltip up instead of hiding it only to need a fresh re-show.
+        -- Dismissed once that hover interaction actually ends (favMenu's
+        -- own OnHide below clears it), or through the normal tooltip
+        -- lifecycle (another element's own OnEnter simply replacing it) -
+        -- no second tooltip implementation, the existing one just isn't
+        -- torn down early.
+        if favMenu and favMenu:IsShown() and miniOpenedViaHover then return end
+        GameTooltip:Hide()
+    end)
 
     -- Idle-vs-hover opacity (Settings -> Interface) - hooked once here rather
     -- than re-hooked every time a setting changes (see SB:RefreshAnnouncerAlpha).
@@ -1059,7 +1119,8 @@ end
 -- to a normal Library click.
 ------------------------------------------------------------------------
 
-local favMenu
+-- favMenu itself is declared at the top of this file (hoisted for
+-- BuildIcon's own tooltip-persistence hook) - not re-declared here.
 
 local BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid", FRIENDS = "Friends" }
 
@@ -1310,6 +1371,12 @@ local function BuildFavMenu()
     favMenu.catcher = catcher
     favMenu:SetScript("OnHide", function()
         catcher:Hide()
+        RestoreIconStrata()
+        -- Ends the hover interaction cleanly (tooltip persistence above) -
+        -- a real Hide() here always means the interaction is genuinely
+        -- over (proximity-close, Escape, a row's own click-to-play, ...).
+        if miniOpenedViaHover then GameTooltip:Hide() end
+        miniOpenedViaHover = false
         if NoteMiniSurfaceHidden then NoteMiniSurfaceHidden() end
     end)
 
@@ -1438,6 +1505,16 @@ end
 -- opening a surface is never immediately followed by a close - plus a
 -- separate opening grace period below for the very moment of opening.
 local PROXIMITY_TOLERANCE = 150  -- px, around the combined active area
+-- Tightened tolerance for a Mini Soundbook opened via icon hover
+-- specifically (explicit requirement) - the much larger 150px above
+-- exists for surfaces the player deliberately opened through an explicit
+-- control (a click, a slider drag) and is preserved unchanged for those;
+-- a passive hover-open getting the SAME generous buffer made it linger
+-- far longer than the cursor actually leaving it would suggest. The
+-- combined bounds already include the small icon<->favMenu gap as
+-- "inside" (it's a plain bounding box around both), so this only
+-- tightens the OUTER edge, never the transition between the two.
+local HOVER_MINI_TOLERANCE = 8  -- px, roughly outside the Mini's own real bounds
 local PROXIMITY_CLOSE_DELAY = 0.6 -- seconds continuously outside before closing
 local PROXIMITY_SAMPLE_INTERVAL = 0.1 -- ~0.1s throttled polling, not every frame
 -- A short window right after opening (icon click, hover-open, or a
@@ -1508,8 +1585,13 @@ local function IsCursorWithinMiniTolerance()
     if not scale or scale == 0 then scale = 1 end
     local x, y = GetCursorPosition()
     x, y = x / scale, y / scale
-    return x >= bounds.left - PROXIMITY_TOLERANCE and x <= bounds.right + PROXIMITY_TOLERANCE
-        and y >= bounds.bottom - PROXIMITY_TOLERANCE and y <= bounds.top + PROXIMITY_TOLERANCE
+    -- A Mini Soundbook opened via hover gets the tightened tolerance;
+    -- one opened through an explicit control (or Quick Options, which
+    -- never opens via hover at all) keeps the original generous one.
+    local tolerance = (miniOpenedViaHover and favMenu and favMenu:IsShown())
+        and HOVER_MINI_TOLERANCE or PROXIMITY_TOLERANCE
+    return x >= bounds.left - tolerance and x <= bounds.right + tolerance
+        and y >= bounds.bottom - tolerance and y <= bounds.top + tolerance
 end
 
 local function StopMiniProximityTicker()
@@ -1582,7 +1664,7 @@ HandleMiniIconHoverEnter = function()
     if not (SB.db and SB.db.ui and SB.db.ui.announcer and SB.db.ui.announcer.openOnHover) then return end
     if quickMenu and quickMenu:IsShown() then return end
     if favMenu and favMenu:IsShown() then return end
-    if SB.ShowFavMenu then SB.ShowFavMenu(icon) end
+    if SB.ShowFavMenu then SB.ShowFavMenu(icon, true) end
 end
 
 -- Exposed on SB (not a plain local) since BuildIcon's OnClick handler
@@ -1617,15 +1699,23 @@ local function DisplayFavMenu(anchor, directionOverride, positionAnchor)
     local direction = directionOverride or SB.ResolvePopoutDirection(posFrame)
     SB.PositionRelativeToIcon(favMenu, posFrame, direction)
     favMenu.catcher:Show()
+    RaiseIconAboveCatcher(favMenu.catcher)
     favMenu:Show()
 end
 
-function SB.ShowFavMenu(anchor)
+-- `viaHover` (optional) - true only when HandleMiniIconHoverEnter is the
+-- caller. Every other caller (left-click, Send-to/context flows) omits
+-- it, so miniOpenedViaHover correctly defaults to false for a Mini
+-- Soundbook the player opened through a normal, explicit control - the
+-- tightened proximity tolerance and tooltip persistence below both key
+-- off this flag, and must never apply to those.
+function SB.ShowFavMenu(anchor, viaHover)
     -- Single-active-transient-surface rule: Quick Options never coexists
     -- with the expanded Mini Soundbook - closed first if it was open.
     -- The context/send menu is deliberately left alone here - it's
     -- opened FROM a favMenu row and is meant to coexist with it.
     if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
+    miniOpenedViaHover = viaHover and true or false
     DisplayFavMenu(anchor)
     StartMiniProximityTicker()
 end
@@ -1748,6 +1838,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         quickMenu.catcher = catcher
         quickMenu:SetScript("OnHide", function()
             catcher:Hide()
+            RestoreIconStrata()
             if NoteMiniSurfaceHidden then NoteMiniSurfaceHidden() end
         end)
 
@@ -1806,7 +1897,11 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         local hoverCheck = Theme.CreateCheckbox(quickMenu, "Open on Hover", function(checked)
             SB.db.ui.announcer.openOnHover = checked and true or false
         end)
-        hoverCheck:SetPoint("TOP", rows[#rows], "BOTTOM", -8, -10)
+        -- Left-aligned off the same 8px inset the rows above already use
+        -- (168-wide buttons centred in this 184-wide popup) rather than a
+        -- single centred TOP anchor - see dirLabel's own comment below for
+        -- why that centring was the actual overflow bug this fixes.
+        hoverCheck:SetPoint("TOPLEFT", rows[#rows], "BOTTOMLEFT", 0, -10)
         Theme.AttachTooltip(hoverCheck, "Open on Hover",
             "Open the Mini Soundbook when hovering its icon instead of requiring a left-click.")
         quickMenu.hoverCheck = hoverCheck
@@ -1816,9 +1911,22 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- previews - see SB.ResolvePopoutDirection/SB.PositionRelativeToIcon
         -- above). "Automatic" resolves from the icon's current screen
         -- region every time it's needed; the other four pin one side.
+        --
+        -- Bugfix (text overflow): this and the two labels below used to
+        -- anchor via a single "TOP" point (natural, unconstrained text
+        -- width centred around whatever x-position the previous element's
+        -- own off-centre anchor happened to leave it at) - at a larger
+        -- Soundbook Text Size, "Mini Soundbook Size" in particular could
+        -- render wider than this 184px-wide popup and spill past both
+        -- edges. Left-aligned and bounded to the popup's own content width
+        -- (the same 8px inset as the rows/checkbox above) instead, so the
+        -- text wraps within it rather than ever overflowing.
         local dirLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         dirLabel:SetFontObject(SB.Fonts.HighlightSmall)
-        dirLabel:SetPoint("TOP", hoverCheck, "BOTTOM", 8, -12)
+        dirLabel:SetPoint("TOPLEFT", hoverCheck, "BOTTOMLEFT", 0, -12)
+        dirLabel:SetPoint("RIGHT", quickMenu, "RIGHT", -8, 0)
+        dirLabel:SetJustifyH("LEFT")
+        dirLabel:SetWordWrap(true)
         dirLabel:SetText("Popout Direction")
         dirLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
@@ -1836,7 +1944,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             -- no /reload needed.
             SB:RefreshPopoutPositions()
         end)
-        dirDropdown.button:SetPoint("TOP", dirLabel, "BOTTOM", 0, -6)
+        dirDropdown.button:SetPoint("TOPLEFT", dirLabel, "BOTTOMLEFT", 0, -6)
         quickMenu.dirDropdown = dirDropdown
 
         -- Announcer size: SetScale on both the idle icon and the active
@@ -1845,7 +1953,10 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- independently.
         local sizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         sizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
-        sizeLabel:SetPoint("TOP", dirDropdown.button, "BOTTOM", 0, -12)
+        sizeLabel:SetPoint("TOPLEFT", dirDropdown.button, "BOTTOMLEFT", 0, -12)
+        sizeLabel:SetPoint("RIGHT", quickMenu, "RIGHT", -8, 0)
+        sizeLabel:SetJustifyH("LEFT")
+        sizeLabel:SetWordWrap(true)
         sizeLabel:SetText("Announcer Size")
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
@@ -1860,7 +1971,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             SB:RefreshAnnouncerScale()
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
-        sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
+        sizeSlider:SetPoint("TOPLEFT", sizeLabel, "BOTTOMLEFT", 0, -8)
         -- Dragging this slider must never be interrupted by proximity
         -- auto-close - HookScript composes with the OnMouseUp handler
         -- above rather than replacing it.
@@ -1874,7 +1985,10 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- locations always show the live value when opened.
         local miniSizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         miniSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
-        miniSizeLabel:SetPoint("TOP", sizeSlider, "BOTTOM", 14, -12)
+        miniSizeLabel:SetPoint("TOPLEFT", sizeSlider, "BOTTOMLEFT", 0, -12)
+        miniSizeLabel:SetPoint("RIGHT", quickMenu, "RIGHT", -8, 0)
+        miniSizeLabel:SetJustifyH("LEFT")
+        miniSizeLabel:SetWordWrap(true)
         miniSizeLabel:SetText("Mini Soundbook Size")
         miniSizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
@@ -1884,7 +1998,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
             SB:RefreshMiniSoundbookScale()
         end)
         miniSizeSlider:SetScript("OnMouseUp", function() SB:RefreshMiniSoundbookScale() end)
-        miniSizeSlider:SetPoint("TOP", miniSizeLabel, "BOTTOM", -14, -8)
+        miniSizeSlider:SetPoint("TOPLEFT", miniSizeLabel, "BOTTOMLEFT", 0, -8)
         -- Dragging this slider must never be interrupted by proximity
         -- auto-close, must force the Mini Soundbook visible if it isn't
         -- already, and must return it to its prior state on release - via
@@ -1909,6 +2023,7 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     quickMenu.__anchor = anchor
     SB.PositionRelativeToIcon(quickMenu, anchor, SB.ResolvePopoutDirection(anchor))
     quickMenu.catcher:Show()
+    RaiseIconAboveCatcher(quickMenu.catcher)
     quickMenu:Show()
     StartMiniProximityTicker()
 end
