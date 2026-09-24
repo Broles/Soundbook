@@ -723,6 +723,18 @@ local function GetDefaultDB()
             -- "table") see an already-table value and silently skip
             -- migrating an upgrading player's real saved recipients.
             outputRail = {},
+            -- Per-player recipient subset for the Send-to dropdown's
+            -- Guild/Raid/Friends channels (Communication.lua's
+            -- SB.ActivateChannelSubset/ToggleChannelMember/etc.) -
+            -- [bucket] = nil (never activated) | "ALL" (implicit -
+            -- everyone currently reachable, tracks new arrivals) | an
+            -- array of player names (an explicit, possibly-empty subset,
+            -- sanitized by Database.lua's SanitizeDatabase same as
+            -- outputRail.selected above). Persists across /reload and
+            -- relog (explicit requirement) - unlike outputRail.selected,
+            -- this is the CURRENT, live-consumed recipient state, not a
+            -- dead compatibility remnant.
+            channelSubset = {},
         },
     }
 end

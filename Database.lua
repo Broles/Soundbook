@@ -354,6 +354,34 @@ local function SanitizeDatabase(db, defaults)
         selected[bucket] = clean
     end
     ui.outputRail.selfOnly = BooleanOr(ui.outputRail.selfOnly, false)
+
+    -- Per-player recipient subset for the Send-to dropdown's Guild/Raid/
+    -- Friends channels (Communication.lua's SB.ActivateChannelSubset/
+    -- ToggleChannelMember/etc. - see Core.lua's GetDefaultDatabase comment
+    -- on ui.channelSubset). Persists across reload/relog (explicit
+    -- requirement), unlike outputRail.selected above. Each bucket is nil
+    -- (untouched), the literal string "ALL" (implicit - kept as-is), or a
+    -- deduplicated list of valid player targets - same validation shape as
+    -- outputRail.selected, just with the extra "ALL" sentinel allowed.
+    ui.channelSubset = type(ui.channelSubset) == "table" and ui.channelSubset or {}
+    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
+        local value = ui.channelSubset[bucket]
+        if value == "ALL" then
+            -- valid as-is
+        elseif type(value) == "table" then
+            local clean, seen = {}, {}
+            for _, name in ipairs(value) do
+                local key = SB.PlayerKey and SB.PlayerKey(name)
+                if SB.IsValidPlayerTarget(name) and key and not seen[key] then
+                    seen[key] = true
+                    table.insert(clean, name)
+                end
+            end
+            ui.channelSubset[bucket] = clean
+        else
+            ui.channelSubset[bucket] = nil
+        end
+    end
 end
 
 local function ValidateDatabase(db)
