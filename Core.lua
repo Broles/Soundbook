@@ -1214,6 +1214,45 @@ SB.ApplyDatabaseDefaults = ApplyDefaults
 SB.GetDefaultDatabase = GetDefaultDB
 SB.MigrateDatabaseInPlace = MigrateDB
 
+-- Case-insensitive display-name lookup against the live registry, rather
+-- than a hardcoded "Category::Name" id literal - immune to a future
+-- category move or a casing fix in Sounds.lua. Exposed (not local) purely
+-- so SB:ApplyFreshInstallFavourites below is unit-testable without
+-- needing to simulate a real ADDON_LOADED event dispatch.
+function SB.FindSoundIDByName(displayName)
+    if type(displayName) ~= "string" or not SB.registry then return nil end
+    local target = displayName:lower()
+    for id, entry in pairs(SB.registry) do
+        if entry.name and entry.name:lower() == target then
+            return id
+        end
+    end
+    return nil
+end
+
+-- 3 starter Favourites for a fresh install, in this exact order - the
+-- Mini Soundbook (Announcer) is now shown by default on a fresh install
+-- (see the ADDON_LOADED handler below) specifically so these are
+-- immediately visible. Never touches an existing install's own
+-- Favourites - only ever called under SB.isFreshInstall - and
+-- SB:AddFavourite is a no-op for a sound already favourited, so calling
+-- this twice in the same fresh session can't duplicate a slot. Each name
+-- is resolved independently via SB.FindSoundIDByName: one unresolvable
+-- name is skipped (SB:Debug logs it) without blocking the others or
+-- creating a broken Favourite reference.
+local DEFAULT_FRESH_INSTALL_FAVOURITES = { "Dry Fart", "Celebration", "In The Beginning" }
+function SB:ApplyFreshInstallFavourites()
+    if not SB.AddFavourite then return end
+    for _, displayName in ipairs(DEFAULT_FRESH_INSTALL_FAVOURITES) do
+        local soundID = SB.FindSoundIDByName(displayName)
+        if soundID then
+            SB:AddFavourite(soundID)
+        else
+            SB:Debug("Fresh-install default Favourite not found in the sound library: %s", displayName)
+        end
+    end
+end
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("ADDON_LOADED")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -1257,19 +1296,21 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
             -- needs it explicitly flipped back to false to actually show
             -- the first-run intro once.
             SB.db.settings.introSeen = false
-            -- "Safer first start", ONLY for a genuinely fresh install:
-            -- the Announcer HUD doesn't pop up unasked before the player
-            -- has even seen the addon (favShown/announcer.shown = false
-            -- below). GetDefaultDB()'s own defaults are still exactly
-            -- what ApplyDefaults backfills for an upgrade, so an existing
-            -- player's setup is never silently reset.
             -- defaultOutputTarget is the live global default (see
             -- Communication.lua's SB:ResolveOutputTarget) - a fresh
             -- install must always land on "All", never Self-only.
             SB.db.settings.defaultOutputTarget = "ALL"
             SB.db.ui.outputRail.selfOnly = false
-            SB.db.ui.favShown = false
-            SB.db.ui.announcer.shown = false
+            -- Explicit requirement: the Mini Soundbook (Announcer) is shown
+            -- by default on a fresh install now, not hidden - the starter
+            -- Favourites seeded just below give it real content worth
+            -- seeing immediately, rather than an empty popup. favShown is
+            -- the old pre-3.0 field kept only as a migration source for
+            -- upgrading installs (see MigrateDB) - set here purely to stay
+            -- consistent with the live announcer.shown flag, since neither
+            -- one feeds an upgrade path from this fresh-install branch.
+            SB.db.ui.favShown = true
+            SB.db.ui.announcer.shown = true
         end
         dbIsReady = true
         SB:RefreshMainFont()
@@ -1278,16 +1319,8 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
             SB:Print(databaseStatus.warning)
         end
 
-        -- 2 starter Favourites on a fresh install - SB.registry is already
-        -- built by now (SoundRegistry.lua's BuildRegistry() ran
-        -- unconditionally at its own file-load time, before this
-        -- ADDON_LOADED handler runs), so this is safe. Never touches an
-        -- existing install's own Favourites. Must use "Legacy::" ids
-        -- (post category-split soundIDs, see MigrateDB's v17->v18 block) -
-        -- an unknown soundID makes AddFavourite fail quietly.
-        if SB.isFreshInstall and SB.AddFavourite then
-            SB:AddFavourite("Legacy::Oh My God")
-            SB:AddFavourite("Legacy::Celebration")
+        if SB.isFreshInstall then
+            SB:ApplyFreshInstallFavourites()
         end
 
         for i = 1, #readyCallbacks do
