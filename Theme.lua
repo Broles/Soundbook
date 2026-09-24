@@ -1205,6 +1205,7 @@ function Theme.CreateDropdown(parent, width, height, maxVisibleRows)
         ApplyScroll()
     end)
 
+    local CHECKBOX_SIZE = 12
     local function BuildRows()
         for i, opt in ipairs(options) do
             local row = rows[i]
@@ -1214,6 +1215,20 @@ function Theme.CreateDropdown(parent, width, height, maxVisibleRows)
                 local hl = row:CreateTexture(nil, "HIGHLIGHT")
                 hl:SetAllPoints()
                 hl:SetColorTexture(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.12)
+                -- Lightweight checkbox glyph (same checkmark texture/backdrop
+                -- language as Theme.CreateCheckbox) - only shown for a
+                -- member-toggle row (opt.checkbox); the ROW ITSELF is what's
+                -- clickable here (see opt.onRowClick below), so this is a
+                -- plain visual indicator, not its own interactive widget.
+                local checkbg = SB.CreateFrame("Frame", nil, row)
+                checkbg:SetSize(CHECKBOX_SIZE, CHECKBOX_SIZE)
+                checkbg:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
+                local checkmark = checkbg:CreateTexture(nil, "OVERLAY")
+                checkmark:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+                checkmark:SetPoint("TOPLEFT", -2, 2)
+                checkmark:SetPoint("BOTTOMRIGHT", 2, -2)
+                row.checkbg = checkbg
+                row.checkmark = checkmark
                 local text = row:CreateFontString(nil, "OVERLAY")
                 text:SetFontObject(SB.Fonts.HighlightSmall)
                 text:SetJustifyH("LEFT")
@@ -1239,8 +1254,27 @@ function Theme.CreateDropdown(parent, width, height, maxVisibleRows)
             -- under its own group header) - re-applied every render since
             -- pooled row objects get reused across different option sets,
             -- not just set once at creation.
+            local textIndent = 6 + (opt.indent or 0)
+            if opt.checkbox then
+                row.checkbg:ClearAllPoints()
+                row.checkbg:SetPoint("LEFT", textIndent, 0)
+                if opt.checked then
+                    row.checkbg:SetBackdropColor(0.03, 0.09, 0.18, 0.96)
+                    row.checkbg:SetBackdropBorderColor(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.9)
+                    row.checkmark:Show()
+                else
+                    row.checkbg:SetBackdropColor(unpack(Theme.BG_INPUT))
+                    row.checkbg:SetBackdropBorderColor(Theme.GOLD_DIM[1], Theme.GOLD_DIM[2], Theme.GOLD_DIM[3], 0.65)
+                    row.checkmark:Hide()
+                end
+                row.checkbg:Show()
+                textIndent = textIndent + CHECKBOX_SIZE + 6
+            else
+                row.checkbg:Hide()
+                row.checkmark:Hide()
+            end
             row.text:ClearAllPoints()
-            row.text:SetPoint("LEFT", 6 + (opt.indent or 0), 0)
+            row.text:SetPoint("LEFT", textIndent, 0)
             row.text:SetPoint("RIGHT", opt.suffix and -58 or -6, 0)
             if opt.suffix then
                 row.suffix:SetText(opt.suffix)
@@ -1264,6 +1298,16 @@ function Theme.CreateDropdown(parent, width, height, maxVisibleRows)
             row.value = opt.value
             row:SetScript("OnClick", function()
                 if opt.disabled then return end
+                -- An option can fully own its own click behaviour (e.g. a
+                -- channel row that activates/expands in place, or a member
+                -- checkbox row that toggles and stays open) instead of the
+                -- default "select value and close" flow below - see
+                -- dd:RefreshList/SetLabelText, used by callers that need
+                -- this (UI.lua's Send-to dropdown).
+                if opt.onRowClick then
+                    opt.onRowClick()
+                    return
+                end
                 selectedValue = opt.value
                 label:SetText(opt.text)
                 if rowFontFn then rowFontFn(label, opt) end
@@ -1315,6 +1359,31 @@ function Theme.CreateDropdown(parent, width, height, maxVisibleRows)
 
     function dd:SetOptions(newOptions)
         options = newOptions
+    end
+
+    -- Re-fetches options (via SetOptionsProvider) and rebuilds the row list
+    -- IN PLACE while it's open - no close/reopen, no scroll-position reset,
+    -- no direction re-flip - for a row whose own opt.onRowClick handler
+    -- changes what the list should show without the list itself closing
+    -- (e.g. expanding a channel's member rows, or toggling one). A no-op
+    -- while the list isn't open.
+    function dd:RefreshList()
+        if not list:IsShown() then return end
+        if optionsProvider then options = optionsProvider() end
+        BuildRows()
+        local visibleRows = math.min(#options, maxVisibleRows)
+        local listHeight = math.max(ROW_H, visibleRows * ROW_H) + 2
+        list:SetHeight(listHeight)
+        ApplyScroll()
+    end
+
+    -- Directly overwrites the CLOSED button's own label, bypassing the
+    -- normal options-lookup SetValue path - for a caller whose closed-chip
+    -- text needs to reflect something live (e.g. a recipient count) that
+    -- isn't a fixed per-value string in the option list.
+    function dd:SetLabelText(text, color)
+        label:SetText(text)
+        if color then label:SetTextColor(color[1], color[2], color[3]) end
     end
 
     function dd:SetValue(value)
