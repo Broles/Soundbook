@@ -1960,6 +1960,13 @@ end
 ------------------------------------------------------------------------
 
 local function ToggleAdmin()
+    -- Regression fix: refuse to "open" a panel that failed to build
+    -- (SafeBuildPanel, BuildMainFrame) instead of flipping the flag and
+    -- landing on a broken/empty view with no way back except Close.
+    if not isAdminOpen and not adminPanel then
+        SB:Print("|cffff5555Raid Admin is unavailable|r - it failed to load this session (see the earlier error).")
+        return
+    end
     isAdminOpen = not isAdminOpen
     if isAdminOpen then
         isSettingsOpen = false
@@ -1970,6 +1977,10 @@ local function ToggleAdmin()
 end
 
 local function ToggleSettings()
+    if not isSettingsOpen and not settingsPanel then
+        SB:Print("|cffff5555Settings is unavailable|r - it failed to load this session (see the earlier error).")
+        return
+    end
     isSettingsOpen = not isSettingsOpen
     if isSettingsOpen then
         isAdminOpen = false
@@ -1985,6 +1996,10 @@ end
 -- section at all - keybindings live with Favourite management). Mutually
 -- exclusive with Settings/Admin, same pattern as those two.
 function SB:ToggleKeybindMode()
+    if not isKeybindModeOpen and not keybindModePanel then
+        SB:Print("|cffff5555Keybind Mode is unavailable|r - it failed to load this session (see the earlier error).")
+        return
+    end
     isKeybindModeOpen = not isKeybindModeOpen
     if isKeybindModeOpen then
         isSettingsOpen = false
@@ -2263,8 +2278,14 @@ local function BuildMainFrame()
     end
 
     defaultOutputDD = SB.Theme.CreateDropdown(main, DEFAULT_OUTPUT_DD_W, SEARCH_H, 14)
-    defaultOutputDD.button:SetPoint("TOPLEFT", main, "TOPLEFT", SAFE_INSET, 0)
-    defaultOutputDD.button:SetPoint("TOP", mainHeader, "BOTTOM", 0, -SEARCH_GAP_TOP)
+    -- Bugfix: a second, conflicting anchor point (a "TOP" point relative
+    -- to mainHeader, layered on top of this "TOPLEFT") used to be set
+    -- here too - both defined an X position from a DIFFERENT relative
+    -- frame at once (main's left edge vs. mainHeader's horizontal
+    -- centre), which is an over-constrained anchor WoW resolves in an
+    -- undefined way rather than erroring. One point, both axes from the
+    -- same frame, is all this ever needed.
+    defaultOutputDD.button:SetPoint("TOPLEFT", main, "TOPLEFT", SAFE_INSET, -(HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP))
     defaultOutputDD:SetOptions(MainOutputOptions())
     defaultOutputDD:SetOptionsProvider(MainOutputOptions)
     -- Prefixes the closed chip's own label with "Send to: " without
@@ -2493,13 +2514,38 @@ local function BuildMainFrame()
     -- for a category that's since gone away (Soundbook_Private removed,
     -- etc.) - harmless (BuildSectionList simply never lists it), left as-is.
 
-    settingsPanel = SB.BuildSettingsPanel(main, content)
-    settingsPanel:Hide()
-    adminPanel = SB.BuildAdminPanel(main, content)
-    adminPanel:Hide()
-    keybindModePanel = SB.BuildKeybindModePanel(main, content)
-    keybindModePanel:Hide()
-    keybindModePanel.doneBtn:SetScript("OnClick", function() SB:ToggleKeybindMode() end)
+    -- Regression fix: a construction error inside any one of these three
+    -- (e.g. a live-client-only edge case the mock test harness doesn't
+    -- reproduce) used to propagate straight out of BuildMainFrame - `main`
+    -- itself was already assigned by that point (very top of this
+    -- function), so SB:ShowMainWindow's own `if not main then
+    -- BuildMainFrame() end` guard would then skip ever retrying
+    -- construction again for the rest of the session, while the relevant
+    -- panel local stayed permanently nil - every later RefreshMainWindow
+    -- call then hard-crashed on that nil upvalue instead of just failing
+    -- once. Each build now runs its own pcall: a real failure prints a
+    -- clear, specific diagnostic (which panel, and why) exactly once,
+    -- instead of a confusing downstream "attempt to index a nil value"
+    -- the next time the window is toggled - and the window's other two
+    -- panels/the Library itself stay fully usable regardless.
+    local function SafeBuildPanel(label, buildFn)
+        local ok, result = pcall(buildFn)
+        if not ok then
+            SB:Print(string.format("|cffff5555%s failed to build|r: %s", label, tostring(result)))
+            return nil
+        end
+        return result
+    end
+
+    settingsPanel = SafeBuildPanel("Settings", function() return SB.BuildSettingsPanel(main, content) end)
+    if settingsPanel then settingsPanel:Hide() end
+    adminPanel = SafeBuildPanel("Raid Admin", function() return SB.BuildAdminPanel(main, content) end)
+    if adminPanel then adminPanel:Hide() end
+    keybindModePanel = SafeBuildPanel("Keybind Mode", function() return SB.BuildKeybindModePanel(main, content) end)
+    if keybindModePanel then
+        keybindModePanel:Hide()
+        keybindModePanel.doneBtn:SetScript("OnClick", function() SB:ToggleKeybindMode() end)
+    end
     SB:RefreshAdminTabVisibility()
     RefreshLockVisual()
 
@@ -2528,21 +2574,21 @@ function SB:RefreshMainWindow()
             mainTitle:SetText(isSettingsOpen and "Settings" or isAdminOpen and "Raid Admin" or "Keybindings")
         end
         if backToLibraryBtn then backToLibraryBtn:Show() end
-        if isSettingsOpen then
+        if isSettingsOpen and settingsPanel then
             settingsPanel:Show()
             if SB.RefreshChannelMatrix then SB:RefreshChannelMatrix() end
-        else
+        elseif settingsPanel then
             settingsPanel:Hide()
         end
-        if isAdminOpen then
+        if isAdminOpen and adminPanel then
             adminPanel:Show()
             SB:RefreshAdminPanel()
-        else
+        elseif adminPanel then
             adminPanel:Hide()
         end
-        if isKeybindModeOpen then
+        if isKeybindModeOpen and keybindModePanel then
             keybindModePanel:Show()
-        else
+        elseif keybindModePanel then
             keybindModePanel:Hide()
         end
         emptyHint:Hide()
@@ -2574,9 +2620,9 @@ function SB:RefreshMainWindow()
         if searchBox then searchBox:Show() end
         if searchPlaceholder then searchPlaceholder:SetShown(searchBox:GetText() == "") end
         if defaultOutputDD then defaultOutputDD.button:Show() end
-        settingsPanel:Hide()
-        adminPanel:Hide()
-        keybindModePanel:Hide()
+        if settingsPanel then settingsPanel:Hide() end
+        if adminPanel then adminPanel:Hide() end
+        if keybindModePanel then keybindModePanel:Hide() end
         main.libraryScroll.scroll:Show()
         main.tagFilterBar:Show()
         RefreshLibrary()
