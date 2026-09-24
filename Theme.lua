@@ -93,6 +93,7 @@ local ICON_FRAME = "Interface\\AddOns\\Soundbook\\Assets\\IconFrame"
 local CONTROL_ICONS = "Interface\\AddOns\\Soundbook\\Assets\\ControlIcons"
 local SETTINGS_GEAR = "Interface\\AddOns\\Soundbook\\Assets\\SettingsGear"
 local AUDIO_ICON = "Interface\\AddOns\\Soundbook\\Assets\\AudioIcon"
+local CLOSE_ICON = "Interface\\AddOns\\Soundbook\\Assets\\CloseIcon"
 
 -- Clean single-border surface for compact HUDs and context menus. These
 -- elements are too small for the large book corners/inner frame used by
@@ -797,14 +798,17 @@ function Theme.CreateMiniControlButton(parent, size)
 end
 
 -- "x" close - same chrome as the rest of the row now, instead of an
--- isolated bare-text glyph with no border/fill of its own.
+-- isolated bare-text glyph with no border/fill of its own. Uses
+-- Assets/CloseIcon.tga (purpose-supplied artwork, same gold-frame/
+-- blue-glass set as SettingsGear.tga/AudioIcon.tga) rather than
+-- ControlIcons.tga's own close quadrant, so all three header-icon
+-- buttons this addon draws are one consistent, coordinated set.
 function Theme.CreateCloseGlyph(parent, size)
     local btn = Theme.CreateMiniControlButton(parent, size or 16)
     local icon = btn:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("TOPLEFT", 2, -2)
     icon:SetPoint("BOTTOMRIGHT", -2, 2)
-    icon:SetTexture(CONTROL_ICONS)
-    icon:SetTexCoord(0.75, 1.00, 0, 1)
+    icon:SetTexture(CLOSE_ICON)
     btn.icon = icon
     return btn
 end
@@ -874,12 +878,11 @@ end
 -- Quick Audio (Main window header) - explicit report: this used to reuse
 -- CreateMuteGlyph's own atlas quadrant, which is a speaker-WITH-SLASH
 -- drawing - reads as "muted" even though Quick Audio just opens a menu,
--- not a mute toggle. Assets/AudioIcon.tga is a dedicated, neutral plain-
--- speaker glyph (a filled speaker cone + two sound-wave arcs, no slash)
--- - a white silhouette with alpha, same convention as SettingsGear.tga
--- and the ControlIcons.tga atlas glyphs, so the existing vertex-colour
--- tint below still applies correctly. Not WoW item/spell/inventory
--- artwork, per the same explicit requirement as the Settings gear.
+-- not a mute toggle. Assets/AudioIcon.tga is dedicated, purpose-supplied
+-- artwork (a plain speaker + sound-wave arcs, no slash) in the exact same
+-- gold-frame/blue-glass style as the rest of this header's icon set -
+-- already fully coloured, so never vertex-tinted. Not WoW item/spell/
+-- inventory artwork, same explicit requirement as the Settings gear.
 function Theme.CreateAudioGlyph(parent, size)
     size = size or 16
     local btn = Theme.CreateMiniControlButton(parent, size)
@@ -887,10 +890,6 @@ function Theme.CreateAudioGlyph(parent, size)
     icon:SetPoint("TOPLEFT", 2, -2)
     icon:SetPoint("BOTTOMRIGHT", -2, 2)
     icon:SetTexture(AUDIO_ICON)
-    -- Explicit report: "same style as the others" - AudioIcon.tga now
-    -- bakes in the same gold-frame/blue-glass colour language as
-    -- ControlIcons.tga's own lock/mute/close glyphs itself, so (unlike
-    -- the first version) it's no longer vertex-tinted on top.
     btn.icon = icon
     return btn
 end
