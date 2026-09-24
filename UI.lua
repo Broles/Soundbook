@@ -1749,8 +1749,8 @@ end
 -- same shared spacing system Settings/Edit Sound/Keybindings now use too -
 -- explicit requirement, section 2: "a small shared spacing system...
 -- instead of many per-screen magic offsets") rather than re-declared here;
--- SEARCH_MIN_W/MAX_W and the row/section metrics below stay Main-specific
--- since nothing else needs them. Doesn't change the window's own min/max
+-- the row/section metrics below stay Main-specific since nothing else
+-- needs them. Doesn't change the window's own min/max
 -- resizable size, just how the fixed header rows and the gaps between
 -- major sections (title -> toolbar -> filters -> Library/Output Rail) are
 -- spaced within it.
@@ -1765,14 +1765,13 @@ local SAFE_INSET = LAYOUT.SAFE_INSET -- clear of the frame's own decorative bord
 -- measures from - not SAFE_INSET, which stays the Library/content area's
 -- own inset. HEADER_TOP_INSET/HEADER_H are named here (rather than
 -- re-reading Theme.CreateHeader's internals) purely so this file's own
--- vertical anchor-chain arithmetic (RAIL_TOP_OFFSET below) is legible.
+-- vertical anchor-chain arithmetic (CONTENT_TOP_OFFSET below) is legible.
 local HEADER_TOP_INSET = 9
 local HEADER_H = LAYOUT.HEADER_H
 local SEARCH_H = 32
 local SEARCH_GAP_TOP = LAYOUT.GAP_L    -- header's gold divider -> Search: real vertical separation (explicit requirement)
 local SEARCH_GAP_BOTTOM = LAYOUT.GAP_M -- Search -> filter row: same, on the other side
 local SECTION_GAP = LAYOUT.GAP_M -- vertical gap between major sections (filters -> library)
-local SEARCH_MIN_W = 320 -- explicit requirement: "a sensible minimum around 320px rather than a fixed narrow width"
 local TAG_FILTER_BAR_H = 22
 -- The exact vertical position Library content (and Settings' own content
 -- pane) starts at, derived arithmetically from the header -> Search ->
@@ -2253,16 +2252,19 @@ local function BuildMainFrame()
 
     ------------------------------------------------------------------
     -- Top control row (redesign): "Send to: X" Default Output selector
-    -- on the LEFT, Search filling the remaining width on the RIGHT - same
-    -- row, same height, directly below the header's gold divider. Both
-    -- stay fully inside the normal content inset (SAFE_INSET), same as
-    -- the tag filter row and Library below - nothing protrudes past the
-    -- Soundbook's own frame. Replaces the old externally-attached
-    -- broadcast tabs (Output Rail) and the independently-centred search
-    -- box.
+    -- and Search, same fixed width, same height, centred as a pair
+    -- directly below the header's gold divider (explicit request: equal
+    -- sizing, centred, double the original gap between them - was a
+    -- fixed-width dropdown next to a fill-remaining-width search box).
+    -- ROW_ITEM_W is chosen to keep the pair comfortably inside the
+    -- content inset even at the Main window's minimum resizable width
+    -- (560): 2*230 + 2*GAP_S(24) = 484, well under the ~532px available
+    -- at that size. Replaces the old externally-attached broadcast tabs
+    -- (Output Rail) and the independently-centred search box.
     ------------------------------------------------------------------
-    local DEFAULT_OUTPUT_DD_W = 190
-    local TOP_ROW_GAP = LAYOUT.GAP_S
+    local ROW_ITEM_W = 230
+    local TOP_ROW_GAP = LAYOUT.GAP_S * 2 -- doubled, explicit request
+    local ROW_HALF_OFFSET = ROW_ITEM_W / 2 + TOP_ROW_GAP / 2
 
     -- "All"/"Self only (no send)" read as verbose sentences in a compact
     -- closed chip ("checked in Settings"/"(no send)" make sense as a
@@ -2277,15 +2279,10 @@ local function BuildMainFrame()
         return opts
     end
 
-    defaultOutputDD = SB.Theme.CreateDropdown(main, DEFAULT_OUTPUT_DD_W, SEARCH_H, 14)
-    -- Bugfix: a second, conflicting anchor point (a "TOP" point relative
-    -- to mainHeader, layered on top of this "TOPLEFT") used to be set
-    -- here too - both defined an X position from a DIFFERENT relative
-    -- frame at once (main's left edge vs. mainHeader's horizontal
-    -- centre), which is an over-constrained anchor WoW resolves in an
-    -- undefined way rather than erroring. One point, both axes from the
-    -- same frame, is all this ever needed.
-    defaultOutputDD.button:SetPoint("TOPLEFT", main, "TOPLEFT", SAFE_INSET, -(HEADER_TOP_INSET + HEADER_H + SEARCH_GAP_TOP))
+    defaultOutputDD = SB.Theme.CreateDropdown(main, ROW_ITEM_W, SEARCH_H, 14)
+    -- Single anchor point, both axes from the same frame (mainHeader) -
+    -- centred as the LEFT half of the pair (see ROW_HALF_OFFSET above).
+    defaultOutputDD.button:SetPoint("TOP", mainHeader, "BOTTOM", -ROW_HALF_OFFSET, -SEARCH_GAP_TOP)
     defaultOutputDD:SetOptions(MainOutputOptions())
     defaultOutputDD:SetOptionsProvider(MainOutputOptions)
     -- Prefixes the closed chip's own label with "Send to: " without
@@ -2309,11 +2306,10 @@ local function BuildMainFrame()
         "Where a regular click sends a sound by default. A sound's own per-sound Default Output (Edit Sound) overrides this when set.")
     main.defaultOutputDD = defaultOutputDD
 
-    searchBox = SB.Theme.CreateInputBox(main, SEARCH_MIN_W, SEARCH_H)
-    searchBox:SetPoint("LEFT", defaultOutputDD.button, "RIGHT", TOP_ROW_GAP, 0)
-    searchBox:SetPoint("RIGHT", main, "RIGHT", -SAFE_INSET, 0)
-    searchBox:SetPoint("TOP", defaultOutputDD.button, "TOP", 0, 0)
-    searchBox:SetHeight(SEARCH_H)
+    searchBox = SB.Theme.CreateInputBox(main, ROW_ITEM_W, SEARCH_H)
+    -- Mirrors defaultOutputDD's own anchor - same fixed width, same row,
+    -- the RIGHT half of the centred pair, TOP_ROW_GAP between them.
+    searchBox:SetPoint("TOP", mainHeader, "BOTTOM", ROW_HALF_OFFSET, -SEARCH_GAP_TOP)
     searchBox:SetTextInsets(10, 8, 0, 0)
     searchBox:SetMaxLetters(50)
     searchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
@@ -2496,10 +2492,9 @@ local function BuildMainFrame()
     mainResizeGrip = resizeGrip
     main:SetScript("OnSizeChanged", function()
         if not main.content then return end
-        -- Search box now has both LEFT and RIGHT anchors (redesign - it
-        -- fills the remaining top-row width next to the Default Output
-        -- selector), so it resizes with the frame automatically with no
-        -- code needed here any more.
+        -- The Default Output selector and Search are both fixed-width,
+        -- centred as a pair off the header (see ROW_ITEM_W above) - no
+        -- per-resize width recompute needed for either any more.
         if main.layoutRefreshTimer then main.layoutRefreshTimer:Cancel() end
         main.layoutRefreshTimer = C_Timer.NewTimer(0.05, function()
             main.layoutRefreshTimer = nil
