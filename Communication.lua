@@ -1167,9 +1167,11 @@ local MODE_CHANNELS = {
 }
 
 --- Purges any pending-queue entries that arrived over a channel matching
---- `mode` ("FRIENDS"/"GUILD"/"RAID"/"PARTY"/"DIRECT") - disabling a receive
---- channel (Settings' Send/Receive table) must reliably drop whatever's
---- already waiting from that channel too, not just block new arrivals.
+--- `mode` ("FRIENDS"/"GUILD"/"RAID"/"DIRECT" - the only values Settings'
+--- Send/Receive table ever passes; "PARTY" is not a mode here, only a wire
+--- channel RAID's own MODE_CHANNELS entry matches, see above) - disabling
+--- a receive channel must reliably drop whatever's already waiting from
+--- that channel too, not just block new arrivals.
 function SB:ClearPendingQueueForMode(mode)
     local before = #pendingQueue
     if mode == "DIRECT" then
@@ -2565,6 +2567,15 @@ end
 local PLAYER_MUTE_SECONDS = 60 * 60 -- one left-click's worth (60 minutes)
 local PLAYER_MUTE_MAX_SECONDS = 600 * 60 -- hard cap, 600 minutes (10h) total
 
+--- The old, pre-realm-aware mutedPlayers key for `name` (plain NormalizeName,
+--- no realm), or nil if `name` already carries an explicit realm (so it was
+--- never storable under the old shape to begin with). One shared definition
+--- of "what counts as a legacy mutedPlayers key" for every reader/writer
+--- below, so the compatibility rule can't drift between them.
+local function GetLegacyMuteKey(name)
+    return type(name) == "string" and not name:find("-", 1, true) and NormalizeName(name) or nil
+end
+
 --- True (and cleans up the entry) if `name` is currently muted and that
 --- mute hasn't expired yet. `time()`, not GetTime(), matching
 --- receiveMute's own expiresAt above - must survive a /reload.
@@ -2572,7 +2583,7 @@ function SB:IsPlayerMuted(name)
     local key = IdentityKey(name)
     if not key then return false end
     local muted = SB.db.settings.mutedPlayers
-    local legacyKey = type(name) == "string" and not name:find("-", 1, true) and NormalizeName(name) or nil
+    local legacyKey = GetLegacyMuteKey(name)
     local expiresAt = muted and (muted[key] or (legacyKey and muted[legacyKey]))
     if not expiresAt then return false end
     if expiresAt <= time() then
@@ -2588,7 +2599,7 @@ end
 function SB:GetPlayerMuteRemaining(name)
     if not SB:IsPlayerMuted(name) then return nil end
     local key = IdentityKey(name)
-    local legacyKey = type(name) == "string" and not name:find("-", 1, true) and NormalizeName(name) or nil
+    local legacyKey = GetLegacyMuteKey(name)
     local expiresAt = SB.db.settings.mutedPlayers[key] or (legacyKey and SB.db.settings.mutedPlayers[legacyKey])
     return expiresAt and math.max(0, expiresAt - time()) or nil
 end
@@ -2602,7 +2613,7 @@ function SB:MutePlayerFor(name, seconds)
     seconds = seconds or PLAYER_MUTE_SECONDS
     local muted = SB.db.settings.mutedPlayers
     local now = time()
-    local legacyKey = type(name) == "string" and not name:find("-", 1, true) and NormalizeName(name) or nil
+    local legacyKey = GetLegacyMuteKey(name)
     local existing = muted[key] or (legacyKey and muted[legacyKey])
     local base = (existing and existing > now) and existing or now
     -- Hard cap at 600 minutes total, even if the player already had most
@@ -2619,7 +2630,7 @@ end
 function SB:UnmutePlayer(name)
     local key = IdentityKey(name)
     if not key then return end
-    local legacyKey = type(name) == "string" and not name:find("-", 1, true) and NormalizeName(name) or nil
+    local legacyKey = GetLegacyMuteKey(name)
     if SB.db.settings.mutedPlayers[key] or (legacyKey and SB.db.settings.mutedPlayers[legacyKey]) then
         SB.db.settings.mutedPlayers[key] = nil
         if legacyKey then SB.db.settings.mutedPlayers[legacyKey] = nil end

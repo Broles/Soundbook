@@ -50,8 +50,13 @@ function SB.OutputTargetToMacroTarget(target)
     -- "RAID" is the merged Raid/Party target (see SB.ResolveGroupChannel,
     -- Communication.lua) - the macro preview shown to the player follows
     -- whichever of the two is actually live right now, same as every other
-    -- Raid/Party display in the addon. "PARTY" only still appears here as a
-    -- defensive fallback for a stray pre-merge saved value.
+    -- Raid/Party display in the addon. A "PARTY" target here always comes
+    -- from a macroTarget saved before the Raid/Party merge - the dropdown
+    -- that sets it (SB.ComputeOutputTargetOptions) never produces it fresh
+    -- - but "PARTY" is not just tolerated legacy noise: TARGET_KEYWORDS.party
+    -- above still deliberately recognizes it as live "/sb play id::party"
+    -- input, so this function keeps displaying it correctly rather than
+    -- treating it as an error case.
     if target == "RAID" or target == "PARTY" then
         return SB.ResolveGroupChannel and SB.ResolveGroupChannel() == "PARTY" and "Party" or "Raid"
     end
