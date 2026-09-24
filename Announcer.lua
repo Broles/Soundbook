@@ -269,6 +269,11 @@ local function BuildIcon()
 
     icon:SetScript("OnDragStart", function(self)
         if SB.db.ui.layoutLocked then return end
+        -- The Mini Soundbook popup tracks the icon's position while shown
+        -- (proximity checks, catcher/strata management) and visibly gets in
+        -- the way of the drag itself, so close it before the move starts
+        -- rather than leaving it open and fighting the reposition.
+        if SB.CloseFavMenu then SB.CloseFavMenu() end
         self:StartMoving()
         StartIconDragPreview()
         -- Interaction priority: repositioning the trigger itself must never

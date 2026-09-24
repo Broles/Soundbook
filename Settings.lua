@@ -478,7 +478,14 @@ local function BuildCategoryRow(parent, anchorTo, category)
     local label = parent:CreateFontString(nil, "OVERLAY")
     label:SetFontObject(SB.Fonts.Normal)
     label:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -14)
-    label:SetText(CategoryLabel(category, "Name"))
+    -- The numeric slots (1, 2) are the MySounds-backed custom categories;
+    -- the asterisk ties them to the shared hint below the last row
+    -- explaining that requirement, without repeating it on every row.
+    local labelText = CategoryLabel(category, "Name")
+    if type(category) == "number" then
+        labelText = labelText .. " *"
+    end
+    label:SetText(labelText)
 
     local iconBtn = SB.Theme.CreateIconSlot(parent, ICON_SLOT_SIZE, nil, "Button")
     iconBtn:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -6)
@@ -886,7 +893,7 @@ local function BuildCategoriesSection(content, topAnchor)
     categoriesHint:SetPoint("RIGHT", -20, 0)
     categoriesHint:SetJustifyH("LEFT")
     categoriesHint:SetWordWrap(true)
-    categoriesHint:SetText("Custom sounds require the MySounds addon. Add your own audio files and play them for friends who have MySounds and the same sound files installed.")
+    categoriesHint:SetText("* Category 1 and Category 2: custom sounds require the Soundbook MySounds addon. Add your own audio files and play them for friends who have Soundbook MySounds and the same sound files installed.")
     categoriesHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
 
     return categoriesHint
