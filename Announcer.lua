@@ -911,12 +911,11 @@ local function PlayRandomLocalDragSound()
     if #dragCandidateSounds == 0 then return end
     local soundID = dragCandidateSounds[math.random(#dragCandidateSounds)]
     -- SB:PlaySound(soundID, "test") directly - deliberately NEVER
-    -- SB:TriggerSound. TriggerSound is what dispatches to the Output
-    -- Rail/broadcasts to Guild/Raid/Friends/a direct target; PlaySound on
-    -- its own only ever plays audio on THIS client, full stop - no
-    -- addon message, no ACK, no History entry, no routing. The "test"
-    -- source additionally excludes it from the New-Sound-heard counter
-    -- (SoundPlayer.lua). This is a UI easter egg, never multiplayer
+    -- SB:TriggerSound, which dispatches to the "Send to:" default/Guild/
+    -- Raid/Friends/a direct target. PlaySound on its own only ever plays
+    -- audio on THIS client - no addon message, no ACK, no History entry,
+    -- no routing. The "test" source also excludes it from the New-Sound-
+    -- heard counter (SoundPlayer.lua). A UI easter egg, never multiplayer
     -- behaviour.
     SB:PlaySound(soundID, "test")
 end
@@ -1584,29 +1583,26 @@ function SB:RefreshMiniSoundbookScale()
     if favMenu then favMenu:SetScale(SB.db.ui.announcer.favScale or 1.0) end
 end
 
--- Explicit requirement (section 19): if the right-side broadcast tabs'
--- selection changes while this popup is open, its summary must update
--- immediately, not on next open/reload. UI.lua fires this after every
--- change to SB.db.ui.outputRail (select-all, Self Only, individual
--- flyout checkboxes).
+-- If the popup is open while its live reach/target summary changes -
+-- the "Send to:" dropdown (UI.lua) or a roster change via
+-- SB.RefreshDefaultOutputDisplay - the summary must update immediately,
+-- not on next open/reload.
 SB:On("OUTPUT_SELECTION_CHANGED", function()
     if favMenu and favMenu:IsShown() then PopulateFavMenu() end
 end)
 
--- Regression fix (explicit requirement - live title updates): a per-sound
--- "Default Output" override changing (Edit Sound) can flip
+-- A per-sound "Default Output" override changing (Edit Sound) can flip
 -- AnyVisibleFavouriteHasOverride's result, which changes whether the
 -- header reads the plain live phrase or the "Default destination: X"
--- variant - refresh the same way OUTPUT_SELECTION_CHANGED already does.
+-- variant - refresh the same way OUTPUT_SELECTION_CHANGED does.
 SB:On("SOUND_DISPLAY_CHANGED", function()
     if favMenu and favMenu:IsShown() then PopulateFavMenu() end
 end)
 
--- Regression fix: single-active-transient-surface rule. Also closes the
--- Popout Direction dropdown's own floating list, which is a SEPARATE
--- top-level frame (Theme.CreateDropdown - parented to UIParent, not a
--- real child of quickMenu) and would otherwise survive quickMenu's own
--- Hide() untouched, left floating with its own live hitbox.
+-- Also closes the Popout Direction dropdown's own floating list, which is
+-- a SEPARATE top-level frame (Theme.CreateDropdown - parented to UIParent,
+-- not a real child of quickMenu) and would otherwise survive quickMenu's
+-- own Hide() untouched, left floating with its own live hitbox.
 function SB.CloseAnnouncerQuickOptions()
     if quickMenu then
         if quickMenu.dirDropdown then quickMenu.dirDropdown:CloseList() end
@@ -1619,11 +1615,9 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         SB.CloseAnnouncerQuickOptions()
         return
     end
-    -- Single-active-transient-surface rule (explicit requirement): close
-    -- the expanded Mini Soundbook and any open context/send menu first -
-    -- "Mini Soundbook -> Quick Options: collapse/close Mini Soundbook
-    -- transient state, then open Quick Options" / "Context menu -> Quick
-    -- Options: close context menu first."
+    -- Single-active-transient-surface rule: Quick Options, the expanded
+    -- Mini Soundbook, and the context/send menu are mutually exclusive -
+    -- close the other two before opening this one.
     if SB.CloseFavMenu then SB.CloseFavMenu() end
     if SB.CloseSendMenu then SB.CloseSendMenu() end
     if not quickMenu then
@@ -1665,13 +1659,8 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         quickMenu.muteBtn = AddRow("Mute Incoming", function()
             if SB:IsReceiveMuted() then SB:StopReceiveMute() else SB:StartReceiveMute(nil, nil) end
         end)
-        -- Timed mute durations (Settings restructure, explicit requirement):
-        -- these used to be three standalone buttons on the old Settings
-        -- page - removed from there entirely (timed/global muting is a
-        -- runtime action, not persistent configuration) and relocated here,
-        -- the Mini Soundbook's own mute interaction, alongside the
-        -- indefinite toggle above. Same SB:StartReceiveMute calls Settings
-        -- used to make; behaviour is unchanged, only where you reach it from.
+        -- Timed mute durations live here, not in Settings: timed/global
+        -- muting is a runtime action, not persistent configuration.
         AddRow("Mute 30 min", function() SB:StartReceiveMute(30 * 60, 30) end)
         AddRow("Mute 60 min", function() SB:StartReceiveMute(60 * 60, 60) end)
         quickMenu.lockBtn = AddRow("Lock Interface", function()
@@ -1680,42 +1669,35 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         AddRow("Muted Players...", function()
             if SB.OpenMutePlayersMenu then SB.OpenMutePlayersMenu() end
         end)
-        -- Settings restructure, explicit requirement: History belongs on
-        -- the launcher icons' own context menu (this one - shared by the
+        -- History lives on this launcher context menu (shared by the
         -- Announcer icon's Shift+Right-click and the Main toolbar's Quick
-        -- Audio button), directly above Open Settings, not inside Settings
-        -- itself (History is content/navigation, not configuration).
+        -- Audio button), not inside Settings - it's content/navigation,
+        -- not configuration.
         AddRow("Sound History", function()
             if SB.ShowHistoryWindow then SB:ShowHistoryWindow() end
         end)
-        -- Deep-linking straight to the Settings tab needs UI.lua to expose
-        -- its (currently local) ToggleSettings - later 3.0 stage, once
-        -- Settings becomes its own Main-shell view. For now this just opens
-        -- the Main Soundbook, same as clicking the icon itself would.
+        -- Opens the Main Soundbook only, not the Settings panel directly -
+        -- UI.lua's ToggleSettings is a local function, not exposed for
+        -- this menu to call.
         AddRow("Open Settings", function()
             SB:Fire("TOGGLE_MAIN_UI")
         end)
 
-        -- Mini Soundbook activation mode (explicit requirement) - the
-        -- exact same checkbox component and the exact same persisted
-        -- field (SB.db.ui.announcer.openOnHover) Settings -> Mini's own
-        -- copy uses, never a separate value. No extra refresh needed
-        -- either way - the icon's own OnEnter handler reads this field
-        -- live on every hover, so a change here or in Settings takes
-        -- effect on the very next hover regardless of which one changed it.
+        -- Mini Soundbook activation mode: writes the same persisted field
+        -- (SB.db.ui.announcer.openOnHover) Settings -> Mini's own checkbox
+        -- uses. No extra refresh needed - the icon's OnEnter handler reads
+        -- this field live on every hover.
         local hoverCheck = Theme.CreateCheckbox(quickMenu, "Open Mini Soundbook on Hover", function(checked)
             SB.db.ui.announcer.openOnHover = checked and true or false
         end)
         hoverCheck:SetPoint("TOP", rows[#rows], "BOTTOM", -8, -10)
         quickMenu.hoverCheck = hoverCheck
 
-        -- Popout Direction - explicit request: one shared setting for
-        -- every surface that opens off the icon (this menu, Favourites,
-        -- the Announcer banner itself and its previews - see
-        -- SB.ResolvePopoutDirection/SB.PositionRelativeToIcon above).
-        -- "Automatic" resolves from the icon's current screen region every
-        -- time it's needed; the other four pin one side regardless of
-        -- where the icon sits.
+        -- Popout Direction: one shared setting for every surface that opens
+        -- off the icon (this menu, Favourites, the Announcer banner and its
+        -- previews - see SB.ResolvePopoutDirection/SB.PositionRelativeToIcon
+        -- above). "Automatic" resolves from the icon's current screen
+        -- region every time it's needed; the other four pin one side.
         local dirLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         dirLabel:SetFontObject(SB.Fonts.HighlightSmall)
         dirLabel:SetPoint("TOP", hoverCheck, "BOTTOM", 8, -12)
@@ -1732,58 +1714,46 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         })
         dirDropdown:SetOnChange(function(value)
             SB.db.ui.popoutDirection = value
-            -- Explicit requirement: reposition any already-open anchored
-            -- surface immediately, no /reload needed.
+            -- Repositions any already-open anchored surface immediately,
+            -- no /reload needed.
             SB:RefreshPopoutPositions()
         end)
         dirDropdown.button:SetPoint("TOP", dirLabel, "BOTTOM", 0, -6)
         quickMenu.dirDropdown = dirDropdown
 
-        -- Announcer size - explicit request ("irgendwie clever größer/
-        -- kleiner machen können, aktuell zu klein"). SetScale on both the
-        -- idle icon and the active banner scales everything about them
-        -- (icon, text, the progress bar) together, proportionally, rather
-        -- than this menu trying to independently resize a dozen elements.
+        -- Announcer size: SetScale on both the idle icon and the active
+        -- banner scales everything about them (icon, text, progress bar)
+        -- together, proportionally, rather than resizing each element
+        -- independently.
         local sizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         sizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
         sizeLabel:SetPoint("TOP", dirDropdown.button, "BOTTOM", 0, -12)
         sizeLabel:SetText("Announcer Size")
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
-        -- Live preview (explicit requirement, matching Mini Soundbook
-        -- Size's own live preview): the real icon/banner now rescale
-        -- continuously while dragging, not only on mouse-up. No separate
-        -- forced-open/positioning step is needed here, unlike Mini
-        -- Soundbook Size's preview - the icon (and banner, when shown)
-        -- are already on-screen and already independently anchored off
-        -- the icon's own live edges (see SB.PositionRelativeToIcon), so
-        -- growing/shrinking the icon in place dynamically pushes
-        -- quickMenu's own tracked anchor point along with it and can
-        -- never make the icon grow "into" quickMenu's rectangle.
+        -- Live preview: the icon/banner rescale continuously while
+        -- dragging, not only on mouse-up. Unlike Mini Soundbook Size below,
+        -- no forced-open/positioning step is needed - the icon (and banner,
+        -- when shown) are already on-screen and anchored off the icon's own
+        -- live edges (SB.PositionRelativeToIcon), so resizing in place
+        -- naturally carries quickMenu's own anchor along with it.
         local sizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
             SB:RefreshAnnouncerScale()
         end)
         sizeSlider:SetScript("OnMouseUp", function() SB:RefreshAnnouncerScale() end)
         sizeSlider:SetPoint("TOP", sizeLabel, "BOTTOM", -14, -8)
-        -- Interaction priority (explicit requirement): "dragging Announcer
-        -- Size" must never be interrupted by proximity auto-close -
-        -- HookScript composes with the OnMouseUp handler just above
-        -- rather than replacing it.
+        -- Dragging this slider must never be interrupted by proximity
+        -- auto-close - HookScript composes with the OnMouseUp handler
+        -- above rather than replacing it.
         sizeSlider:HookScript("OnMouseDown", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end end)
         sizeSlider:HookScript("OnMouseUp", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end end)
         quickMenu.sizeSlider = sizeSlider
 
-        -- Regression fix (explicit requirement): "Both Settings -> Mini
-        -- and the Mini options popup must expose the same two persisted
-        -- values" - this popup only ever had Announcer Size. Mini
-        -- Soundbook Size added directly underneath it, same 50-200%/
-        -- step-10% range, writing the SAME ui.announcer.favScale field
-        -- Settings -> Mini's own slider uses (see Settings.lua's
-        -- BuildMiniSoundbookSection) - there is only ever one persisted
-        -- value per size, never a separate popup-local copy, so changing
-        -- either location updates the other's next display automatically
-        -- (both simply read the live field when shown/opened).
+        -- Writes the same ui.announcer.favScale field Settings -> Mini's
+        -- own slider uses (Settings.lua's BuildMiniSoundbookSection) - one
+        -- persisted value, never a separate popup-local copy, so both
+        -- locations always show the live value when opened.
         local miniSizeLabel = quickMenu:CreateFontString(nil, "OVERLAY")
         miniSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
         miniSizeLabel:SetPoint("TOP", sizeSlider, "BOTTOM", 14, -12)
@@ -1792,19 +1762,16 @@ function SB.ShowAnnouncerQuickOptions(anchor)
 
         local miniSizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
             SB.db.ui.announcer.favScale = value / 100
-            -- Live preview (explicit requirement): apply continuously while
-            -- dragging, not only on release.
+            -- Applied continuously while dragging, not only on release.
             SB:RefreshMiniSoundbookScale()
         end)
         miniSizeSlider:SetScript("OnMouseUp", function() SB:RefreshMiniSoundbookScale() end)
         miniSizeSlider:SetPoint("TOP", miniSizeLabel, "BOTTOM", -14, -8)
-        -- Interaction priority AND live-preview forced-open/close (explicit
-        -- requirement): dragging this slider must never be interrupted by
-        -- proximity auto-close, must force the Mini Soundbook visible if it
-        -- isn't already, and must return it to its prior state on release -
-        -- all via the existing StartMiniSizePreview/EndMiniSizePreview
-        -- lifecycle above (a narrow, explicit exception to the single-
-        -- active-surface rule, scoped only to this slider).
+        -- Dragging this slider must never be interrupted by proximity
+        -- auto-close, must force the Mini Soundbook visible if it isn't
+        -- already, and must return it to its prior state on release - via
+        -- StartMiniSizePreview/EndMiniSizePreview above, a narrow exception
+        -- to the single-active-surface rule scoped only to this slider.
         miniSizeSlider:HookScript("OnMouseDown", function() StartMiniSizePreview() end)
         miniSizeSlider:HookScript("OnMouseUp", function() EndMiniSizePreview() end)
         quickMenu.miniSizeSlider = miniSizeSlider
@@ -1828,12 +1795,11 @@ function SB.ShowAnnouncerQuickOptions(anchor)
     StartMiniProximityTicker()
 end
 
--- Explicit requirement (section 22): if Popout Direction changes while
--- Favourites/Quick Options/the Announcer banner are currently visible,
--- reposition them immediately rather than waiting for the next open/
--- reload. Each surface's own anchor is always the icon in practice, but
--- __anchor is tracked (not hardcoded to `icon`) so this stays correct if
--- that ever changes.
+-- If Popout Direction changes while Favourites/Quick Options/the
+-- Announcer banner are visible, reposition them immediately rather than
+-- waiting for the next open/reload. Each surface's own anchor is always
+-- the icon in practice, but __anchor is tracked (not hardcoded to `icon`)
+-- so this stays correct if that ever changes.
 function SB:RefreshPopoutPositions()
     if favMenu and favMenu:IsShown() and favMenu.__anchor then
         SB.PositionRelativeToIcon(favMenu, favMenu.__anchor, SB.ResolvePopoutDirection(favMenu.__anchor))
@@ -1847,10 +1813,8 @@ function SB:RefreshPopoutPositions()
 end
 
 ------------------------------------------------------------------------
--- Public API - mirrors the old SB:ShowFavWindow/HideFavWindow/
--- ToggleFavWindow/SetFavWindowLocked shape so every existing caller
--- (Core.lua's "/sb fav", the minimap button's TOGGLE_FAV_UI, Settings.lua)
--- keeps working unchanged, just pointed at the Announcer now.
+-- Public API - called by Core.lua's "/sb fav", the minimap button's
+-- TOGGLE_FAV_UI, and Settings.lua.
 ------------------------------------------------------------------------
 
 function SB:ShowAnnouncer()
@@ -1867,12 +1831,11 @@ function SB:ShowAnnouncer()
         BuildBanner()
         RenderPrimary()
     elseif SB.raidOverride and (SB.raidOverride.mutedSend or SB.raidOverride.mutedAll) then
-        -- Explicit requirement: joining an already-running raid, or a
-        -- fresh login while a restriction happens to already be applied
-        -- to this client (unusual - raidOverride is session-only and
-        -- reset on reload/disconnect - but reachable if the Announcer
-        -- itself is toggled back on after being hidden mid-raid) shows
-        -- the persistent state immediately, not just from the next
+        -- Covers the rare case where a restriction is already applied when
+        -- the Announcer is shown (raidOverride is session-only and reset
+        -- on reload/disconnect, but this is reachable if the Announcer is
+        -- toggled back on after being hidden mid-raid) - shows the
+        -- persistent state immediately, not just from the next
         -- RAID_OVERRIDE_CHANGED event.
         BuildBanner()
         CollapseToIdle()
@@ -1918,22 +1881,17 @@ function SB:RefreshAnnouncerAlpha()
     end
 end
 
--- Explicit report: Settings' "Announcer Font"/"Announcer Text Size"
--- controls (SB.db.settings.miniFont/miniFontScale) had no effect - this
--- was a placeholder stub, never actually implemented after the 3.0
--- rewrite. Sets the font directly on the Announcer's own FontStrings
--- (never via SB.Fonts' shared objects - those are the MAIN Soundbook
--- window's, and mutating them would also resize Settings/Edit Sound/
--- everything else that shares them), same approach the old Mini
--- Soundbook's footerText always used for this exact setting.
--- Explicit report: at a large Announcer Text Size, the name/source text
--- overlapped the progress bar below it - both were at fixed positions
--- within a fixed-height banner. Recomputes the banner's total height and
--- the track's position from the SAME font metrics just applied above, so
--- there's no fixed geometry for a bigger font to outgrow. Uses the
--- known base sizes/line-height math rather than querying rendered
--- GetHeight() (which needs an extra frame to settle after SetFont) -
--- deterministic and correct the instant this runs.
+-- Settings' "Announcer Font"/"Announcer Text Size" controls
+-- (SB.db.settings.miniFont/miniFontScale) set the font directly on the
+-- Announcer's own FontStrings, never via SB.Fonts' shared objects - those
+-- back the MAIN Soundbook window, and mutating them would also resize
+-- Settings/Edit Sound/everything else that shares them.
+--
+-- RelayoutBannerHeight recomputes the banner's total height and the
+-- track's position from the same font metrics just applied, so a larger
+-- font never overlaps the progress bar below it. Uses known base-size/
+-- line-height math rather than querying rendered GetHeight() (which needs
+-- an extra frame to settle after SetFont) - correct the instant this runs.
 local function RelayoutBannerHeight()
     local scale = SB.db.settings.miniFontScale or 1
     local nameH = math.ceil((SB.Fonts.HighlightSmall.baseSize or 12) * scale * 1.4)
