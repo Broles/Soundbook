@@ -869,7 +869,27 @@ local function BuildCategoriesSection(content, topAnchor)
         lastAnchor = BuildCategoryRow(content, lastAnchor, category)
     end
 
-    return lastAnchor
+    -- The last two entries in SB.CATEGORIES (Core.lua) are the numeric,
+    -- user-named "Category 1"/"Category 2" slots (MySounds-backed custom
+    -- sounds), unlike the two fixed built-in categories above them - one
+    -- shared note below the last row (Category 2's own icon/name
+    -- controls), not per-row, explaining that requirement. Same
+    -- secondary/dim hint style as this file's other inline hints (e.g.
+    -- Advanced's own Window Layout hint) - a plain wrapping fontstring,
+    -- no heading/box/border/icon of its own. A bit more top gap than that
+    -- one (LAYOUT.GAP_M, 10px, vs. its tight 4px) since this is meant to
+    -- read as a Categories-section-level note, not glued to the Category
+    -- 2 input the way that hint reads as part of its own button's row.
+    local categoriesHint = content:CreateFontString(nil, "OVERLAY")
+    categoriesHint:SetFontObject(SB.Fonts.DisableSmall)
+    categoriesHint:SetPoint("TOPLEFT", lastAnchor, "BOTTOMLEFT", 0, -SB.Theme.LAYOUT.GAP_M)
+    categoriesHint:SetPoint("RIGHT", -20, 0)
+    categoriesHint:SetJustifyH("LEFT")
+    categoriesHint:SetWordWrap(true)
+    categoriesHint:SetText("Custom sounds require the MySounds addon. Add your own audio files and play them for friends who have MySounds and the same sound files installed.")
+    categoriesHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    return categoriesHint
 end
 
 ------------------------------------------------------------------------
