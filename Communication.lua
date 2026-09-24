@@ -22,13 +22,8 @@ local function KnownUserInfo(name)
     local legacyKey = NormalizeName(name)
     return (key and SB.db.knownUsers[key]) or (legacyKey and SB.db.knownUsers[legacyKey])
 end
--- Exported (explicit bugfix - AdminPanel.lua's raid roster used to index
--- SB.db.knownUsers directly by the plain roster name, which only ever
--- matches the OLD pre-realm-aware key shape; a friend who's genuinely
--- known under the current realm-qualified key still wrongly showed "no
--- Soundbook?" there even though the exact same lookup already worked
--- correctly everywhere that called this function instead) - one shared
--- lookup instead of a second, easily-outdated copy of this same key logic.
+-- Exported: one shared lookup, so callers never duplicate this realm-aware
+-- key logic with a plain-name lookup that could miss the current key shape.
 SB.KnownUserInfo = KnownUserInfo
 
 local function IsSelf(sender)
@@ -43,10 +38,9 @@ end
 --   notifyMutedAttempts  - a remote sound was BLOCKED by a PER-SOUND mute
 --                          specifically - so you know someone tried. Does
 --                          NOT cover a disabled "Receive Sounds from"
---                          channel any more - that's always fully silent,
---                          no exceptions (explicit request), handled
---                          entirely in OnAddonMessage's PLAY branch below,
---                          before any of this even runs.
+--                          channel - that's always fully silent, no
+--                          exceptions, handled entirely in OnAddonMessage's
+--                          PLAY branch below, before any of this runs.
 --   notifyFriendReceipts - who received/played YOUR sound - this player
 --                          both sends a small receipt when THEY receive a
 --                          sound (only if this is on) and shows the
@@ -67,9 +61,8 @@ local RXOFF_COLOR = "cffffa500" -- orange
 -- three counts are never visually confused with each other.
 local IGNORE_COLOR = "cffff8080" -- soft red
 
--- Explicit request: colour-code the channel/source portion of every one
--- of these lines the same way Now Playing does (SB.CHANNEL_COLOR,
--- Core.lua) instead of the old flat grey "(Channel):".
+-- Colour-codes the channel/source portion the same way Now Playing does
+-- (SB.GetChannelColor).
 local function PrintReceived(sender, channelLabel, soundName)
     local label = channelLabel or "Direct"
     local color = SB.GetChannelColor(label)
@@ -132,21 +125,18 @@ local function FormatReceivedList(entries)
     return "Received: " .. table.concat(parts, ", ")
 end
 
--- Explicit request: also show how many recipients had the sound MUTED
--- locally, not just who actually received/played it - "(N muted)" in red,
--- right after the normal "(Channel received: ...)" segment, only when
--- mutedCount > 0. `entries` may be empty (everyone who got it had it
--- muted) - the received segment is simply omitted in that case rather
--- than printing an empty "()" received list.
+-- Shows how many recipients had the sound MUTED locally, not just who
+-- actually received/played it - "(N muted)" in red, right after the
+-- "(Channel received: ...)" segment, only when mutedCount > 0. `entries`
+-- may be empty (everyone who got it had it muted) - the received segment
+-- is omitted rather than printing an empty "()" list.
 --
--- `rxOffCount` is a separate, later addition - recipients who never even
--- got a chance to mute/play it because they have that whole receive
--- channel switched off (Settings' Send/Receive table) - explicit request:
--- shown as its own "(N receive-off)" segment in orange, never merged into
--- the red "(N muted)" one, since it's a different thing (a channel-level
--- opt-out, not a deliberate per-sound/per-person mute). Debug-Mode-only by
--- design (see HandleRxOffAck) - `rxOffCount` is simply always 0 for a
--- normal (non-debug) client, so this segment naturally never appears then.
+-- `rxOffCount` counts recipients who never got a chance to mute/play it
+-- because they have that whole receive channel switched off (Settings'
+-- Send/Receive table) - shown as its own "(N receive-off)" segment in
+-- orange, never merged into "(N muted)" since it's a channel-level
+-- opt-out, not a deliberate per-sound/per-person mute. Debug-Mode-only
+-- (see HandleRxOffAck) - `rxOffCount` is always 0 on a normal client.
 local function PrintFriendsReceived(soundName, entries, mutedCount, rxOffCount, ignoredCount)
     local receivedPart = #entries > 0
         and string.format(" |cff999999(%s)|r", FormatReceivedList(entries))
@@ -157,7 +147,7 @@ local function PrintFriendsReceived(soundName, entries, mutedCount, rxOffCount, 
     local rxOffPart = (rxOffCount and rxOffCount > 0)
         and string.format(" |%s(%d receive-off)|r", RXOFF_COLOR, rxOffCount)
         or ""
-    -- "Guild received: 4 (1 blocked by Ignore)" - explicit requirement.
+    -- e.g. "Guild received: 4 (1 blocked by Ignore)"
     local ignoredPart = (ignoredCount and ignoredCount > 0)
         and string.format(" |%s(%d blocked by Ignore)|r", IGNORE_COLOR, ignoredCount)
         or ""
@@ -170,14 +160,13 @@ end
 -- Sending
 ------------------------------------------------------------------------
 
--- Explicit request: Raid and Party are treated as ONE target everywhere in
--- Soundbook from here on (dropdowns, the Send broadcast toggle, per-sound
--- Default/Macro Output overrides all only ever store "RAID") - they're
--- mutually exclusive in WoW anyway, you're never in both at once. This is
--- the ONE place that resolves the merged concept to whichever native
--- channel is actually live right now, for the moment something really
--- needs to go out over the wire - "RAID" while in a raid, "PARTY" while in
--- a non-raid group, nil if in neither (nothing to send to).
+-- Raid and Party are treated as ONE target everywhere in Soundbook
+-- (dropdowns, the Send broadcast toggle, per-sound Default/Macro Output
+-- overrides all only ever store "RAID") - they're mutually exclusive in
+-- WoW, you're never in both at once. This is the one place that resolves
+-- the merged concept to whichever native channel is actually live right
+-- now: "RAID" while in a raid, "PARTY" while in a non-raid group, nil if
+-- in neither (nothing to send to).
 function SB.ResolveGroupChannel()
     if IsInRaid() then return "RAID" end
     if IsInGroup() then return "PARTY" end
@@ -185,14 +174,12 @@ function SB.ResolveGroupChannel()
 end
 
 -- Names already covered by a currently-enabled group broadcast channel this
--- send (Guild/Raid/Party), so SendToFriends can skip whispering them. Without
--- this, anyone who is both e.g. in your guild AND on your friends list gets
--- the exact same sound twice - once via GUILD, once via a direct WHISPER -
--- and whichever packet's network delivery happens to win the race decides
--- which channel shows up in their "received" notification. That made the
--- displayed channel effectively random instead of meaningful. Sending each
--- person exactly one copy, via the most specific channel that reaches them,
--- fixes both the duplicate traffic and the non-deterministic channel label.
+-- send (Guild/Raid/Party), so SendToFriends can skip whispering them.
+-- Without this, anyone who is both e.g. in your guild AND on your friends
+-- list would get the same sound twice (once via GUILD, once via WHISPER),
+-- with whichever packet arrives first deciding the displayed "received"
+-- channel. Each person gets exactly one copy, via the most specific
+-- channel that reaches them.
 local function GetGroupCoveredNames(modes)
     local covered = {}
 
@@ -206,9 +193,8 @@ local function GetGroupCoveredNames(modes)
         end
     end
 
-    -- Raid and Party share the one "RAID" toggle now (see
-    -- SB.ResolveGroupChannel above) - whichever of the two is actually
-    -- live gets scanned here.
+    -- Raid and Party share the one "RAID" toggle (see SB.ResolveGroupChannel
+    -- above) - whichever of the two is actually live gets scanned here.
     if modes.RAID and IsInRaid() then
         for i = 1, SB.GetNumGroupMembers() do
             local name = GetRaidRosterInfo(i)
@@ -228,12 +214,10 @@ local function SendToFriends(text, covered)
     local n = SB.GetNumFriends()
     for i = 1, n do
         local name, connected = SB.GetFriendInfoByIndex(i)
-        -- Ignore blocking (explicit requirement): "A must not intentionally
-        -- send directly to B" - a multi-recipient blind broadcast like this
-        -- one CAN filter per-recipient (unlike a true Guild/Raid channel
-        -- message), so it does, silently - same "skip and continue" shape
-        -- as the existing `covered` de-dup right above, never aborting the
-        -- rest of the send over one blocked name.
+        -- Ignore blocking: unlike a true Guild/Raid channel message, this
+        -- blind broadcast CAN filter per-recipient, so it silently skips an
+        -- ignored name (same "skip and continue" shape as the `covered`
+        -- de-dup above) rather than aborting the whole send.
         if name and connected and not covered[IdentityKey(name)] and not SB:IsIgnored(name) then
             SB.SendAddonMessage(SB.COMM_PREFIX, text, "WHISPER", name)
         end
@@ -254,21 +238,18 @@ local ACK_CLAIM_WINDOW = 15 -- seconds an ACK can still be matched to a broadcas
 function SB:BroadcastSound(soundID)
     local modes = SB.db.settings.broadcastModes
     if not modes then return end
-    -- Shared outbound boundary (explicit requirement): every caller that
-    -- reaches this already checks SB:IsSendBlockedByRaid() itself first
-    -- (DispatchDefaultOutput, SendSoundUsingDefaultBroadcast, ...), but
-    -- this is the actual wire-sending function for Guild/Raid/Party/
-    -- Friends all at once - re-checking HERE too means a future caller
-    -- that forgets its own check still can't bypass a Raid Admin mute.
-    -- See SB:IsSendBlockedByRaid's own section for why this already
-    -- covers Guild, not just Raid/Party.
+    -- Shared outbound boundary: this is the actual wire-sending function for
+    -- Guild/Raid/Party/Friends all at once, so it re-checks
+    -- SB:IsSendBlockedByRaid() here too even though every current caller
+    -- already checks first - a future caller that forgets its own check
+    -- still can't bypass a Raid Admin mute this way.
     if SB:IsSendBlockedByRaid() then return end
 
     local text = SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID
     recentBroadcasts[soundID] = GetTime()
 
-    -- Raid and Party share the one "RAID" toggle now - whichever is
-    -- actually live gets the message (see SB.ResolveGroupChannel).
+    -- Raid and Party share the one "RAID" toggle - whichever is actually
+    -- live gets the message (see SB.ResolveGroupChannel).
     local groupChannel = modes.RAID and SB.ResolveGroupChannel()
     if groupChannel then
         SB.SendAddonMessage(SB.COMM_PREFIX, text, groupChannel)
@@ -288,24 +269,22 @@ end
 -- Anything else bypasses the "Broadcast sounds to:" checkboxes for one
 -- single channel, or one single person, INSTEAD of them - not on top of.
 --
--- These three send functions are deliberately silent (no PlayLocally re-
--- play, no "Sent to X" chat line) unlike SendMenu.lua's SB:SendSoundTo*
--- further below, which share almost the same shape - a normal click
--- through this setting is meant to feel exactly like a normal click always
--- has (SB:TriggerSound already played it locally and fires
--- LOCAL_SOUND_PLAYED itself), just aimed differently, not like the more
--- deliberate, explicitly-confirmed SendMenu action.
+-- These three send functions are deliberately silent (no PlayLocally
+-- re-play, no "Sent to X" chat line), unlike SendMenu.lua's
+-- SB:SendSoundTo* further below - a normal click through this setting
+-- should feel exactly like a normal click always has (SB:TriggerSound
+-- already played it locally and fires LOCAL_SOUND_PLAYED), just aimed
+-- differently, not like the more deliberate, explicitly-confirmed
+-- SendMenu action.
 ------------------------------------------------------------------------
 
--- This is THE shared outbound boundary for a whole-channel Guild/Raid/
--- Party send (explicit requirement) - every current caller
--- (DispatchDefaultOutput, SendSoundToChannel) already checks
--- SB:IsSendBlockedByRaid() first too, but re-checking at this lowest
--- level means a future/alternate send path can't bypass a Raid Admin
--- mute just by calling this function directly. No friend exemption here
--- - a whole-channel send was never eligible for it (that only ever
--- applies to a single direct/whisper target, see SendToPlayerSilent's
--- own callers).
+-- Shared outbound boundary for a whole-channel Guild/Raid/Party send:
+-- every current caller (DispatchDefaultOutput, SendSoundToChannel)
+-- already checks SB:IsSendBlockedByRaid() first, but re-checking at this
+-- lowest level means a future/alternate send path can't bypass a Raid
+-- Admin mute by calling this function directly. No friend exemption here
+-- - that only ever applies to a single direct/whisper target (see
+-- SendToPlayerSilent's own callers).
 local function SendToSingleChannelSilent(soundID, channel)
     if channel ~= "GUILD" and channel ~= "PARTY" and channel ~= "RAID" then return end
     if SB:IsSendBlockedByRaid() then return end
@@ -313,8 +292,7 @@ local function SendToSingleChannelSilent(soundID, channel)
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID, channel)
 end
 
--- Same shared-boundary reasoning as SendToSingleChannelSilent above -
--- every current caller already checks first, this is just the backstop.
+-- Same shared-boundary reasoning as SendToSingleChannelSilent above.
 local function SendToAllFriendsSilent(soundID)
     if SB:IsSendBlockedByRaid() then return end
     recentBroadcasts[soundID] = GetTime()
@@ -324,12 +302,10 @@ end
 
 local function SendToPlayerSilent(soundID, name)
     if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
-    -- Ignore blocking (explicit requirement) - the single shared funnel
-    -- for a Default-Output single-player target send. Silent,
-    -- matching this whole function's own established "no chat line" design
-    -- (see its callers' own comments) - SB:SendSoundToPlayer below is the
-    -- one surface with an explicit chat confirmation, and checks this
-    -- itself first so it can print its own dedicated message instead.
+    -- Ignore blocking - silent here, matching this function's "no chat
+    -- line" design. SB:SendSoundToPlayer below is the surface with an
+    -- explicit chat confirmation, and checks this itself first so it can
+    -- print its own dedicated message instead.
     if SB:IsIgnored(name) then return end
     recentBroadcasts[soundID] = GetTime()
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID .. SEP .. "D", "WHISPER", name)

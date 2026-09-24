@@ -6,17 +6,12 @@
 -- SB:TriggerSound (locally-initiated) or SB:PlaySound (actual playback),
 -- so behaviour (mute, overlap, channel) is always identical everywhere.
 --
--- KNOWN TBC ANNIVERSARY LIMITATION - PER-SOUND VOLUME:
--- WoW's public API has no function to set the playback volume of an
--- individual sound or sound handle (no SetSoundHandleVolume or similar
--- exists on any currently shipping client, TBC Anniversary included).
--- The only volume control WoW exposes is global (Master/SFX CVars),
--- which this addon deliberately never touches, because that would change
--- the volume of every other sound in the game, not just Soundbook's.
--- The per-sound "Volume" slider in the Edit window therefore stores a
--- value in SavedVariables (for forward-compatibility and for anyone
--- consuming SB.registry externally) but that value is NOT currently
--- applied to actual audio output. This is documented, not faked.
+-- KNOWN LIMITATION - PER-SOUND VOLUME:
+-- WoW's public API has no way to set the volume of an individual sound/
+-- handle; the only volume control is global (Master/SFX CVars), which this
+-- addon deliberately never touches since that would affect all game audio.
+-- The per-sound "Volume" slider therefore stores a value in SavedVariables
+-- but it is NOT currently applied to actual audio output.
 
 local ADDON_NAME, SB = ...
 
@@ -26,23 +21,19 @@ local activeHandles = {}
 local supportsHandles = nil -- feature-detected lazily on first play
 
 -- Which extension (from SB.SOUND_EXTENSIONS) actually exists on disk for a
--- given sound, discovered on first successful play and remembered from then
--- on so repeat plays don't re-probe missing extensions every time.
+-- given sound, discovered on first successful play and cached so repeat
+-- plays don't re-probe missing extensions every time.
 local resolvedExtension = {}
--- Same idea, but for the ALTERNATE file (SoundAlternates.lua) - kept in a
--- SEPARATE table, never the same slot as resolvedExtension above: the
--- original and the alternate are two different physical files that can
--- easily have different extensions, so caching one under the other's key
--- would make the probe try the wrong extension first for whichever file
--- wasn't actually resolved yet.
+-- Separate cache for the ALTERNATE file (SoundAlternates.lua): the original
+-- and alternate are different physical files that can have different
+-- extensions, so they must never share a cache slot.
 local resolvedAltExtension = {}
 local missingFileBases = {}
 local missingNoticeShown = {}
 
 local function NotifyMissingLocalFile(fileBase, info, source)
-    -- Remote failures stay silent. A later local click still gets its one
-    -- useful explanation even when another player's request was what first
-    -- populated the session-level missing-file cache.
+    -- Remote failures stay silent; only a local click gets the one-time
+    -- notice, even if a remote request first populated the missing-file cache.
     if source ~= "local" or missingNoticeShown[fileBase] then return end
     missingNoticeShown[fileBase] = true
     SB:Print(string.format(
@@ -52,101 +43,71 @@ local function NotifyMissingLocalFile(fileBase, info, source)
 end
 
 ------------------------------------------------------------------------
--- Playback progress tracking - drives the Announcer's Now Playing
--- progress fill (Announcer.lua) and the "learn a sound's real duration by
--- observing it" fallback for anything SoundDurations.lua doesn't already
--- know. Central here (not guessed at by the UI).
+-- Playback progress tracking - drives the Announcer's Now Playing progress
+-- fill and the "learn a sound's real duration by observing it" fallback.
 --
--- Tracked by a LOCAL playback-instance token (nextInstanceID), never by
--- the WoW sound handle or by soundID alone - explicit requirement. The
--- handle is optional tracking data (it can legitimately be nil even for a
--- successful play - see supportsHandles above), used only to query
--- C_Sound.IsPlaying when available; it is never the prerequisite for
--- progress tracking/display. soundID alone can't identify a playback
--- instance either, since the same sound can be retriggered/overlapped.
+-- Tracked by a LOCAL playback-instance token (nextInstanceID), never by the
+-- WoW sound handle or by soundID alone: the handle can legitimately be nil
+-- even for a successful play (see supportsHandles above) and is only used
+-- to query C_Sound.IsPlaying when available, never a prerequisite for
+-- tracking/display; soundID alone can't identify an instance since the
+-- same sound can be retriggered/overlapped.
 ------------------------------------------------------------------------
 
--- C_Sound.IsPlaying(handle) is an OPTIONAL refinement, not a prerequisite -
--- not guaranteed on every client build, so it's feature-detected once.
--- Every call site that actually NEEDS it checks `canTrackPlayback` first;
--- an instance with a known duration tracks and displays progress
--- perfectly well without it (see the duration-ceiling branch in
--- PollTrackedInstances below) - only the REAL early-natural-end detection
--- and live duration-learning fall back to "wait for the known duration's
--- own ceiling" when it's unavailable.
+-- C_Sound.IsPlaying is an OPTIONAL refinement, not a prerequisite - not
+-- guaranteed on every client build, so it's feature-detected once. An
+-- instance with a known duration tracks/displays progress fine without it
+-- (see the duration-ceiling branch in PollTrackedInstances); only early-
+-- natural-end detection and live duration-learning need it, falling back
+-- to the known duration's own ceiling when it's unavailable.
 local canTrackPlayback = type(C_Sound) == "table" and type(C_Sound.IsPlaying) == "function"
 
 -- [instanceID] = { soundID, handle (may be nil - see above), startedAt
 --                  (GetTimePreciseSec - when PlaySoundFile was CALLED),
---                  playingStartedAt (when it was FIRST actually observed
---                  playing via C_Sound.IsPlaying - may lag startedAt: see
---                  below, and stays nil if there's no handle to observe),
+--                  playingStartedAt (when it was FIRST observed playing via
+--                  C_Sound.IsPlaying - may lag startedAt, nil if no handle),
 --                  observedPlaying, interrupted, ambiguousOverlap,
 --                  duration (may be nil - unknown) }
 --
 -- WHY TWO TIMESTAMPS: WoW does not truly overlap two simultaneous plays of
--- the exact same sound file - calling PlaySoundFile a second time while an
--- identical sound is already playing still returns willPlay=true and a
--- real handle immediately, but the actual audible playback is silently
--- QUEUED until the first instance finishes. Measuring duration from
--- startedAt (call time) for that second, queued instance would include
--- the ENTIRE wait behind the first one - observed in testing as an
--- exactly-~2x-too-long learned duration. playingStartedAt (stamped the
--- first time C_Sound.IsPlaying actually reports true) is meant to be the
--- "this is when it actually started being audible" anchor - but even
--- that alone did not fully fix it in testing (see activeSoundCount just
--- below for the actual fix).
+-- the same sound file - a second PlaySoundFile call while an identical
+-- sound is already playing returns willPlay=true and a real handle
+-- immediately, but audible playback is silently QUEUED until the first
+-- instance finishes. Measuring duration from startedAt (call time) for
+-- that queued instance would include the entire wait, producing an
+-- ~2x-too-long learned duration. playingStartedAt (first confirmed-playing
+-- poll) alone still isn't enough to fix this - see activeSoundCount below.
 local trackedInstances = {}
 local nextInstanceID = 0
 -- The most recently STARTED instance still being tracked - what the
--- Announcement Bar shows progress for ("zeigt den zuletzt gestarteten,
--- noch relevanten Sound", explicit requirement for overlapping playback).
+-- Announcement Bar shows progress for.
 local primaryInstanceID = nil
 local pollTicker = nil
 
--- [soundID] = how many instances of that exact sound are CURRENTLY
--- tracked (started, not yet confirmed ended). Even the playingStartedAt
--- anchor above did not fully solve the queued-overlap problem in testing
--- (still measured ~2x too long) - most likely because C_Sound.IsPlaying
--- can't actually tell "queued behind another instance of the same sound,
--- not yet audible" apart from "genuinely playing"; both read as true, so
--- no timestamp this addon can observe is trustworthy for a SECOND
--- instance of the same sound started while the first is still active.
--- Rather than risk another bad measurement (or a desynced-looking
--- progress bar), any such "ambiguous" instance is excluded from BOTH
--- learning and live display entirely - see
--- TrackNewPlayback/BuildPlaybackState/ReleaseTrackedInstance.
+-- [soundID] = how many instances of that exact sound are CURRENTLY tracked
+-- (started, not yet confirmed ended). C_Sound.IsPlaying can't tell "queued
+-- behind another instance of the same sound" apart from "genuinely
+-- playing" - both read true - so no timestamp is trustworthy for a SECOND
+-- instance of the same sound started while the first is still active. Any
+-- such "ambiguous" instance is excluded from duration LEARNING entirely -
+-- see TrackNewPlayback/PollTrackedInstances.
 local activeSoundCount = {}
 
--- An instance that's never even been observed playing once (e.g. a bad
--- file, PlaySoundFile lied about willPlay, or there's no handle AND no
--- known duration to fall back on) would otherwise sit in trackedInstances
--- forever, since there's nothing to transition it out - dropped after
--- this many seconds. Deliberately the SAME value used for two related but
--- distinct "give up" cases - see PollTrackedInstances.
+-- An instance never observed playing (bad file, PlaySoundFile lied about
+-- willPlay, or no handle AND no known duration) would otherwise sit in
+-- trackedInstances forever - dropped after this many seconds.
 local NEVER_STARTED_TIMEOUT = 3.0
--- Safety net for the OPPOSITE case: an instance that DID start playing but
--- whose C_Sound.IsPlaying somehow never flips back to false (a client
--- quirk on some file, a missed transition, anything) would otherwise sit
--- in trackedInstances - and keep activeSoundCount for that sound elevated -
--- forever. That wouldn't just leave one stale entry: since activeSoundCount
--- never drops back to 0, EVERY future play of that same sound would look
--- "ambiguous" and permanently never learn a duration, even in complete
--- isolation. Force-released (never learned from - we can't trust an
--- instance that ran this long anyway) past this many seconds regardless
--- of its playing state. Applies uniformly regardless of duration/handle
--- knowledge - the one true absolute ceiling.
+-- Safety net for the OPPOSITE case: an instance that DID start but whose
+-- C_Sound.IsPlaying never flips back to false would otherwise sit in
+-- trackedInstances forever, keeping activeSoundCount for that sound
+-- elevated - which would make EVERY future play of that sound look
+-- "ambiguous" and never learn a duration. Force-released (never learned
+-- from) past this many seconds regardless of playing state.
 local MAX_TRACKED_LIFETIME = 90.0
 local POLL_INTERVAL = 0.08
--- Regression fix (explicit requirement - "C_Sound.IsPlaying must not be
--- able to keep an already-expired announcer alive indefinitely"): once a
--- KNOWN duration has elapsed, plus this small grace margin, an instance
+-- Once a KNOWN duration plus this grace margin has elapsed, an instance
 -- ends regardless of what C_Sound.IsPlaying still claims - some clients/
--- files report IsPlaying=true for several seconds past the real audible
--- end. Matches this addon's own existing precedent for exactly this
--- margin (the pre-3.0 Mini Soundbook's ShowNowPlaying used the same
--- 0.3s "don't cut off right at the last instant" grace), ported forward
--- here as a real, reactive ceiling instead of a fixed display timer.
+-- files report IsPlaying=true for several seconds past the real audible end.
 local NATURAL_END_GRACE = 0.3
 
 local function Now()
