@@ -1135,7 +1135,10 @@ local BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid", FRIENDS = "Friends" }
 -- separately-computed guess. Reads live reachable-player counts
 -- (SB.ComputeReachablePlayers, the same source used everywhere else).
 -- @return total (int), perBucket ({GUILD=n, RAID=n, FRIENDS=n}),
---         isLocal (bool), directName (string or nil), isAllTarget (bool)
+--         isLocal (bool), directName (string or nil), isAllTarget (bool),
+--         singleBucketNames (array of realm-qualified names, or nil - only
+--         populated for the single-bucket GUILD/RAID/FRIENDS case, the
+--         actual effective recipient list a send would use right now)
 local function ComputeLiveTargetCounts()
     local target = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
     local reachable = SB.ComputeReachablePlayers and SB.ComputeReachablePlayers() or { GUILD = {}, RAID = {}, FRIENDS = {} }
@@ -1159,23 +1162,26 @@ local function ComputeLiveTargetCounts()
     end
     if target == "GUILD" or target == "RAID" or target == "FRIENDS" then
         -- A per-player recipient subset (Communication.lua) narrows this
-        -- bucket's live reach below its full reachable count - read
-        -- through SB.GetChannelSubsetCount so the title never overstates
-        -- who's actually about to receive it (it already falls back to
-        -- the plain reachable count when no subset is active).
-        local n = SB.GetChannelSubsetCount and (select(1, SB.GetChannelSubsetCount(target))) or #(reachable[target] or {})
+        -- bucket's live reach below its full reachable count - read the
+        -- actual effective recipient LIST (not just a count) so the
+        -- title can show their real names when they fit (explicit
+        -- request) - falls back to the plain reachable list when no
+        -- subset is active, same fallback SB.GetChannelSubsetCount uses.
+        local names = SB.ComputeChannelSubsetRecipients and SB.ComputeChannelSubsetRecipients(target)
+        if not names then names = reachable[target] or {} end
+        local n = #names
         if n > 0 then
             perBucket[target] = n
             total = n
         end
-        return total, perBucket, total == 0, nil, false
+        return total, perBucket, total == 0, nil, false, names
     end
     -- "ALL" (default/fallback) - every currently Send-enabled channel,
     -- exactly matching SB:BroadcastSound's own modes-driven fan-out.
     for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
         if modes[bucket] then CountBucket(bucket) end
     end
-    return total, perBucket, total == 0, nil, true
+    return total, perBucket, total == 0, nil, true, nil
 end
 
 -- Describes the CURRENT Default Output target as a short phrase
@@ -1190,8 +1196,46 @@ end
 -- recipient under "All", or whenever "All" is the target at all, even
 -- if only one channel happens to have anyone reachable right now - the
 -- user's actual intent was "everyone", not one specific group.
+-- Explicit request: when the selected channel's actual recipient names
+-- would fit the Mini Soundbook's title bar, show them ("Alice and Bob")
+-- instead of a bare count ("Guild (3)") - GetFavMenuHeaderText below
+-- decides whether this candidate actually fits (it owns the "Play for "/
+-- ":" wrapping and the real pixel measurement); this just builds the
+-- candidate text and bails out early for cases that could never
+-- realistically fit a HUD title bar, so a wide popup doesn't bother
+-- measuring an obviously-too-long list.
+local MAX_NAMES_FOR_TITLE = 3
+local function JoinNamesNaturally(names)
+    local n = #names
+    if n == 1 then return names[1] end
+    if n == 2 then return names[1] .. " and " .. names[2] end
+    return table.concat(names, ", ", 1, n - 1) .. " and " .. names[n]
+end
+local function BuildNamesCandidate(names)
+    if not names or #names == 0 or #names > MAX_NAMES_FOR_TITLE then return nil end
+    local displayNames = {}
+    for _, name in ipairs(names) do
+        table.insert(displayNames, (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name)
+    end
+    return JoinNamesNaturally(displayNames)
+end
+
+-- Describes the CURRENT Default Output target as a short phrase
+-- ("Guild (10)", "People (6)", "Bob", ...) plus an optional secondary
+-- breakdown line ("Guild (4)  -  Friends (2)") for the multi-source "All"
+-- case, and (4th return) a names-list candidate GetFavMenuHeaderText may
+-- prefer over the count phrase if it fits. `isLocal` is true for Self
+-- Only AND "selected but zero real recipients right now" - zero actual
+-- remote recipients always reads as "Play for Yourself" regardless of
+-- which target is technically active (see SB:ResolveOutputTarget's
+-- fallback, Communication.lua, for the send-side equivalent). "People"
+-- (never "N people" or a per-channel label) is used whenever more than
+-- one channel contributes a real recipient under "All", or whenever
+-- "All" is the target at all, even if only one channel happens to have
+-- anyone reachable right now - the user's actual intent was "everyone",
+-- not one specific group.
 local function DescribeEffectiveTargetPhrase()
-    local total, perBucket, isLocal, directName, isAllTarget = ComputeLiveTargetCounts()
+    local total, perBucket, isLocal, directName, isAllTarget, singleBucketNames = ComputeLiveTargetCounts()
     if directName then return directName, nil, false end
     if isLocal or total == 0 then return "locally", nil, true end
 
@@ -1204,7 +1248,8 @@ local function DescribeEffectiveTargetPhrase()
     end
 
     if not isAllTarget and contributing <= 1 and onlyBucket then
-        return string.format("%s (%d)", BUCKET_LABEL[onlyBucket], perBucket[onlyBucket]), nil, false
+        local countPhrase = string.format("%s (%d)", BUCKET_LABEL[onlyBucket], perBucket[onlyBucket])
+        return countPhrase, nil, false, BuildNamesCandidate(singleBucketNames)
     end
 
     local parts = {}
@@ -1241,19 +1286,38 @@ local function AnyVisibleFavouriteHasOverride()
     return false
 end
 
-local function GetFavMenuHeaderText()
-    local phrase, secondary, isLocal = DescribeEffectiveTargetPhrase()
+-- `availableWidth` (optional) is the actual pixel width the title line is
+-- about to render at this pass (favMenu's own content width minus its
+-- fixed insets - see PopulateFavMenu, which computes it BEFORE calling
+-- this so it's never a render stale) - when given, a names candidate
+-- from DescribeEffectiveTargetPhrase is measured against favMenu.title's
+-- own font and used instead of the count phrase if the full wrapped
+-- line ("Play for Alice and Bob:") actually fits; omitted or a no-fit
+-- always falls back to the count phrase exactly as before.
+local function GetFavMenuHeaderText(availableWidth)
+    local phrase, secondary, isLocal, namesCandidate = DescribeEffectiveTargetPhrase()
     local overridesPresent = AnyVisibleFavouriteHasOverride()
-    local primary
     -- "Play for Yourself" reads as plain language (vs. technical "Play
     -- locally") and is used consistently everywhere this Mini Soundbook
     -- state is presented.
-    if overridesPresent then
-        primary = isLocal and "Default destination: Play for Yourself" or ("Default destination: " .. phrase)
-    else
-        primary = isLocal and "Play for Yourself:" or ("Play for " .. phrase .. ":")
+    if isLocal then
+        return (overridesPresent and "Default destination: Play for Yourself" or "Play for Yourself:"), secondary
     end
-    return primary, secondary
+
+    local function Wrap(who)
+        return overridesPresent and ("Default destination: " .. who) or ("Play for " .. who .. ":")
+    end
+
+    if namesCandidate and availableWidth and favMenu and favMenu.title then
+        local namesHeader = Wrap(namesCandidate)
+        local previousText = favMenu.title:GetText()
+        favMenu.title:SetText(namesHeader)
+        local fits = favMenu.title:GetStringWidth() <= availableWidth
+        favMenu.title:SetText(previousText)
+        if fits then return namesHeader, secondary end
+    end
+
+    return Wrap(phrase), secondary
 end
 
 -- Row height for the Favourites grid. Declared here (above every
@@ -1438,7 +1502,25 @@ local function BuildFavMenu()
 end
 
 local function PopulateFavMenu()
-    local primary, secondary = GetFavMenuHeaderText()
+    local favourites = SB.GetFavourites and SB:GetFavourites() or {}
+    local favCount = 0
+    for slot = 1, SB.MAX_FAVOURITES do
+        if favourites[slot] then favCount = favCount + 1 end
+    end
+
+    -- Grid width/columns computed FIRST, before the header text - the
+    -- title bar's own fit-check (GetFavMenuHeaderText's names-vs-count
+    -- decision) needs the ACTUAL width this render is about to use, not
+    -- whatever favMenu:GetWidth() still holds from the previous one.
+    local columns = GetFavMenuColumns(favCount)
+    local colW = FAV_COL_W[columns]
+    local gridW = columns * colW
+    -- Matches favMenu.title's own two-point anchor insets (10px left,
+    -- -10px right - see BuildFavMenu) exactly, so the measurement lines
+    -- up with what will actually render.
+    local titleAvailableWidth = (gridW + 8) - 20
+
+    local primary, secondary = GetFavMenuHeaderText(titleAvailableWidth)
     favMenu.title:SetText(primary)
     favMenu.subtitle:SetShown(secondary ~= nil)
     if secondary then favMenu.subtitle:SetText(secondary) end
@@ -1447,17 +1529,6 @@ local function PopulateFavMenu()
     -- the real rendered height rather than guessing a fixed offset.
     local subtitleH = secondary and ((favMenu.subtitle:GetHeight() or 0) + 2) or 0
     local topOffset = 30 + subtitleH
-
-    local favourites = SB.GetFavourites and SB:GetFavourites() or {}
-    local favCount = 0
-    for slot = 1, SB.MAX_FAVOURITES do
-        if favourites[slot] then favCount = favCount + 1 end
-    end
-
-    -- Grid width/columns first, everything below positions against it.
-    local columns = GetFavMenuColumns(favCount)
-    local colW = FAV_COL_W[columns]
-    local gridW = columns * colW
     favMenu:SetWidth(gridW + 8)
     favMenu.content:ClearAllPoints()
     favMenu.content:SetPoint("TOPLEFT", 4, -topOffset)
