@@ -89,14 +89,14 @@ local currentSectionKey
 -- function's own header comment for exactly what moved where) - no
 -- underlying setting/SavedVariable key or behaviour changed. `color` is
 -- each section's own active-state accent - existing palette tokens only,
--- one full set (Self grey, Arcane Cyan, Guild green, Gold, Direct purple,
--- Friends blue, Raid/Party orange), same "no new colour invented" rule
--- the previous 5-tab strip already followed.
+-- one full set (Self grey, Arcane Cyan, Guild green, Direct purple,
+-- Friends blue, Raid/Party orange) - Gold (previously Favourites' own
+-- colour) is no longer assigned to a section since Favourites' content
+-- merged into General (explicit request), leaving six sections.
 local SECTION_ORDER = {
     { key = "general",      label = "General",      color = { SB.CHANNEL_COLOR.SELF.r, SB.CHANNEL_COLOR.SELF.g, SB.CHANNEL_COLOR.SELF.b } },
     { key = "playback",     label = "Playback",     color = SB.Theme.V3.ARCANE_CYAN },
     { key = "multiplayer",  label = "Multiplayer",  color = { SB.CHANNEL_COLOR.GUILD.r, SB.CHANNEL_COLOR.GUILD.g, SB.CHANNEL_COLOR.GUILD.b } },
-    { key = "favourites",   label = "Favourites",   color = SB.Theme.GOLD },
     { key = "appearance",   label = "Appearance",   color = { SB.CHANNEL_COLOR.DIRECT.r, SB.CHANNEL_COLOR.DIRECT.g, SB.CHANNEL_COLOR.DIRECT.b } },
     { key = "categories",   label = "Categories",   color = { SB.CHANNEL_COLOR.FRIENDS.r, SB.CHANNEL_COLOR.FRIENDS.g, SB.CHANNEL_COLOR.FRIENDS.b } },
     { key = "advanced",     label = "Advanced",     color = { SB.CHANNEL_COLOR.RAID.r, SB.CHANNEL_COLOR.RAID.g, SB.CHANNEL_COLOR.RAID.b } },
@@ -518,11 +518,13 @@ end
 -- Section: General
 ------------------------------------------------------------------------
 
--- Deliberately minimal (explicit requirement: relocate existing controls
--- into the section that fits them best, do not invent new content just to
--- fill a section) - the one setting that's genuinely global/miscellaneous
--- rather than belonging to Playback/Multiplayer/Favourites/Appearance,
--- moved here from the old Library & Appearance section.
+-- The one setting that's genuinely global/miscellaneous rather than
+-- belonging to Playback/Multiplayer/Appearance (moved here from the old
+-- Library & Appearance section), PLUS the Mini Soundbook's own window/
+-- activation controls (explicit request: merge the former standalone
+-- Favourites section's content in here rather than keeping it as its own
+-- nav entry). Its visual sizing/text controls stay in Appearance below -
+-- those are look-and-feel, not window behaviour.
 local function BuildGeneralSection(content, topAnchor)
     local generalHeader = Section(content, "General", topAnchor, -4)
     local minimapCheck = Checkbox(content, "Show Minimap Button", generalHeader, 0, -8, function(checked)
@@ -530,7 +532,31 @@ local function BuildGeneralSection(content, topAnchor)
         if SB.RefreshMinimapButton then SB:RefreshMinimapButton() end
     end)
     minimapCheck:SetChecked(not SB.db.ui.minimap.hide)
-    return minimapCheck
+
+    local windowHeader = Section(content, "Window", minimapCheck, -16)
+    local showCheck = Checkbox(content, "Show Mini Soundbook", windowHeader, 0, -8, function(checked)
+        if checked then SB:ShowAnnouncer() else SB:HideAnnouncer() end
+    end)
+    showCheck:SetChecked(SB.db.ui.announcer.shown)
+
+    local lockCheck = Checkbox(content, "Lock position and size", showCheck, 0, -2, function(checked)
+        SB:SetAnnouncerLocked(checked)
+    end)
+    lockCheck:SetChecked(SB.db.ui.layoutLocked)
+
+    -- Mini Soundbook activation mode (explicit requirement) - shared
+    -- verbatim with the exact same checkbox in the Mini Soundbook's own
+    -- Quick Options popup (Announcer.lua's SB.ShowAnnouncerQuickOptions) -
+    -- both simply read/write SB.db.ui.announcer.openOnHover directly, no
+    -- separate value, no extra refresh call needed: the icon's own
+    -- OnEnter handler reads this field live every time it fires, so
+    -- toggling it here takes effect on the very next hover.
+    local hoverCheck = Checkbox(content, "Open Mini Soundbook on Hover", lockCheck, 0, -2, function(checked)
+        SB.db.ui.announcer.openOnHover = checked and true or false
+    end)
+    hoverCheck:SetChecked(SB.db.ui.announcer.openOnHover)
+
+    return hoverCheck
 end
 
 ------------------------------------------------------------------------
@@ -659,41 +685,6 @@ local function BuildMultiplayerSection(content, topAnchor)
 
     SB:RefreshChannelMatrix()
     return queueCheck
-end
-
-------------------------------------------------------------------------
--- Section: Favourites
-------------------------------------------------------------------------
-
--- Just the Mini Soundbook's own window/activation controls (from the old
--- Mini Soundbook section's "Window" sub-group) - its visual sizing/text
--- controls moved to Appearance below, since those are look-and-feel, not
--- window behaviour.
-local function BuildFavouritesSection(content, topAnchor)
-    local windowHeader = Section(content, "Window", topAnchor, -4)
-    local showCheck = Checkbox(content, "Show Mini Soundbook", windowHeader, 0, -8, function(checked)
-        if checked then SB:ShowAnnouncer() else SB:HideAnnouncer() end
-    end)
-    showCheck:SetChecked(SB.db.ui.announcer.shown)
-
-    local lockCheck = Checkbox(content, "Lock position and size", showCheck, 0, -2, function(checked)
-        SB:SetAnnouncerLocked(checked)
-    end)
-    lockCheck:SetChecked(SB.db.ui.layoutLocked)
-
-    -- Mini Soundbook activation mode (explicit requirement) - shared
-    -- verbatim with the exact same checkbox in the Mini Soundbook's own
-    -- Quick Options popup (Announcer.lua's SB.ShowAnnouncerQuickOptions) -
-    -- both simply read/write SB.db.ui.announcer.openOnHover directly, no
-    -- separate value, no extra refresh call needed: the icon's own
-    -- OnEnter handler reads this field live every time it fires, so
-    -- toggling it here takes effect on the very next hover.
-    local hoverCheck = Checkbox(content, "Open Mini Soundbook on Hover", lockCheck, 0, -2, function(checked)
-        SB.db.ui.announcer.openOnHover = checked and true or false
-    end)
-    hoverCheck:SetChecked(SB.db.ui.announcer.openOnHover)
-
-    return hoverCheck
 end
 
 ------------------------------------------------------------------------
@@ -1239,8 +1230,6 @@ function SB.BuildSettingsPanel(mainFrame, contentFrame)
             bottom = BuildPlaybackSection(content, topAnchor)
         elseif entry.key == "multiplayer" then
             bottom = BuildMultiplayerSection(content, topAnchor)
-        elseif entry.key == "favourites" then
-            bottom = BuildFavouritesSection(content, topAnchor)
         elseif entry.key == "appearance" then
             bottom = BuildAppearanceSection(content, topAnchor)
         elseif entry.key == "categories" then
