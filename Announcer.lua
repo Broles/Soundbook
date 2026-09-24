@@ -2079,18 +2079,12 @@ function SB:RefreshAnnouncerAlpha()
     end
 end
 
--- Compatibility shim: SendMenu.lua's right-click popup pins the always-
--- visible HUD element fully opaque while it's open (its own OnEnter/OnLeave
--- would otherwise hand hover away to the popup and fade it out mid-click) -
--- previously FavouritesWindow.lua's SB:PinFavAlpha, called unconditionally
--- by SendMenu.lua regardless of which UI a sound slot lives in.
-local favAlphaPinned = false
-function SB:PinFavAlpha(pinned)
-    favAlphaPinned = pinned and true or false
+-- Restores the Mini Soundbook icon to its normal alpha (idle, unless the
+-- mouse is still over it) - called from SendMenu.lua's CloseMenu every
+-- time the right-click context menu closes, as a safety reset.
+function SB:UnpinFavAlpha()
     if not icon then return end
-    if favAlphaPinned then
-        icon:SetAlpha(1)
-    elseif not icon:IsMouseOver() then
+    if not icon:IsMouseOver() then
         icon:SetAlpha((SB.db.ui.announcer.alphaIdle or 100) / 100)
     end
 end
