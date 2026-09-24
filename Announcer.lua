@@ -1,11 +1,7 @@
 -- Announcer.lua
 --
--- Soundbook 3.0's replacement for the old Mini Soundbook/Favourites window
--- (formerly FavouritesWindow.lua, removed - superseded entirely by this
--- file). The old window bundled a Favourite grid, Now Playing, Last Sound, mute controls,
--- Send menus, lock and resize into one frame; the Announcer owns exactly
--- one job - "what is Soundbook doing right now" - while the Favourite grid
--- itself moves into the Main Soundbook's Sound Library (a later 3.0 stage).
+-- Soundbook's always-on HUD: idle icon plus the Mini Soundbook favourites
+-- popup and Quick Options menu.
 --
 -- Idle: a small movable app icon, nothing else - no permanent panel.
 -- Active: the icon expands into a compact banner (name / sender+channel /
@@ -20,35 +16,21 @@ local icon           -- idle/always-visible app icon (a Button, draggable)
 local banner         -- expanding "now playing" content, anchored to icon
 local muteDot        -- small indicator: incoming receive-mute is active
 local raidDot        -- small indicator: raid-admin currently restricts you
--- Forward-declared (defined further down, alongside the rest of the
--- drag-preview machinery) so BuildIcon's OnDragStart/OnDragStop - defined
--- BEFORE that machinery in this file - can call them as plain upvalues,
--- same forward-reference idiom already used elsewhere in this file.
+-- Forward-declared: defined further down (drag-preview machinery) but
+-- called as upvalues from BuildIcon's OnDragStart/OnDragStop above it.
 local StartIconDragPreview, StopIconDragPreview
--- Forward-declared for the same reason (BuildIcon, below, needs to call
--- these as upvalues, but the proximity/hover system they belong to isn't
--- defined until much further down, alongside favMenu/quickMenu) -
--- Mini Soundbook single-active-surface + hover-open + proximity-auto-
--- close regression fix. HandleMiniIconHoverEnter is the icon's own native
--- OnEnter hook (hover-open, gated by the persisted setting);
--- SetMiniActiveInteraction is the shared "an active drag/interaction is
--- in progress, do not auto-close" flag the proximity ticker reads.
+-- Forward-declared: defined further down alongside the proximity/hover
+-- system (favMenu/quickMenu), but called as upvalues from BuildIcon.
+-- HandleMiniIconHoverEnter is the icon's hover-open OnEnter hook;
+-- SetMiniActiveInteraction flags an active drag/interaction so the
+-- proximity ticker does not auto-close while it's set.
 local HandleMiniIconHoverEnter, SetMiniActiveInteraction, NoteMiniSurfaceHidden
--- True while the banner is showing PREVIEW content - the icon-drag preview
--- (StartIconDragPreview/StopIconDragPreview) - rather than an actual
--- playing sound. This is the ONLY preview trigger (targeted correction
--- round, section "Mini Soundbook Announcer Preview bug"): the Preview
--- must never be tied to the options-menu open state or to changing any
--- Mini Soundbook option, including the Announcer Size slider - it shows
--- exclusively while the player is actively repositioning the icon via
--- its own existing move/reposition drag. Unlike before 3.0's Popout
--- Direction work, a real sound starting mid-preview no longer force-kills
--- this flag (explicit requirement: "real Announcer event must not
--- overwrite preview positioning/content during active configuration") -
--- RenderPrimary/CollapseToIdle themselves check IsPreviewActive() below
--- and simply skip repainting the banner while the preview owns it;
--- activeDisplays keeps tracking real playback normally underneath, and
--- RestoreRealAnnouncerState() catches it up the moment the preview ends.
+-- True while the banner shows PREVIEW content (icon-drag preview) rather
+-- than a real playing sound. Set only by Start/StopIconDragPreview - never
+-- tied to menu-open state or option changes. RenderPrimary/CollapseToIdle
+-- check IsPreviewActive() and skip repainting while it's true; activeDisplays
+-- keeps tracking real playback underneath, and RestoreRealAnnouncerState()
+-- catches the banner up once the preview ends.
 local dragPreviewActive = false
 
 local function IsPreviewActive()
@@ -64,8 +46,7 @@ local pendingStart = nil
 
 -- Every Soundbook sound currently known to be playing that the Announcer is
 -- tracking, oldest first. The LAST entry is always the primary (what the
--- banner shows); anything before it is summarized as "+N" (3.0 spec
--- section 11 - "newest/highest-priority active sound becomes primary").
+-- banner shows); anything before it is summarized as "+N".
 -- { handle, soundID, name, sender, channelLabel, duration, startedAt }
 local activeDisplays = {}
 local collapseTimer
@@ -79,12 +60,6 @@ local function SoundName(soundID)
 end
 
 local function SoundIcon(soundID)
-    -- Was its own duplicate lookup reading info.icon, a field that doesn't
-    -- exist on registry entries (SoundRegistry.lua's own SB:GetSoundIcon
-    -- reads info.defaultIcon) - every sound without a player-set custom
-    -- icon silently fell through to the question-mark fallback. Delegating
-    -- to the one canonical resolver fixes that and keeps both in sync
-    -- going forward.
     return (soundID and SB.GetSoundIcon and SB:GetSoundIcon(soundID)) or SB.DEFAULT_ICON
 end
 
@@ -102,10 +77,10 @@ local function FormatCountdown(seconds)
     return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
 end
 
--- Semantic label for an event-cleared duration (F/B/R) - explicit
--- requirement: never show the internal 90-minute safety-net timer as if
--- it were the real duration, show what will actually clear it instead.
--- Matches AdminPanel.lua's own DURATION_TAG.
+-- Semantic label for an event-cleared duration (F/B/R): never show the
+-- internal 90-minute safety-net timer as if it were the real duration -
+-- show what will actually clear it instead. Matches AdminPanel.lua's
+-- DURATION_TAG.
 local RAID_DURATION_LABEL = {
     F = "Until fight ends", B = "Until boss ends", R = "Until raid ends",
 }
@@ -156,15 +131,11 @@ local function BuildIcon()
     tex:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     icon.texture = tex
 
-    -- Bottom-right: incoming personal receive-mute (small plain dot,
-    -- unchanged). Bottom-left: Raid Admin restriction - explicit
-    -- requirement this iteration: unmistakable, not just a tiny coloured
-    -- dot, so it's upgraded to a real shield glyph (SB.ADMIN_ICON, the
-    -- same icon Raid Admin uses everywhere else) tinted warning red/
-    -- orange. Kept as two SEPARATE indicators (3.0 spec section 7,
-    -- reaffirmed this iteration) - a player muting themselves and a raid
-    -- leader restricting the raid are different, independent facts that
-    -- can coexist and must never be collapsed into one ambiguous state.
+    -- Bottom-right: personal receive-mute dot. Bottom-left: Raid Admin
+    -- restriction, shown as a shield glyph (SB.ADMIN_ICON) tinted red/orange
+    -- so it reads as unmistakable, not a tiny dot. Kept as two SEPARATE
+    -- indicators - a player's own mute and a raid leader's restriction are
+    -- independent facts that can coexist and must never be collapsed into one.
     muteDot = icon:CreateTexture(nil, "OVERLAY")
     muteDot:SetSize(9, 9)
     muteDot:SetPoint("BOTTOMRIGHT", 1, -1)
@@ -184,8 +155,8 @@ local function BuildIcon()
         if SB.db.ui.layoutLocked then return end
         self:StartMoving()
         StartIconDragPreview()
-        -- Interaction priority (explicit requirement): repositioning the
-        -- trigger itself must never be interrupted by proximity auto-close.
+        -- Interaction priority: repositioning the trigger itself must never
+        -- be interrupted by proximity auto-close.
         if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end
     end)
     icon:SetScript("OnDragStop", function(self)
@@ -196,10 +167,10 @@ local function BuildIcon()
         if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end
     end)
 
-    -- Explicit request - rebound:
-    -- Left click: Favourites quick-play menu (new, see ShowFavMenu below)
-    -- Right click: Open Soundbook (was left click)
-    -- Shift+Right click: Quick Options (was plain right click)
+    -- Click bindings:
+    -- Left click: Favourites quick-play menu (see ShowFavMenu below)
+    -- Right click: Open Soundbook
+    -- Shift+Right click: Quick Options
     icon:SetScript("OnClick", function(self, mouseButton)
         if mouseButton == "LeftButton" then
             if SB.ShowFavMenu then SB.ShowFavMenu(self) end
@@ -213,11 +184,9 @@ local function BuildIcon()
     icon:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_LEFT")
         GameTooltip:SetText("Soundbook", 1, 1, 1)
-        -- Explicit requirement: the tooltip explains the ACTUAL scope of
-        -- an active Raid Admin restriction, who applied it (when known),
-        -- and that local Self playback still works - independent of, and
-        -- shown alongside, the player's own personal receive-mute state
-        -- below it.
+        -- Explains the ACTUAL scope of an active Raid Admin restriction, who
+        -- applied it, and that local Self playback still works - shown
+        -- alongside the player's own receive-mute state below it.
         local ov = SB.raidOverride
         if ov and (ov.mutedSend or ov.mutedAll) then
             GameTooltip:AddLine(" ")
@@ -248,8 +217,7 @@ local function BuildIcon()
     end)
     icon:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
-    -- Idle-vs-hover opacity (Settings -> Interface, migrated from the old
-    -- Mini Soundbook's own alphaIdle/alphaHover) - hooked once here rather
+    -- Idle-vs-hover opacity (Settings -> Interface) - hooked once here rather
     -- than re-hooked every time a setting changes (see SB:RefreshAnnouncerAlpha).
     icon:HookScript("OnEnter", function()
         icon:SetAlpha((SB.db.ui.announcer.alphaHover or 100) / 100)
@@ -260,20 +228,14 @@ local function BuildIcon()
         end
     end)
 
-    -- Mini Soundbook activation mode (explicit requirement): hover-open,
-    -- gated by the persisted SB.db.ui.announcer.openOnHover setting -
-    -- purely native-OnEnter-edge-triggered (fires once per genuine
-    -- transition from outside the icon's own bounds to inside it, never
-    -- on a poll/timer), which is what makes every reopen-loop edge case
-    -- in the spec fall out for free: nothing re-opens anything just
-    -- because the cursor happens to still be resting on the icon after
-    -- some OTHER surface closed - a NEW entry only ever happens after a
-    -- real OnLeave preceded it. Left-click keeps working exactly as
-    -- before regardless of this setting (see icon's own OnClick above) -
-    -- this hook only ever ADDS the hover trigger, never removes the click
-    -- one. HandleMiniIconHoverEnter is defined later in this file
-    -- (alongside the rest of the proximity/surface system) and referenced
-    -- here as a forward-declared upvalue.
+    -- Hover-open, gated by SB.db.ui.announcer.openOnHover - purely native
+    -- OnEnter-edge-triggered (fires once per genuine transition into the
+    -- icon's bounds, never on a poll), so nothing re-opens the menu just
+    -- because the cursor is still resting on the icon after some OTHER
+    -- surface closed - a new open only follows a real OnLeave. Left-click
+    -- keeps working regardless of this setting; this hook only ADDS the
+    -- hover trigger. HandleMiniIconHoverEnter is defined later alongside the
+    -- proximity/surface system and referenced here as a forward-declared upvalue.
     icon:HookScript("OnEnter", function()
         if HandleMiniIconHoverEnter then HandleMiniIconHoverEnter() end
     end)
@@ -285,13 +247,11 @@ end
 -- The active banner
 ------------------------------------------------------------------------
 
--- BANNER_H is no longer a fixed constant - explicit report: at a large
--- Announcer Text Size, the name/source text grew tall enough to overlap
--- the progress bar, which sat at a fixed distance from the banner's own
--- (also fixed) bottom edge. RelayoutBannerHeight (below BuildBanner)
--- recomputes both the banner's total height and the track's position
--- from the ACTUAL current font metrics every time the font/scale
--- changes, so there's no fixed size for a big font to outgrow.
+-- Banner height is not a fixed constant: at a large Announcer Text Size
+-- the name/source text can grow tall enough to overlap a fixed-position
+-- progress bar. RelayoutBannerHeight (below BuildBanner) recomputes both
+-- the banner's height and the track's position from the actual current
+-- font metrics whenever the font/scale changes.
 local BANNER_W = 232
 local ICON_SLOT_SIZE = 30
 local TRACK_H = 8
@@ -342,12 +302,9 @@ local function BuildBanner()
     subText:SetWordWrap(false)
     banner.subText = subText
 
-    -- Explicit report, twice: too small/subtle, wants it as prominent as
-    -- the old 2.7 HUD's bar - "nicht nur ein kleiner dünner Balken". A real
-    -- bordered bar in its own dedicated row (both corners anchored purely
-    -- to `banner` itself, not bridged across two different sibling
-    -- frames - unambiguous position/size, no anchor-resolution guessing)
-    -- instead of a thin line squeezed against the bottom border.
+    -- A real bordered progress bar in its own row, both corners anchored
+    -- directly to `banner` (not bridged across sibling frames) for
+    -- unambiguous position/size.
     local track = SB.CreateFrame("Frame", nil, banner)
     -- Positioned by RelayoutBannerHeight below, not a fixed offset from
     -- banner's own bottom - that's exactly what let it collide with the
@@ -377,26 +334,13 @@ local function BuildBanner()
     banner.overlapBadge = overlapBadge
 
     banner:SetScript("OnMouseUp", function(self, mouseButton)
-        -- Explicit report: this must interrupt playback (a quick "stop the
-        -- sound that's bothering me right now"), not permanently mute the
-        -- sound - permanent per-sound mute already has its own dedicated
-        -- control (Edit Sound's "Muted" checkbox).
-        --
-        -- REGRESSION FOUND: the previous version tried to stop only THIS
-        -- one handle via SB:StopSoundHandle - explicit report that it
-        -- stopped every currently-playing Soundbook sound instead, not
-        -- just this one. StopAllOwnSounds (SoundPlayer.lua) has always
-        -- called StopSound(handle, 0) per-handle in a loop too and never
-        -- been reported doing anything OTHER than "stop everything" - but
-        -- that's also its entire intended job, so a channel-wide side
-        -- effect there would never have surfaced as a bug. This is the
-        -- first place this addon ever needed genuine single-handle
-        -- precision, and apparently WoW's StopSound doesn't reliably give
-        -- it (plausibly channel-wide, since every Soundbook sound shares
-        -- one channel - SoundPlayer.lua's GetChannel()). Falling back to
-        -- the one call this codebase has actually verified stays scoped
-        -- to Soundbook's own sounds, even though it now stops every
-        -- concurrently overlapping Soundbook sound, not just this one.
+        -- Right-click interrupts playback (not a permanent mute - that's
+        -- Edit Sound's "Muted" checkbox). Uses SB:StopAllSounds() rather than
+        -- stopping only this handle: WoW's StopSound is plausibly channel-wide
+        -- (every Soundbook sound shares one channel, SoundPlayer.lua's
+        -- GetChannel()), so a single-handle stop was observed to stop every
+        -- concurrently playing Soundbook sound anyway. This call is the one
+        -- verified to stay scoped to Soundbook's own sounds.
         if mouseButton ~= "RightButton" or not self.soundbookSoundID then return end
         local soundID = self.soundbookSoundID
         if SB.StopAllSounds then SB:StopAllSounds() end
@@ -427,9 +371,9 @@ end
 -- Popout Direction - ONE shared resolver + positioner, used by every
 -- surface that opens off the permanent Soundbook icon (this banner, the
 -- Favourites popup, and Quick Options below) so they can never
--- independently pick contradictory sides for the same icon position -
--- explicit requirement. SB.db.ui.popoutDirection is "AUTO" or one of the
--- four manual sides; Quick Options exposes it as a dropdown.
+-- independently pick contradictory sides for the same icon position.
+-- SB.db.ui.popoutDirection is "AUTO" or one of the four manual sides;
+-- Quick Options exposes it as a dropdown.
 ------------------------------------------------------------------------
 
 local POPOUT_GAP = 4
@@ -452,17 +396,12 @@ function SB.ResolvePopoutDirection(anchorFrame)
     local cx, cy = anchorFrame:GetCenter()
     if screenW <= 0 or screenH <= 0 or not cx or not cy then return "RIGHT" end
 
-    -- BUGFIX (3.0 QA round): GetCenter() and GetWidth()/GetHeight() are
-    -- each returned in their OWN frame's local unit space (1 unit = that
-    -- frame's effective-scale pixels) - comparing them directly only
-    -- works when anchorFrame and UIParent share the same effective
-    -- scale. The Announcer icon carries its own independent SetScale
-    -- (the Announcer Size slider, 0.5-2.0 - see SB:RefreshAnnouncerScale),
-    -- so at any non-1.0 size this silently skewed cx/cy and could resolve
-    -- an icon genuinely sitting at a screen edge into the centre band,
-    -- opening the popup vertically instead of horizontally toward the
-    -- centre. Converting into UIParent's own coordinate space first fixes
-    -- this at every Announcer Size, not just the default one.
+    -- GetCenter() and GetWidth()/GetHeight() are each returned in their OWN
+    -- frame's local unit space (1 unit = that frame's effective-scale
+    -- pixels) - comparing them directly only works when anchorFrame and
+    -- UIParent share the same effective scale. The Announcer icon carries
+    -- its own independent SetScale (Announcer Size slider), so converting
+    -- into UIParent's coordinate space first is required at every scale.
     local scaleRatio = (anchorFrame:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
     cx = cx * scaleRatio
     cy = cy * scaleRatio

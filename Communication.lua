@@ -311,48 +311,35 @@ local function SendToPlayerSilent(soundID, name)
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID .. SEP .. "D", "WHISPER", name)
 end
 
--- Same option list Settings -> Default Output Channel (now the main
--- window's own omnipresent dropdown, see UI.lua) and EditWindow.lua's
--- per-sound macro "Output" dropdown both share - one place to keep them
--- identical. Explicit request: fixed order All -> Friends -> Guild -> Raid
--- -> Party -> Self, with each group's individual online members listed as
--- their own selectable rows DIRECTLY under that group's header (indented,
--- smaller font via SB.OutputTargetRowFont below) instead of one flat block
--- of "-> Name (Source)" rows tacked on at the very end - a name no longer
--- needs its own "(Friend)"/"(Guild)" label since which header it's sitting
--- under already says that.
+-- Shared option list for Settings -> Default Output Channel (UI.lua's main
+-- dropdown) and EditWindow.lua's per-sound macro "Output" dropdown. Fixed
+-- order All -> Friends -> Guild -> Raid -> Party -> Self, with each
+-- group's online members listed as their own rows directly under that
+-- group's header (indented, smaller font via SB.OutputTargetRowFont below).
 --
 -- Individual people are re-queried live every time the list opens, never
--- cached (who's online/in-group changes constantly), and deduplicated by
--- name with the SAME priority SendMenu.lua's right-click list already
--- uses - Friends > Guild > Raid > Party - so someone in more than one group
--- at once only ever shows up once, under the highest-priority one. Only
--- ever someone confirmed to have Soundbook (SB.db.knownUsers, the same
--- presence roster SendMenu.lua filters by) - picking someone without the
--- addon would just silently go nowhere.
+-- cached, and deduplicated by name with the same priority SendMenu.lua's
+-- right-click list uses - Friends > Guild > Raid > Party - so someone in
+-- more than one group at once shows up only under the highest-priority
+-- one. Only ever someone confirmed to have Soundbook (SB.db.knownUsers).
 local PLAYER_ROW_INDENT = 14
 
--- THE single canonical "who's reachable" computation - explicit requirement:
--- the main dropdown (Communication.lua's SB.ComputeOutputTargetOptions,
--- used by UI.lua/EditWindow.lua) and the Mini Soundbook's right-click menu
--- (SendMenu.lua) must always show the exact same current list, not two
--- independently-maintained copies that could silently drift apart - both
--- now call this one function instead of each re-implementing their own
--- Friends/Guild/Raid/Party scan.
+-- The single canonical "who's reachable" computation: the main dropdown
+-- (SB.ComputeOutputTargetOptions, used by UI.lua/EditWindow.lua) and the
+-- Mini Soundbook's right-click menu (SendMenu.lua) both call this instead
+-- of each re-implementing their own Friends/Guild/Raid/Party scan, so they
+-- can never drift apart.
 --
 -- Returns { FRIENDS = {name, ...}, GUILD = {...}, RAID = {...} }, each list
--- already sorted, deduplicated by a fixed Friends > Raid > Guild priority
--- (explicit request - someone reachable through several groups at once
--- shows up exactly ONCE, under the highest-priority one: a friend is always
--- a friend first regardless of group membership; a guildmate who's also in
--- your raid/party counts as Raid, not Guild, since that's the more
--- specific/immediate relationship), and filtered to SB.db.knownUsers
--- (confirmed Soundbook installs only).
+-- sorted, deduplicated by a fixed Friends > Raid > Guild priority (someone
+-- reachable through several groups shows up exactly once, under the
+-- highest-priority one: a friend is always a friend first; a guildmate
+-- also in your raid/party counts as Raid, the more specific relationship),
+-- and filtered to SB.db.knownUsers (confirmed Soundbook installs only).
 --
--- RAID is Raid AND Party combined (explicit request, see
--- SB.ResolveGroupChannel) - the two are mutually exclusive in WoW, so this
--- bucket simply collects whichever of the two is actually live right now;
--- there is no separate PARTY key any more.
+-- RAID is Raid AND Party combined (see SB.ResolveGroupChannel) - the two
+-- are mutually exclusive in WoW, so this bucket collects whichever of the
+-- two is actually live; there is no separate PARTY key.
 --
 -- Identity safety: deduplication uses a realm-aware canonical key and each
 -- row retains the actual realm-qualified whisper target. Presentation may
@@ -369,8 +356,8 @@ function SB.ComputeReachablePlayers()
             local key = IdentityKey(rawName)
             if not key or not KnownUserInfo(rawName) or claimedBy[key] then return end
             claimedBy[key] = true
-            -- Keep the actual realm-qualified target. Presentation may hide
-            -- the local realm, but sends must never guess between two Bobs.
+            -- Keep the realm-qualified target - sends must never guess
+            -- between two same-named players.
             table.insert(bucket, rawName)
         end)
         table.sort(bucket, function(a, b)
@@ -382,8 +369,8 @@ function SB.ComputeReachablePlayers()
     end
 
     -- Collection order = priority order (Friends > Raid/Party > Guild) -
-    -- whichever bucket claims a player first is the only one they show up
-    -- in, see this function's own comment above.
+    -- whichever bucket claims a player first is the only one they show
+    -- up in.
     CollectInto("FRIENDS", function(add)
         local n = SB.GetNumFriends()
         for i = 1, n do
@@ -423,29 +410,21 @@ function SB.ComputeOutputTargetOptions()
     local reachable = SB.ComputeReachablePlayers()
     local friendNames, guildNames, raidNames = reachable.FRIENDS, reachable.GUILD, reachable.RAID
 
-    -- Explicit request: green when it matches this client's own version,
-    -- orange when it's older/different/unknown - same colours everywhere
-    -- a version suffix shows (this dropdown and SendMenu.lua's popup).
+    -- Green when it matches this client's own version, orange when it's
+    -- older/different/unknown - same colours everywhere a version suffix
+    -- shows (this dropdown and SendMenu.lua's popup).
     local VERSION_CURRENT_COLOR = { 0.4, 0.95, 0.5 }
     local VERSION_OTHER_COLOR = { 1, 0.6, 0 }
 
     local function AddGroup(label, value, names)
-        -- Explicit request (reversed, again, from the last two rounds of
-        -- "only if I'm actually in it"/"only if there's someone reachable"
-        -- versions of this): every group header ALWAYS shows, regardless
-        -- of whether you're currently in that group or anyone reachable is
-        -- in it - "egal ob die Personen/Spieler drin sind oder nicht". A
+        -- Every group header always shows, regardless of whether you're
+        -- currently in that group or anyone reachable is in it (this
+        -- dropdown, EditWindow's two dropdowns, SendMenu.lua's menu). A
         -- pick that goes nowhere right now (e.g. selecting Raid while
-        -- solo) simply sends nothing when it's actually used
-        -- (SB:DispatchDefaultOutput/SendToSingleChannelSilent already
-        -- handle that quietly) - the option itself is always there to
-        -- pick, everywhere (this dropdown, EditWindow's two dropdowns,
-        -- SendMenu.lua's right-click menu).
-        -- Explicit request: the header itself carries a "(N)" count of how
-        -- many Soundbook-reachable players actually fall under it right
-        -- now - "wie viele Spieler dieser Outputgruppe logisch zugeordnet
-        -- werden" - so picking a target also tells you your real reach,
-        -- without having to expand/count the member rows yourself.
+        -- solo) simply sends nothing when used
+        -- (SB:DispatchDefaultOutput/SendToSingleChannelSilent handle that
+        -- quietly). The header carries a "(N)" count of how many
+        -- Soundbook-reachable players fall under it right now.
         table.insert(opts, { text = label .. " (" .. #names .. ")", value = value, isHeader = true })
         for _, name in ipairs(names) do
             local suffix, isCurrent = SB:GetFormattedPlayerVersion(name)
@@ -453,23 +432,21 @@ function SB.ComputeOutputTargetOptions()
                 text = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name) or name),
                 value = "PLAYER:" .. name, indent = PLAYER_ROW_INDENT,
                 suffix = suffix, suffixColor = isCurrent and VERSION_CURRENT_COLOR or VERSION_OTHER_COLOR,
-                -- Same group key as this row's own header ("FRIENDS"/
-                -- "GUILD"/"RAID") - explicit request: unify with
-                -- SendMenu.lua's popup, where a member row's NAME is
-                -- always the same colour as its group header, never the
-                -- version colour (that's the suffix's job only).
+                -- Same group key as this row's header ("FRIENDS"/"GUILD"/
+                -- "RAID") - matches SendMenu.lua's popup, where a member
+                -- row's NAME is always coloured by its group header, never
+                -- by the version colour (that's the suffix's job only).
                 channelKey = value,
             })
         end
     end
 
-    -- Explicit request: Guild/Raid/Friends, matching the order SendMenu.lua's
-    -- and MutePlayers.lua's own group lists already use. Raid and Party are
-    -- ONE merged row (see SB.ResolveGroupChannel/ComputeReachablePlayers) -
-    -- labelled "Raid" while actually in a raid, "Party" while in a non-raid
-    -- group, and "Raid" as the default label while in neither (still always
-    -- shown, same as every other group - picking it then just sends
-    -- nowhere, like any other empty group already does).
+    -- Guild/Raid/Friends order, matching SendMenu.lua's and
+    -- MutePlayers.lua's own group lists. Raid and Party are one merged row
+    -- (see SB.ResolveGroupChannel/ComputeReachablePlayers) - labelled
+    -- "Raid" while actually in a raid, "Party" while in a non-raid group,
+    -- and "Raid" as the default label while in neither (still always
+    -- shown; picking it then just sends nowhere).
     local groupLabel = IsInRaid() and "Raid" or (IsInGroup() and "Party") or "Raid"
     AddGroup("Guild", "GUILD", guildNames)
     AddGroup(groupLabel, "RAID", raidNames)
@@ -483,17 +460,15 @@ end
 -- Group headers (All/Friends/Guild/Raid/Party/Self) render in the larger
 -- Highlight font, individual player rows in the smaller HighlightSmall one
 -- (plus their own indent - see PLAYER_ROW_INDENT above) - same header-vs-
--- member size distinction SendMenu.lua's own popup already uses. Passed to
--- Theme.CreateDropdown:SetRowFont by both UI.lua's omnipresent dropdown and
+-- member size distinction SendMenu.lua's own popup uses. Passed to
+-- Theme.CreateDropdown:SetRowFont by both UI.lua's dropdown and
 -- EditWindow.lua's Macro Output one.
--- Explicit request: unified with SendMenu.lua's own popup - a player's
--- NAME is always coloured by its group (Core.lua's SB.CHANNEL_COLOR,
--- opt.value for a header / opt.channelKey - the SAME group key - for a
--- member row under it), never by version match. The separate version
--- suffix (SB:GetFormattedPlayerVersion, Debug Mode only) is the only
--- thing that ever shows green/orange - see Theme.lua's dropdown row
--- building for where opt.suffixColor gets applied to that. "ALL" has no
--- single channel and keeps the normal text colour, same as before.
+-- A player's NAME is always coloured by its group (SB.CHANNEL_COLOR,
+-- opt.value for a header / opt.channelKey for a member row), never by
+-- version match - the separate version suffix (SB:GetFormattedPlayerVersion,
+-- Debug Mode only) is the only thing that shows green/orange (see
+-- Theme.lua's dropdown row building for opt.suffixColor). "ALL" has no
+-- single channel and keeps the normal text colour.
 function SB.OutputTargetRowFont(text, opt)
     text:SetFontObject(opt.isHeader and SB.Fonts.Highlight or SB.Fonts.HighlightSmall)
     local colorKey = opt.isHeader and opt.value or opt.channelKey
@@ -505,27 +480,21 @@ function SB.OutputTargetRowFont(text, opt)
     end
 end
 
---- The Output target a LOCAL click on `soundID` right now would actually
---- use, if `explicitOverride` is nil - priority order:
+--- The Output target a LOCAL click on `soundID` would actually use, if
+--- `explicitOverride` is nil - priority order:
 ---   1. `explicitOverride` (a macro's own "::Target" suffix, or an
----      explicit caller like SendMenu.lua) - unchanged from before.
+---      explicit caller like SendMenu.lua).
 ---   2. The sound's OWN per-sound "Default Output" (Edit Sound window,
----      saved.outputOverride) - distinct from the existing "Macro Output"
----      field, which only ever affects the copied macro text, never a
----      normal click. "ALL" (or unset) counts as "no override" here.
----   3. Main Soundbook redesign: restored as the actual GLOBAL default -
----      SB.db.settings.defaultOutputTarget (the Main window's own
----      single-select "Send to:" control, see UI.lua) - "ALL" means
----      exactly what SB.ComputeOutputTargetOptions' own "All (checked in
----      Settings)" label already promises: SB:BroadcastSound below, fanned
----      out to whichever channels Settings -> Multiplayer's Send matrix
----      currently has enabled. The old right-side broadcast tabs'
----      per-player multi-select ("SUBSET") mechanism has been removed
----      entirely (Phase-1 cleanup) - it had no surviving UI to populate it
----      and nothing ever produced that value as an override or a stored
----      setting. SB.db.ui.outputRail's own SavedVariables data is left
----      untouched regardless (compatibility only - see Database.lua's
----      SanitizeDatabase), it just has no routing consumer any more.
+---      saved.outputOverride) - distinct from the "Macro Output" field,
+---      which only ever affects the copied macro text, never a normal
+---      click. "ALL" (or unset) counts as "no override" here.
+---   3. SB.db.settings.defaultOutputTarget (the Main window's single-
+---      select "Send to:" control, see UI.lua) - "ALL" means
+---      SB:BroadcastSound below, fanned out to whichever channels
+---      Settings -> Multiplayer's Send matrix currently has enabled.
+---      SB.db.ui.outputRail is left untouched in SavedVariables for
+---      compatibility (see Database.lua's SanitizeDatabase) but has no
+---      routing consumer any more.
 ---   4. "ALL" itself as the last-resort fallback (matches
 ---      defaults.settings.defaultOutputTarget - see Core.lua) - never
 ---      "nothing selected".
@@ -544,13 +513,12 @@ end
 
 --- The SB.CHANNEL_COLOR entry matching `soundID`'s OWN per-sound "Default
 --- Output" override, or nil if it doesn't have one set (or it's "ALL") -
---- explicit request: colours its icon border/wash/name text everywhere it
---- appears (UI.lua's grid, including its own favourite slots).
+--- colours its icon border/wash/name text everywhere it appears (UI.lua's
+--- grid, including its own favourite slots).
 --- Target -> SB.CHANNEL_COLOR mapping shared by SB.SoundOutputOverrideColor
---- below (soundID-based, for rendering an already-saved sound) and
---- EditWindow.lua's live dropdown preview (draft-value-based, before the
---- user hits Save) - one place for the "ALL"/"SELF"/"PLAYER:x" special
---- cases so the two can never drift apart.
+--- below (soundID-based, for an already-saved sound) and EditWindow.lua's
+--- live dropdown preview (draft-value-based, before Save) - one place for
+--- the "ALL"/"SELF"/"PLAYER:x" special cases so the two can't drift apart.
 function SB.OutputOverrideColorForTarget(target)
     if not target or target == "ALL" or target == "SELF" or not SB.IsValidOutputTarget(target) then return nil end
     if target:match("^PLAYER:") then return SB.CHANNEL_COLOR.DIRECT end
@@ -563,13 +531,12 @@ function SB.SoundOutputOverrideColor(soundID)
 end
 
 --- Called by SB:TriggerSound (SoundPlayer.lua) after every successful LOCAL
---- play, replacing the old unconditional SB:BroadcastSound call. Reads
---- Settings -> Sound Routing -> "Default Output Channel"
+--- play. Reads Settings -> Sound Routing -> "Default Output Channel"
 --- (SB.db.settings.defaultOutputTarget) to decide where, if anywhere, this
 --- click also gets sent - unless `overrideTarget` is given (a macro's
 --- "::<Target>" suffix, see Macros.lua), which takes precedence for this
---- one call only and never touches the saved setting. Now goes through
---- SB:ResolveOutputTarget above, so a per-sound "Default Output" override
+--- one call only and never touches the saved setting. Goes through
+--- SB:ResolveOutputTarget above so a per-sound "Default Output" override
 --- is honoured too, at the right priority.
 function SB:DispatchDefaultOutput(soundID, overrideTarget)
     if not SB.registry[soundID] then return end
@@ -582,8 +549,8 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
 
     local playerName = type(target) == "string" and target:match("^PLAYER:(.+)$")
     if playerName then
-        -- Same friend exemption as SendMenu.lua's SB:SendSoundToPlayer - a
-        -- direct send to a mutual Friend still goes through even under a
+        -- Same friend exemption as SB:SendSoundToPlayer below - a direct
+        -- send to a mutual Friend still goes through even under a
         -- raid-admin mute; anything else stays blocked.
         if SB:IsSendBlockedByRaid() and not SB:IsFriend(playerName) then return end
         SendToPlayerSilent(soundID, playerName)
@@ -598,10 +565,9 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
         SendToSingleChannelSilent(soundID, "GUILD")
     elseif target == "RAID" or target == "PARTY" then
         -- "RAID" is the merged Raid/Party target (see
-        -- SB.ResolveGroupChannel) - resolved to whichever is actually live
-        -- right now. "PARTY" is only still checked here as a defensive
-        -- fallback for any stray pre-merge saved value that somehow wasn't
-        -- migrated; nothing should save it going forward.
+        -- SB.ResolveGroupChannel), resolved to whichever is actually live.
+        -- "PARTY" is only checked here as a defensive fallback for a stray
+        -- unmigrated saved value; nothing should save it going forward.
         local resolved = SB.ResolveGroupChannel()
         if resolved then SendToSingleChannelSilent(soundID, resolved) end
     elseif target == "FRIENDS" then
@@ -615,18 +581,17 @@ end
 -- channel currently enabled under Settings -> Broadcast), these ignore that
 -- setting entirely - picking a specific target from the menu is a
 -- deliberate override of "broadcast everywhere", not another instance of it.
--- Each one plays the sound locally too (same as a normal click would) and
--- prints an immediate "sent" confirmation - separate from, and ahead of,
--- the existing ACK-based "who actually received/played it" notification
--- (PrintFriendsReceived above), which still arrives afterwards as normal.
+-- Each one plays the sound locally too and prints an immediate "sent"
+-- confirmation, separate from, and ahead of, the ACK-based "who actually
+-- received/played it" notification (PrintFriendsReceived above), which
+-- still arrives afterwards as normal.
 ------------------------------------------------------------------------
 
 local GREEN = "cff55ff88"
 
--- `channelKey` is one of SB.CHANNEL_COLOR's own keys (GUILD/PARTY/RAID/
--- FRIENDS/DIRECT) and colours just `targetLabel` - kept as a separate
--- parameter from targetLabel itself since a direct send's targetLabel is a
--- PLAYER NAME, not a channel word, and would never match SB.GetChannelColor
+-- `channelKey` is one of SB.CHANNEL_COLOR's keys (GUILD/PARTY/RAID/
+-- FRIENDS/DIRECT), kept separate from `targetLabel` since a direct send's
+-- targetLabel is a PLAYER NAME and would never match SB.GetChannelColor
 -- by text.
 local function PrintSent(targetLabel, soundName, channelKey)
     local color = SB.CHANNEL_COLOR[channelKey] or SB.CHANNEL_COLOR.SELF
@@ -636,22 +601,19 @@ local function PrintSent(targetLabel, soundName, channelKey)
 end
 
 -- Plays soundID locally for YOU (same combat/encounter/overlap rules as any
--- other trigger, via the one shared SB:PlaySound) and fires the same
+-- other trigger, via the shared SB:PlaySound) and fires the same
 -- LOCAL_SOUND_PLAYED event a normal click does, so the Mini Soundbook's Now
--- Playing overlay picks it up identically. Deliberately does NOT gate the
--- send itself on this - if the sound is muted locally, this just quietly
--- skips your own playback (same as it always has) while the send below
--- still goes out. A local mute is "I don't want to hear this on MY
--- speakers", not "nobody else should ever get this from me" - the two
--- shouldn't be coupled, and coupling them used to make a SendMenu.lua click
--- on a muted sound silently do nothing at all, sent or not.
+-- Playing overlay picks it up identically. Does NOT gate the send on this -
+-- a local mute just skips your own playback while the send below still
+-- goes out. A local mute means "I don't want to hear this on MY speakers",
+-- not "nobody else should get this from me"; the two are deliberately
+-- decoupled.
 -- `target` (optional) mirrors what SB:TriggerSound's own LOCAL_SOUND_PLAYED
--- fire already passes - explicit bugfix: every caller below used to omit
--- it entirely, so the Mini Soundbook's Announcement Bar had no idea what
--- a SendMenu.lua-driven send actually went to and always fell back to
--- "Self", even for a real Direct/Guild/Friends send. See Announcer.lua's
--- own LOCAL_SOUND_PLAYED handler for how this gets turned into the
--- displayed source label (and, for a Direct send, the recipient's name).
+-- fire passes, so the Mini Soundbook's Announcement Bar can show what a
+-- SendMenu.lua-driven send actually went to instead of falling back to
+-- "Self". See Announcer.lua's own LOCAL_SOUND_PLAYED handler for how this
+-- becomes the displayed source label (and, for a Direct send, the
+-- recipient's name).
 local function PlayLocally(soundID, target)
     local saved = SB:GetSoundSaved(soundID)
     if saved and saved.muted then return end
@@ -668,10 +630,9 @@ end
 function SB:SendSoundToChannel(soundID, channel)
     if not SB.registry[soundID] then return end
     -- "RAID" is the merged Raid/Party target (SendMenu.lua's single
-    -- Raid/Party group row) - resolved here to whichever is actually live
-    -- right now (see SB.ResolveGroupChannel). "PARTY" is only still
-    -- accepted as a defensive fallback, same reasoning as
-    -- SB:DispatchDefaultOutput above.
+    -- Raid/Party group row), resolved here to whichever is actually live
+    -- (see SB.ResolveGroupChannel). "PARTY" is only a defensive fallback,
+    -- same reasoning as SB:DispatchDefaultOutput above.
     if channel == "RAID" or channel == "PARTY" then
         channel = SB.ResolveGroupChannel()
     end
@@ -689,8 +650,8 @@ end
 
 -- Whole-Friends-list send - SendMenu.lua's "Friends" group header row. No
 -- GetGroupCoveredNames suppression here (unlike SB:BroadcastSound) - this
--- is itself the one deliberate send, not one of several simultaneous
--- channels that could double up with each other.
+-- is the one deliberate send, not one of several simultaneous channels
+-- that could double up with each other.
 function SB:SendSoundToAllFriends(soundID)
     if not SB.registry[soundID] then return end
     if SB:IsSendBlockedByRaid() then
@@ -711,8 +672,7 @@ end
 -- generic "Friend" a plain whisper-broadcast gets - see HandlePlayCommand/
 -- OnAddonMessage below.
 -- Friend exemption: a direct 1:1 send to a mutual WoW Friend still goes
--- through even while a raid-admin mute is active - explicit request
--- ("Nur Freunde können sich untereinander schicken"). This is the ONLY
+-- through even while a raid-admin mute is active. This is the ONLY
 -- SendMenu.lua action exempted this way - SB:SendSoundToChannel/
 -- SendSoundToAllFriends (a whole channel, or every friend at once) stay
 -- fully blocked regardless, since those are exactly the group-context
@@ -720,14 +680,11 @@ end
 -- confirmed friends is a different, much narrower thing.
 function SB:SendSoundToPlayer(soundID, name)
     if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
-    -- Ignore blocking (explicit requirement) - checked first, ahead of the
-    -- raid-mute Friend exemption below: absolute, no exceptions. This is
-    -- THE single-target "Direct/specific send" surface the exact required
-    -- wording belongs on; DispatchDefaultOutput's own PLAYER target
-    -- shares the same underlying block via SendToPlayerSilent, but
-    -- stays silent there on purpose (that whole codepath is deliberately
-    -- chat-line-free, see its own header comment) - this deliberate,
-    -- explicitly-confirmed SendMenu.lua action gets the explicit message.
+    -- Ignore blocking - checked first, ahead of the raid-mute Friend
+    -- exemption below: absolute, no exceptions. DispatchDefaultOutput's
+    -- own PLAYER target shares the same underlying block via
+    -- SendToPlayerSilent but stays silent there on purpose; this
+    -- deliberate SendMenu.lua action gets the explicit chat message.
     if SB:IsIgnored(name) then
         SB:Print(string.format("Cannot send to %s: Soundbook communication is blocked by Ignore.", NormalizeName(name) or name))
         return
@@ -742,15 +699,13 @@ function SB:SendSoundToPlayer(soundID, name)
     PrintSent(NormalizeName(name) or name, SB:GetSoundDisplayName(soundID), "DIRECT")
 end
 
--- SendMenu.lua's extra top row (explicit request) - only offered when the
--- player's own Default Output isn't already "ALL" (otherwise a plain click
--- already does exactly this, no menu shortcut needed). A one-off way to
--- send via whatever Settings -> Sound Routing -> Broadcast currently has
--- enabled, without changing that setting or touching any per-sound
--- override - same deliberate "local replay + chat confirmation" shape as
--- every other SendMenu.lua action, unlike the quiet SB:BroadcastSound this
--- wraps (that one's meant to run silently after SB:TriggerSound already did
--- its own local play and confirmation).
+-- SendMenu.lua's extra top row - only offered when the player's own
+-- Default Output isn't already "ALL" (otherwise a plain click already does
+-- exactly this). A one-off way to send via whatever Settings -> Sound
+-- Routing -> Broadcast currently has enabled, without changing that
+-- setting or touching any per-sound override - same "local replay + chat
+-- confirmation" shape as every other SendMenu.lua action, unlike the quiet
+-- SB:BroadcastSound this wraps.
 function SB:SendSoundUsingDefaultBroadcast(soundID)
     if not SB.registry[soundID] then return end
     if SB:IsSendBlockedByRaid() then
@@ -764,10 +719,9 @@ function SB:SendSoundUsingDefaultBroadcast(soundID)
     PrintSent("your enabled channels", SB:GetSoundDisplayName(soundID), nil)
 end
 
--- SendMenu.lua's extra bottom row (explicit request) - always offered,
--- regardless of Default Output/per-sound overrides: play locally only, no
--- network send of any kind. No PrintSent - nothing was actually sent to
--- anyone, so no "Sent to X" confirmation makes sense here.
+-- SendMenu.lua's extra bottom row - always offered, regardless of Default
+-- Output/per-sound overrides: play locally only, no network send. No
+-- PrintSent - nothing was sent, so no "Sent to X" confirmation applies.
 function SB:PlaySoundSelfOnly(soundID)
     if not SB.registry[soundID] then return end
     PlayLocally(soundID, "SELF")
@@ -842,15 +796,13 @@ end
 
 -- Analytics: a real ack (played OR muted - either way, a genuine OTHER
 -- player's Soundbook actually received and processed the message) is the
--- earliest honest proof of "a real sender AND a real recipient" - explicit
--- requirement, this is a multiplayer soundbook and its statistics must
--- only ever reflect real social interactions, never a purely local/self
--- play or a send that had nobody around to receive it (SELF never even
--- reaches recentBroadcasts - see SB:DispatchDefaultOutput - and a send
--- with no one to receive it simply never gets an ack, so it's naturally
--- excluded too). Deliberately independent of the notifyFriendReceipts
--- setting just below - that only controls a CHAT notification, not
--- whether the underlying interaction genuinely happened. Credited exactly
+-- earliest honest proof of "a real sender AND a real recipient" - stats
+-- must only reflect real social interactions, never a purely local/self
+-- play or a send nobody was around to receive (SELF never reaches
+-- recentBroadcasts - see SB:DispatchDefaultOutput - and a send with no
+-- receiver simply never gets an ack). Independent of the
+-- notifyFriendReceipts setting below - that only controls a CHAT
+-- notification, not whether the interaction happened. Credited exactly
 -- once per outgoing broadcast (keyed off recentBroadcasts' own timestamp,
 -- so a later replay of the same sound can be credited again) regardless
 -- of how many people ack it or in which order the first ack arrives.
@@ -882,11 +834,10 @@ local function HandleAck(soundID, code, sender)
 end
 
 -- Same idea as HandleAck, but for a recipient who had the sound MUTED
--- locally instead of actually playing it (see HandlePlayCommand's
--- MUTEACK send) - only ever contributes to the count, never to the
--- "received" name list itself. Still counts for Analytics (see
--- CreditAnalyticsOnce above) - a real other player's client genuinely
--- received it either way, they just chose not to hear it.
+-- locally instead of playing it (see HandlePlayCommand's MUTEACK send) -
+-- only contributes to the count, never the "received" name list. Still
+-- counts for Analytics (CreditAnalyticsOnce above) - a real other
+-- player's client genuinely received it, they just chose not to hear it.
 local function HandleMuteAck(soundID, sender)
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
@@ -903,18 +854,14 @@ local function HandleMuteAck(soundID, sender)
     RestartFlushTimer(soundID, pending)
 end
 
--- Same idea again, but for a recipient who never even reached the
--- mute/play decision at all - they have the whole receive channel this
--- sound arrived on switched off (Settings' Send/Receive table), see the
--- RXOFFACK send in OnAddonMessage's PLAY handling. Explicit request: this
--- is Debug-Mode-only (SB:IsDebug(), a purely local per-client toggle) -
--- checked on OUR (the sender's) own client, since we're the one deciding
--- whether to show it, not the recipient - by default a normal user must
--- see exactly the original behaviour, literally nothing, same as if the
--- sound had never been sent at all. Analytics crediting happens
--- regardless of Debug Mode though (same reasoning as HandleMuteAck above -
--- a real other client genuinely got the message, whether we display that
--- fact locally right now is a separate concern).
+-- Same idea again, but for a recipient who never reached the mute/play
+-- decision at all - they have the whole receive channel this sound
+-- arrived on switched off (Settings' Send/Receive table), see the
+-- RXOFFACK send in OnAddonMessage's PLAY handling. Debug-Mode-only
+-- (SB:IsDebug()) - checked on OUR (the sender's) own client, since we
+-- decide whether to show it: a normal user sees nothing, same as if the
+-- sound was never sent. Analytics crediting happens regardless of Debug
+-- Mode (same reasoning as HandleMuteAck above).
 local function HandleRxOffAck(soundID, sender)
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
@@ -931,16 +878,13 @@ local function HandleRxOffAck(soundID, sender)
     RestartFlushTimer(soundID, pending)
 end
 
--- Ignore blocking (explicit requirement) - a recipient who rejected this
--- broadcast because THEY have US ignored (see HandlePlayCommand/
--- IsPlayableRightNow's own "ignored" branch) replies with IGNOREACK
--- instead of a normal ACK, so we never count them as a successful
--- recipient. Unlike RxOffAck (Debug-Mode-only) this always shows, same
--- visibility as HandleMuteAck - "protocol correctness: only report Ignore
--- when the local client can determine it directly, or the remote client
--- explicitly reports it" is exactly what this is: an explicit wire-level
--- rejection, never inferred from a bare timeout/missing ACK (that stays
--- "unreachable", see HandlePlayCommand's own Ignore check above). Still credited to
+-- Ignore blocking - a recipient who rejected this broadcast because THEY
+-- have US ignored (see HandlePlayCommand's own Ignore check) replies with
+-- IGNOREACK instead of a normal ACK, so we never count them as a
+-- successful recipient. Unlike RxOffAck (Debug-Mode-only) this always
+-- shows, same visibility as HandleMuteAck. Ignore is only ever reported
+-- from an explicit wire-level IGNOREACK, never inferred from a bare
+-- timeout/missing ACK (that stays "unreachable"). Still credited to
 -- Analytics the same way a mute is - a real other client genuinely
 -- received and processed the message, they just aren't allowed to play it.
 local function HandleIgnoreAck(soundID, sender)
@@ -959,19 +903,16 @@ local function HandleIgnoreAck(soundID, sender)
     RestartFlushTimer(soundID, pending)
 end
 
--- Explicit request: if an incoming PLAY references a Legacy/German Memes
--- soundID we don't have locally at all, the most likely explanation is
--- that OUR OWN Soundbook is older than the sender's - a shared/standard
--- sound they already have that we haven't updated to yet (as opposed to
--- one of their own private Category 1/2 or Stammtisch sounds, which is
--- normal and not a version problem - checked here by parsing the category
--- straight out of the soundID string, which works even for an id we don't
--- recognize at all, no registry lookup needed). Hints the RECEIVING
--- player their addon may be out of date, at most once every 24h
--- (SB.db.lastOutdatedHintAt, time() epoch - survives /reload and a full
--- restart the same way every other persisted timestamp in this addon
--- does) so a burst of the same broadcast, or several different senders in
--- a row, can't spam chat with it.
+-- If an incoming PLAY references a Legacy/German Memes soundID we don't
+-- have locally, the likely explanation is that OUR OWN Soundbook is older
+-- than the sender's - a shared/standard sound they already have that we
+-- haven't updated to (as opposed to one of their own private sounds,
+-- which is normal, not a version problem). Checked by parsing the
+-- category straight out of the soundID string, so it works even for an
+-- id we don't recognize at all, no registry lookup needed. Hints the
+-- RECEIVING player their addon may be out of date, at most once every 24h
+-- (SB.db.lastOutdatedHintAt, a persisted time() epoch) so a burst of the
+-- same broadcast, or several senders in a row, can't spam chat with it.
 local OUTDATED_HINT_COOLDOWN = 24 * 60 * 60
 local function MaybeShowOutdatedHint(soundID)
     local category = SB.ParseSoundID(soundID)
@@ -985,19 +926,15 @@ local function MaybeShowOutdatedHint(soundID)
 end
 
 local function HandlePlayCommand(soundID, sender, channel, isDirect)
-    -- The per-(sender,soundID) repeat-cooldown check+stamp used to live
-    -- HERE, at actual play time - moved to HandleIncomingPlay, which now
-    -- claims the cooldown slot the moment a sound is ACCEPTED (queued or
-    -- played immediately), not only once it's actually played. Every path
-    -- that reaches this function already went through that check, so
-    -- nothing further to do here - see HandleIncomingPlay's own comment for
-    -- the burst-duplicate bug this fixes.
+    -- The per-(sender,soundID) repeat-cooldown is enforced in
+    -- HandleIncomingPlay, which claims the cooldown slot the moment a
+    -- sound is ACCEPTED (queued or played), not only once actually
+    -- played. Every path reaching this function already passed that check.
     if not SB.registry[soundID] then
-        -- Largely unreachable in practice - HandleIncomingPlay's own
-        -- IsPlayableRightNow already rejects an unknown soundID earlier,
-        -- before this function is ever called (see NotifyIfMuted for
-        -- where the actual "unknown" handling - MaybeShowOutdatedHint
-        -- included - now lives). Kept as a defensive fallback only.
+        -- Largely unreachable - HandleIncomingPlay's own IsPlayableRightNow
+        -- already rejects an unknown soundID before this function is ever
+        -- called (see NotifyIfMuted for where "unknown" handling, including
+        -- MaybeShowOutdatedHint, lives). Kept as a defensive fallback only.
         SB:Debug("Missing sound: %s\nSender: %s", soundID, sender)
         return
     end
@@ -1007,26 +944,23 @@ local function HandlePlayCommand(soundID, sender, channel, isDirect)
     -- broadcast-to-all-friends send does - see SB:SendSoundToPlayer above.
     local channelLabel = isDirect and "Direct" or (CHANNEL_LABEL[channel] or channel)
 
-    -- Ignore blocking (explicit requirement) - checked FIRST, before even
-    -- the raid-admin mute's own Friend exemption: "if either player has
-    -- the other ignored, Soundbook communication must not succeed" is
-    -- absolute, no exceptions. Our OWN outbound sends already skip anyone
-    -- WE have ignored before the message is even sent (see SendToFriends/
-    -- SendToPlayerSilent/SB:SendSoundToPlayer) - this is the other half of
-    -- the same rule, for a channel-wide Guild/Raid broadcast (which can't
-    -- be filtered per-recipient at send time) or the case where THEY
-    -- haven't ignored anyone but WE have ignored THEM. Rejected before
-    -- playback, never recorded to History (both only ever happen further
-    -- below, past this return), and an explicit IGNOREACK reply lets the
-    -- sender's aggregate ("Guild received: N (1 blocked by Ignore)")
-    -- reflect it - never a normal, success-implying ACK. If instead THEY
-    -- have ignored US, WoW's own server-level whisper suppression means
-    -- this handler is simply never reached at all for a WHISPER-based
-    -- send (Friends/Direct) - that looks like, and is deliberately left
-    -- as, ordinary unreachable/no-ACK rather than guessed at. A Guild/
-    -- Raid channel message, however, is NOT suppressed by ignore at the
-    -- game level, so it still reaches us and this same check catches
-    -- that direction too.
+    -- Ignore blocking - checked FIRST, before even the raid-admin mute's
+    -- own Friend exemption: if either player has the other ignored,
+    -- Soundbook communication must not succeed, no exceptions. Our OWN
+    -- outbound sends already skip anyone WE have ignored before the
+    -- message is sent (see SendToFriends/SendToPlayerSilent/
+    -- SB:SendSoundToPlayer) - this is the other half, for a channel-wide
+    -- Guild/Raid broadcast (which can't be filtered per-recipient at send
+    -- time) or the case where WE have ignored THEM. Rejected before
+    -- playback, never recorded to History, and an explicit IGNOREACK
+    -- reply lets the sender's aggregate ("Guild received: N (1 blocked by
+    -- Ignore)") reflect it, never a normal success-implying ACK. If
+    -- instead THEY have ignored US, WoW's own server-level whisper
+    -- suppression means this handler is never reached at all for a
+    -- WHISPER-based send (Friends/Direct) - that looks like, and is left
+    -- as, ordinary unreachable/no-ACK rather than guessed at. A Guild/Raid
+    -- channel message is NOT suppressed by ignore at the game level, so it
+    -- still reaches us and this same check catches that direction too.
     if SB:IsIgnored(sender) then
         SB:Debug("Remote sound %s from %s ignored (Ignore list).", soundID, sender)
         SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "IGNOREACK" .. SEP .. soundID, "WHISPER", sender)
@@ -1034,25 +968,23 @@ local function HandlePlayCommand(soundID, sender, channel, isDirect)
     end
 
     -- Raid-admin "mute all" (see the Raid Admin section below) blocks
-    -- receiving too, not just sending - deliberately silent here (no
-    -- PrintMuted), same treatment as any other blocked-and-not-shown case:
-    -- the muted player already got their own explicit chat line the moment
-    -- the mute was applied (ApplyRaidOverride), so repeating it on every
-    -- single blocked sound the whole raid would be spammy. Mirrors
-    -- SB:SendSoundToPlayer's own friend exemption: a DIRECT send from a
-    -- mutual Friend still gets through, since that's a private 1:1 action,
-    -- not the group-context spam Mute All targets.
+    -- receiving too, not just sending - silent here (no PrintMuted): the
+    -- muted player already got their own chat line the moment the mute
+    -- was applied (ApplyRaidOverride), so repeating it on every blocked
+    -- sound would be spammy. Mirrors SB:SendSoundToPlayer's own friend
+    -- exemption: a DIRECT send from a mutual Friend still gets through,
+    -- since that's a private 1:1 action, not the group-context spam Mute
+    -- All targets.
     if SB:IsReceiveBlockedByRaid() and not (isDirect and SB:IsFriend(sender)) then
         SB:Debug("Remote sound %s from %s ignored (raid-admin mute all).", soundID, sender)
         return
     end
 
     -- Individual Mute (Mini Soundbook mute button's right-click dropdown) -
-    -- blocks EVERY sound from this one specific person, no exemption (this
-    -- is a deliberate per-PERSON block the player picked, unlike the
-    -- group-context raid mute above which exempts a direct Friend send).
-    -- Same MUTEACK reply as the per-sound mute below, so the sender's
-    -- aggregated "(N muted)" chat line includes this too.
+    -- blocks EVERY sound from this one specific person, no exemption (a
+    -- deliberate per-PERSON block, unlike the group-context raid mute
+    -- above which exempts a direct Friend send). Same MUTEACK reply as
+    -- the per-sound mute below, so the sender's "(N muted)" line includes it.
     if SB:IsPlayerMuted(sender) then
         SB:Debug("Remote sound %s from %s ignored (individually muted).", soundID, sender)
         if SB.db.settings.notifyMutedAttempts then
@@ -1068,11 +1000,10 @@ local function HandlePlayCommand(soundID, sender, channel, isDirect)
         if SB.db.settings.notifyMutedAttempts then
             PrintMuted(NormalizeName(sender) or sender, channelLabel, SB:GetSoundDisplayName(soundID))
         end
-        -- Explicit request: the SENDER should be able to see how many
-        -- recipients had this sound muted, not just who actually played
-        -- it - a small "MUTEACK" reply, same idea as the regular ACK just
-        -- below for a successful play. Always sent regardless of THIS
-        -- player's own notify settings (same reasoning as the plain ACK) -
+        -- The SENDER can see how many recipients had this sound muted, not
+        -- just who played it - a small "MUTEACK" reply, same idea as the
+        -- regular ACK below for a successful play. Always sent regardless
+        -- of THIS player's own notify settings (same as the plain ACK) -
         -- see HandleMuteAck for how the sender aggregates/displays it.
         SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "MUTEACK" .. SEP .. soundID, "WHISPER", sender)
         return
@@ -1085,10 +1016,9 @@ local function HandlePlayCommand(soundID, sender, channel, isDirect)
         -- own notifyFriendReceipts setting - that setting only controls
         -- whether they see the aggregated list for sounds THEY sent (see
         -- HandleAck below). Requiring every recipient to opt in just to
-        -- reply made the sender-side feature basically never fire; a
-        -- one-line "someone got it" reply isn't sensitive enough to
-        -- justify that friction. The channel WE received it over rides
-        -- along so the sender can show "Guild received: ..." etc.
+        -- reply would make the sender-side feature basically never fire.
+        -- The channel WE received it over rides along so the sender can
+        -- show "Guild received: ..." etc.
         local ackCode = isDirect and "D" or (CHANNEL_CODE[channel] or "?")
         SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ACK" .. SEP .. soundID .. SEP .. ackCode, "WHISPER", sender)
     end
@@ -1096,13 +1026,11 @@ end
 
 ------------------------------------------------------------------------
 -- Forward-compatible payload parsing - a basic PLAY (and ACK) must keep
--- working across Soundbook versions even as optional fields get added over
--- time. Both take a "first segment is the important part, everything after
--- is an optional flag we may or may not recognize" approach rather than an
--- anchored end-of-string pattern: an unrecognized trailing segment from a
--- newer client is simply ignored instead of breaking the whole parse (which
--- an end-anchored pattern like the ACK one used to do here - a single
--- unexpected extra field would have silently dropped the entire message).
+-- working across Soundbook versions even as optional fields get added
+-- over time. Both take a "first segment is the important part, everything
+-- after is an optional flag we may or may not recognize" approach rather
+-- than an anchored end-of-string pattern, so an unrecognized trailing
+-- segment from a newer client is ignored instead of breaking the parse.
 ------------------------------------------------------------------------
 
 --- PLAY payload: "soundID" or "soundID|D" (or "soundID|D|<future flag>",
@@ -1127,8 +1055,7 @@ end
 --- ACK payload: "soundID|code" - code is the single-letter channel (see
 --- CHANNEL_CODE/CODE_NAME above). A missing/malformed code defaults to "?"
 --- (an unknown-channel entry is still useful in the aggregated "received
---- via" list) rather than the whole ACK being dropped - "fehlende optionale
---- Felder mit Defaults behandeln".
+--- via" list) rather than dropping the whole ACK.
 -- @return string|nil soundID (nil if the payload is empty/unparseable), string code
 local function ParseAckPayload(payload)
     local soundID, code = payload:match("^([^|]*)|?([^|]*)")
@@ -1151,9 +1078,8 @@ end
 --     person, plus a max-per-time-window on top of that (stops one chatty
 --     sender from flooding).
 --   - GLOBAL: the same two kinds of limit again, but counted across EVERY
---     sender combined - explicit request: many raid members each
---     individually within their own per-sender limit could still flood the
---     raid together without this.
+--     sender combined - many raid members each individually within their
+--     own per-sender limit could still flood the raid together otherwise.
 -- QUEUE ON: a sound that doesn't currently fit within these limits waits in
 --   a small FIFO queue (capped size, oldest first) instead of being lost -
 --   an over-capacity queue discards the newest arrival, never grows
@@ -1233,10 +1159,9 @@ local MODE_CHANNELS = {
 }
 
 --- Purges any pending-queue entries that arrived over a channel matching
---- `mode` ("FRIENDS"/"GUILD"/"RAID"/"PARTY"/"DIRECT") - explicit
---- requirement: disabling a receive channel (Settings' Send/Receive table)
---- must reliably drop whatever's already waiting from that channel too,
---- not just block new arrivals from it going forward.
+--- `mode` ("FRIENDS"/"GUILD"/"RAID"/"PARTY"/"DIRECT") - disabling a receive
+--- channel (Settings' Send/Receive table) must reliably drop whatever's
+--- already waiting from that channel too, not just block new arrivals.
 function SB:ClearPendingQueueForMode(mode)
     local before = #pendingQueue
     if mode == "DIRECT" then
@@ -1263,10 +1188,9 @@ function SB:ClearPendingQueueForMode(mode)
 end
 
 --- Read-only peek at whether `soundID` from `sender` is still within the
---- existing per-(sender,sound) repeat cooldown (the SAME lastReceivedFrom
---- table HandlePlayCommand itself checks/updates at actual play time) -
---- checked BEFORE queueing so an obvious repeat never wastes a queue slot,
---- rather than only being caught later when it's finally dequeued.
+--- existing per-(sender,sound) repeat cooldown (the same lastReceivedFrom
+--- table HandlePlayCommand checks/updates at actual play time) - checked
+--- BEFORE queueing so an obvious repeat never wastes a queue slot.
 local function IsRecentDuplicate(sender, soundID)
     local key = (IdentityKey(sender) or "?") .. "|" .. soundID
     local last = lastReceivedFrom[key]
@@ -1276,11 +1200,9 @@ local function IsRecentDuplicate(sender, soundID)
 end
 
 -- `list` is oldest-first (entries are always appended, so index 1 is
--- always the oldest) - prune from the FRONT and stop the moment the oldest
--- remaining entry is within the window, since everything after it is even
--- newer. (An earlier version of this walked from the back and broke on the
--- first non-expired entry it saw - which, walking backward, is always the
--- newest one, so it never actually removed anything.)
+-- always the oldest) - must prune from the FRONT and stop at the first
+-- remaining entry still within the window; pruning from the back would
+-- hit the newest entry first and never remove anything.
 local function PruneOld(list, now, window)
     while list[1] and now - list[1] > window do
         table.remove(list, 1)
@@ -1329,27 +1251,22 @@ local function RecordAccepted(sender, now)
 end
 
 --- Whether `soundID` would actually be playable right now if accepted -
---- explicit requirement: checked BEFORE it's ever allowed to consume a
---- queue slot or a rate-limit accept credit, not just discovered after the
---- fact once it's finally dequeued. Deliberately mirrors (does not
---- replace) HandlePlayCommand's OWN checks - that function still re-checks
---- all of this again right before actually playing as a redundant safety
---- net, since a queued entry can go from valid to invalid while it waits
---- (e.g. muted moments after arriving) - this is purely the "don't even
---- let an unplayable one take a slot in the first place" half.
+--- checked BEFORE it's allowed to consume a queue slot or a rate-limit
+--- accept credit. Deliberately mirrors (does not replace)
+--- HandlePlayCommand's OWN checks - that function still re-checks all of
+--- this right before actually playing, since a queued entry can go from
+--- valid to invalid while it waits (e.g. muted moments after arriving) -
+--- this is purely the "don't let an unplayable one take a slot" half.
 --- @return boolean playable, string|nil reason ("unknown"/"raid_blocked"/
 ---   "muted" when not playable - callers use this to decide whether a
 ---   rejection notification is warranted, see NotifyIfMuted below)
 local function IsPlayableRightNow(soundID, sender, isDirect)
     if not SB.registry[soundID] then return false, "unknown" end
-    -- Ignore blocking (explicit requirement) - checked before EVERYTHING
-    -- else, including the raid-mute-all Friend exemption below: "if either
-    -- player has the other ignored, Soundbook communication must not
-    -- succeed" is absolute. Also checked here (not just HandlePlayCommand's
-    -- own redundant copy) so a message from someone we've ignored never
-    -- burns a queue slot or a rate-limit accept credit in the first place -
-    -- same reasoning this function's own header comment already gives for
-    -- "unknown"/"raid_blocked"/"muted".
+    -- Ignore blocking - checked before EVERYTHING else, including the
+    -- raid-mute-all Friend exemption below: absolute, no exceptions. Also
+    -- checked here (not just HandlePlayCommand's redundant copy) so a
+    -- message from someone we've ignored never burns a queue slot or a
+    -- rate-limit accept credit in the first place.
     if SB:IsIgnored(sender) then return false, "ignored" end
     if SB:IsReceiveBlockedByRaid() and not (isDirect and SB:IsFriend(sender)) then return false, "raid_blocked" end
     -- Individual Mute (Mini Soundbook mute button's right-click dropdown) -
@@ -1363,16 +1280,13 @@ end
 
 --- Both call sites that reject via IsPlayableRightNow before ever reaching
 --- HandlePlayCommand (HandleIncomingPlay and ProcessQueue's own
---- re-validation) call this, so whatever local reaction a rejection
---- reason deserves fires from wherever the rejection actually happens now
---- - the name predates the "unknown" branch below, kept since renaming it
---- everywhere isn't worth the diff.
--- Explicit request: also covers "player_muted" now (the Individual Mute
--- dropdown), not just the original per-sound "muted" - either way, the
--- SENDER gets a MUTEACK reply so their own aggregated "(N muted)" chat
--- line (see HandleMuteAck) includes it, regardless of THIS player's own
--- notifyMutedAttempts setting (that setting only controls the LOCAL
--- "someone tried to send you a muted sound" line below).
+--- re-validation) call this, so the right local reaction fires from
+--- wherever the rejection actually happens.
+-- Covers both "muted" (per-sound) and "player_muted" (Individual Mute
+-- dropdown) - either way, the SENDER gets a MUTEACK reply so their
+-- aggregated "(N muted)" line (see HandleMuteAck) includes it, regardless
+-- of THIS player's own notifyMutedAttempts setting (that setting only
+-- controls the LOCAL "someone tried to send you a muted sound" line below).
 local function NotifyIfMuted(reason, soundID, sender, channel, isDirect)
     if reason == "unknown" then
         -- This is the ACTUAL rejection point for a soundID we don't have
@@ -1386,9 +1300,9 @@ local function NotifyIfMuted(reason, soundID, sender, channel, isDirect)
         -- Fully silent locally (like "raid_blocked" below) - the whole
         -- point of Ignore is that nothing about this person surfaces here
         -- at all, no notifyMutedAttempts-style opt-in. The SENDER still
-        -- needs to know, though (explicit requirement - their aggregate
-        -- must show "(N blocked by Ignore)", never a normal success ACK),
-        -- so an IGNOREACK reply is unconditional, same as MUTEACK below.
+        -- needs to know, though - their aggregate must show "(N blocked by
+        -- Ignore)", never a normal success ACK - so an IGNOREACK reply is
+        -- unconditional, same as MUTEACK below.
         SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "IGNOREACK" .. SEP .. soundID, "WHISPER", sender)
         return
     end
@@ -1401,16 +1315,15 @@ local function NotifyIfMuted(reason, soundID, sender, channel, isDirect)
 end
 
 --- Scans the WHOLE queue (not just its head) for the first entry whose
---- sender currently passes the rate limits, and plays that one - explicit
---- fairness requirement: a strictly FIFO-head-only check meant one heavy
---- sender's own item stuck at the front could block every OTHER sender's
---- already-eligible sound behind it indefinitely. FIFO order is still
---- preserved AMONG eligible entries (the earliest-queued eligible one
---- always wins), just no longer a hard blocker for entries that aren't
---- eligible yet. If nothing in the queue is eligible right now, reschedules
---- itself via a ONE-SHOT C_Timer for whichever blocked entry frees up
---- soonest - never a repeating/polling timer, and nothing is scheduled at
---- all while the queue is empty.
+--- sender currently passes the rate limits, and plays that one - a
+--- strictly FIFO-head-only check would let one heavy sender's own item
+--- stuck at the front block every OTHER sender's already-eligible sound
+--- behind it. FIFO order is still preserved AMONG eligible entries (the
+--- earliest-queued eligible one always wins), just no longer a hard
+--- blocker for entries that aren't eligible yet. If nothing is eligible,
+--- reschedules itself via a ONE-SHOT C_Timer for whichever blocked entry
+--- frees up soonest - never a repeating/polling timer, and nothing is
+--- scheduled while the queue is empty.
 local function ProcessQueue()
     queueTimer = nil
     if #pendingQueue == 0 then return end
@@ -1419,12 +1332,11 @@ local function ProcessQueue()
     local earliestWait
 
     for i, entry in ipairs(pendingQueue) do
-        -- Re-validate right before actually playing (explicit requirement)
-        -- - something that was fine when queued (e.g. not yet muted, not
-        -- yet raid-blocked) may no longer be by the time its turn comes up.
-        -- A now-stale entry is dropped outright, no rate-limit slot spent
-        -- on it at all, then the scan continues at the same index (nothing
-        -- shifted forward yet).
+        -- Re-validate right before actually playing - something that was
+        -- fine when queued (e.g. not yet muted, not yet raid-blocked) may
+        -- no longer be by the time its turn comes up. A now-stale entry is
+        -- dropped outright, no rate-limit slot spent, then the scan
+        -- continues at the same index (nothing shifted forward yet).
         local playable, reason = IsPlayableRightNow(entry.soundID, entry.sender, entry.isDirect)
         if not playable then
             table.remove(pendingQueue, i)
@@ -1464,7 +1376,7 @@ end
 --- Single entry point for an incoming PLAY once the channel filter has
 --- already passed (see OnAddonMessage) - decides queue vs. immediate-play
 --- vs. discard based on Settings -> "Sound Queue / Spooler" and the rate
---- limits above. Replaces the old direct HandlePlayCommand call.
+--- limits above.
 -- Rate-limit bookkeeping (senderAcceptLog) is keyed by NORMALIZED name,
 -- consistent with lastReceivedFrom/every other identity comparison in this
 -- file - kept separate from the RAW `sender` string still passed through to
@@ -1489,9 +1401,9 @@ local function HandleIncomingPlay(soundID, sender, channel, isDirect)
     end
 
     -- Unplayable outright (unknown sound / raid-blocked / muted locally) -
-    -- explicit requirement: rejected before ever touching the queue or a
-    -- rate-limit slot, and the repeat-cooldown below is deliberately NOT
-    -- stamped for this either - see its own comment further down.
+    -- rejected before ever touching the queue or a rate-limit slot, and
+    -- the repeat-cooldown below is deliberately NOT stamped for this
+    -- either - see its own comment further down.
     local playable, reason = IsPlayableRightNow(soundID, sender, isDirect)
     if not playable then
         SB:Debug("Remote sound %s from %s not playable right now, never queued.", soundID, sender)
@@ -1499,10 +1411,9 @@ local function HandleIncomingPlay(soundID, sender, channel, isDirect)
         return
     end
 
-    -- Explicit requirement: a duplicate of a sound ALREADY waiting in the
-    -- queue is coalesced (collapsed) rather than adding a second copy that
-    -- would just play the same thing twice in a row once the queue gets to
-    -- both of them.
+    -- A duplicate of a sound ALREADY waiting in the queue is coalesced
+    -- (collapsed) rather than adding a second copy that would just play
+    -- the same thing twice in a row once the queue gets to both of them.
     for _, queued in ipairs(pendingQueue) do
         local sameSender = IdentityKey(queued.sender) == IdentityKey(sender)
         if queued.soundID == soundID and sameSender then
@@ -1522,11 +1433,10 @@ local function HandleIncomingPlay(soundID, sender, channel, isDirect)
     -- The repeat-cooldown (lastReceivedFrom) and the rate-limit accept
     -- credit (RecordAccepted) are BOTH only ever claimed at the moment of
     -- genuine acceptance (immediate play, or a successful queue insertion
-    -- below) - explicit requirement: a sound rejected for being over the
-    -- rate limit (queue off) or for the queue being full must not burn
-    -- either, or a legitimate retry moments later would incorrectly look
-    -- like a duplicate/still-limited even though nothing of this sound
-    -- ever actually got through the first time.
+    -- below) - a sound rejected for being over the rate limit (queue off)
+    -- or for the queue being full must not burn either, or a legitimate
+    -- retry moments later would incorrectly look like a duplicate/still-
+    -- limited even though nothing of this sound got through the first time.
     local function MarkAccepted(now)
         lastReceivedFrom[duplicateKey] = now
         recentSource[duplicateKey] = {
@@ -1583,13 +1493,13 @@ end
 -- checks before acting.
 --
 -- SB.raidOverride is DELIBERATELY plain in-memory Lua state, never written
--- to SavedVariables (SB.db) - explicit request: this must never survive
--- past the raid it was set for, and must always fall back to the player's
--- own normal settings on disconnect or any other technical hiccup. Since
--- it's never persisted, a disconnect/reload already guarantees that for
--- free (a fresh Lua state has no override at all) - the leave-group handler
--- further below only needs to cover the "still connected, but left/got
--- removed from the group" case, which a fresh state wouldn't catch.
+-- to SavedVariables (SB.db) - it must never survive past the raid it was
+-- set for, and must always fall back to the player's own normal settings
+-- on disconnect or any other technical hiccup. Since it's never persisted,
+-- a disconnect/reload already guarantees that for free (a fresh Lua state
+-- has no override) - the leave-group handler further below only needs to
+-- cover the "still connected, but left/got removed from the group" case,
+-- which a fresh state wouldn't catch.
 ------------------------------------------------------------------------
 
 -- Whether *I* currently hold a qualifying role - gates whether AdminPanel.lua
@@ -1597,12 +1507,10 @@ end
 -- (see HandleAdminMuteAll below).
 function SB:IsRaidAdmin()
     if IsInRaid() then
-        -- IsRaidLeader()/IsRaidOfficer() (old, no-argument globals) crashed
-        -- here with "attempt to call a nil value" - confirmed live: one of
-        -- them no longer exists on this client build. UnitIsGroupLeader/
-        -- UnitIsGroupAssistant (unit-based) are the same stable API already
-        -- used for the party case right below, and work identically for a
-        -- raid unit.
+        -- IsRaidLeader()/IsRaidOfficer() (old, no-argument globals) are not
+        -- reliably available on current client builds. UnitIsGroupLeader/
+        -- UnitIsGroupAssistant (unit-based) are the stable API, already
+        -- used for the party case below, and work identically for a raid unit.
         return (UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")) and true or false
     elseif IsInGroup() then
         return UnitIsGroupLeader("player") and true or false
@@ -1612,10 +1520,9 @@ end
 
 -- Whether *I* am specifically the CURRENT leader (not just an assistant) -
 -- gates the client-side Mute All/Unmute All send (SB:SendAdminMuteAll/
--- SendAdminUnmuteAll below), same explicit "leader only" requirement the
--- receiving side (IsSenderCurrentLeader) already enforces - so an
--- assistant's click never even goes out looking like it might have
--- worked, only to be silently rejected by every receiver.
+-- SendAdminUnmuteAll below), same "leader only" rule the receiving side
+-- (IsSenderCurrentLeader) enforces, so an assistant's click never goes out
+-- looking like it worked only to be silently rejected by every receiver.
 function SB:IsCurrentGroupLeader()
     if IsInRaid() then
         return UnitIsGroupLeader("player") and true or false
@@ -1657,11 +1564,11 @@ end
 
 -- Stricter than IsSenderAuthorizedAdmin above - the CURRENT leader
 -- specifically (raid rank 2, or the party leader; an assistant does NOT
--- qualify) - explicit requirement: only the current leader may trigger
--- Mute All/Unmute All, and only the current leader (or the original source
--- of a restriction, see CanSenderModifyOverride below) may override or
--- lift another admin's already-active restriction. Same roster-based
--- spoof-resistance as IsSenderAuthorizedAdmin.
+-- qualify). Only the current leader may trigger Mute All/Unmute All, and
+-- only the current leader (or the original source of a restriction, see
+-- CanSenderModifyOverride below) may override or lift another admin's
+-- already-active restriction. Same roster-based spoof-resistance as
+-- IsSenderAuthorizedAdmin.
 local function IsSenderCurrentLeader(sender)
     local senderKey = IdentityKey(sender)
     if not senderKey then return false end
@@ -1687,11 +1594,10 @@ local function IsSenderCurrentLeader(sender)
 end
 
 --- Whether `sender` is allowed to apply a NEW restriction or lift the
---- CURRENT one right now - explicit requirement: another already-active
---- admin's restriction must not be overridden/lifted by a lower-privilege
---- admin, only by the SAME source re-issuing/lifting their own, or by the
---- current leader (who can always override/lift anyone's). No active
---- override at all -> always allowed, nothing to conflict with.
+--- CURRENT one right now - another already-active admin's restriction
+--- must not be overridden/lifted by a lower-privilege admin, only by the
+--- SAME source re-issuing/lifting their own, or by the current leader (who
+--- can always override/lift anyone's). No active override -> always allowed.
 local function CanSenderModifyOverride(sender)
     if not SB.raidOverride then return true end
     local senderKey = IdentityKey(sender)
@@ -1709,13 +1615,11 @@ end
 
 -- "R" (raid end, cleared only by leaving the group) has no timer at all.
 -- "F" (Next Fight) and "B" (Next Boss) are event-cleared, not timed - two
--- DIFFERENT events, explicit request/distinction:
+-- distinct events:
 --   F - the next PLAYER_REGEN_ENABLED (leaving combat) - ANY fight, trash
---       included. "Kann ein wichtiger Kampf sein auch wenn es kein
---       Encounter ist" - a nasty trash pull matters too, not just bosses.
+--       included; a nasty trash pull matters too, not just bosses.
 --   B - the next real ENCOUNTER_END specifically - a WoW client event that
---       only fires for a TRACKED BOSS encounter, never trash. This is what
---       "Next Fight" used to mean before this split.
+--       only fires for a TRACKED BOSS encounter, never trash.
 -- Both are per-player-client local (each player waits for THEIR OWN next
 -- combat-end/encounter-end, not a raid-wide synchronized signal), and both
 -- also get this safety-net duration as a backstop: a player who never
@@ -1792,12 +1696,10 @@ local function ApplyRaidOverride(kind, durationCode, source)
         durationCode = durationCode,
         -- Absolute GetTime() this expires at - set for 30/60 min AND, as a
         -- safety-net backstop only, for F/B too (see DurationSecondsFor's
-        -- own comment) - "R" alone stays nil (no timer at all). UI code
-        -- showing a LIVE COUNTDOWN from this (Settings.lua's compact
-        -- receive-mute info, AdminPanel.lua) deliberately still only
-        -- does so for 30/60 - F/B
-        -- having a non-nil expiresAt here is for the backstop TIMER to
-        -- fire, not meant to imply a countdown-worthy fixed duration.
+        -- own comment); "R" alone stays nil (no timer). UI code showing a
+        -- LIVE COUNTDOWN from this (Settings.lua, AdminPanel.lua)
+        -- deliberately only does so for 30/60 - a non-nil expiresAt for
+        -- F/B is only for the backstop TIMER to fire, not a countdown.
         expiresAt = seconds and (GetTime() + seconds) or nil,
     }
 
@@ -1820,27 +1722,25 @@ local function AdminBroadcastChannel()
 end
 
 ------------------------------------------------------------------------
--- Admin state sync (explicit requirement, this iteration) - lets every
--- CURRENT Raid Admin (Lead/Assist/Party Lead) see the same raid
--- moderation state without reopening their panel, and without any
--- permanent polling. The TARGET's own client (SB.raidOverride) is the
--- one source of truth - it self-reports every change (ADMINSTATE) to the
--- raid/party at large, and answers a fresh snapshot request
--- (ADMINSTATEQUERY) whenever an admin's panel needs to reconstruct
--- ground truth (opening it, gaining Lead/Assist, /reload, or joining an
--- already-running raid). An admin ALSO relays their own just-issued
--- command as a lightweight "pending" notice (ADMINPENDING) so other
--- admins can show the same pending -> confirmed transition, not just the
--- one who clicked. All of this is session-only, exactly like
+-- Admin state sync - lets every CURRENT Raid Admin (Lead/Assist/Party
+-- Lead) see the same raid moderation state without reopening their panel,
+-- and without any permanent polling. The TARGET's own client
+-- (SB.raidOverride) is the one source of truth - it self-reports every
+-- change (ADMINSTATE) to the raid/party at large, and answers a fresh
+-- snapshot request (ADMINSTATEQUERY) whenever an admin's panel needs to
+-- reconstruct ground truth (opening it, gaining Lead/Assist, /reload, or
+-- joining an already-running raid). An admin ALSO relays their own
+-- just-issued command as a lightweight "pending" notice (ADMINPENDING) so
+-- other admins can show the same pending -> confirmed transition, not
+-- just the one who clicked. All of this is session-only, exactly like
 -- SB.raidOverride itself - nothing here ever touches SavedVariables.
 ------------------------------------------------------------------------
 
--- Explicit requirement ("avoid permanent polling... respect existing
--- transport/rate-limit constraints"): several admins opening their panels
--- within a few seconds of each other must not each independently provoke
--- a fresh broadcast from every single raid member. Only guards QUERY-
--- triggered replies - a genuine state CHANGE (see the RAID_OVERRIDE_CHANGED
--- listener below) always announces immediately regardless.
+-- Several admins opening their panels within a few seconds of each other
+-- must not each independently provoke a fresh broadcast from every single
+-- raid member. Only guards QUERY-triggered replies - a genuine state
+-- CHANGE (see the RAID_OVERRIDE_CHANGED listener below) always announces
+-- immediately regardless.
 local ADMIN_STATE_REPLY_DEBOUNCE = 4
 local lastStateAnnounceAt = 0
 
@@ -1919,9 +1819,9 @@ function SB:SendAdminStateQuery()
 end
 
 --- Relays "I just sent an admin command" to the other current admins, so
---- THEIR panels can also show pending (not just the one who clicked) -
---- explicit requirement. `kind` is "mute"/"unmute"/"muteall"/"unmuteall";
---- `targetName` is "*" for the *all variants (everyone but the admins).
+--- THEIR panels can also show pending (not just the one who clicked).
+--- `kind` is "mute"/"unmute"/"muteall"/"unmuteall"; `targetName` is "*"
+--- for the *all variants (everyone but the admins).
 function SB:SendAdminPending(targetName, kind, durationCode)
     if not SB:IsRaidAdmin() then return end
     local channel = AdminBroadcastChannel()
@@ -1953,9 +1853,9 @@ end
 SB:On("RAID_OVERRIDE_CHANGED", function() AnnounceMyRaidAdminState(true) end)
 
 -- Sends a small confirmation reply for an admin command actually applied
--- on THIS client - explicit requirement: the sender must only ever show a
--- command as successful once the target's own client confirms it, never
--- just optimistically on send. `kind` matches what AdminPanel.lua expects
+-- on THIS client - the sender must only show a command as successful once
+-- the target's own client confirms it, never just optimistically on send.
+-- `kind` matches what AdminPanel.lua expects
 -- back (MUTE/UNMUTE/MUTEALL/UNMUTEALL/EXEMPT - EXEMPT covers the "you're a
 -- leader, Mute All doesn't apply to you" case, still a real, confirmable
 -- outcome, just not a restriction).
@@ -1969,13 +1869,11 @@ local function HandleAdminMute(payload, sender)
         SB:Debug("Ignoring ADMINMUTE from %s - not a raid/party leader or assist.", sender)
         return
     end
-    -- Explicit requirement: Raid Lead/Assist/Party Lead must never become
-    -- restricted, through Mute All OR an individually-targeted mute - this
-    -- used to only be checked in HandleAdminMuteAll below, leaving a real
-    -- gap where one admin could individually ADMINMUTE another admin
-    -- (or even themselves being muted by a fellow assistant). Same
-    -- notification shape as Mute All's own EXEMPT case - still a real,
-    -- confirmable outcome, just not an actual restriction.
+    -- Raid Lead/Assist/Party Lead must never become restricted, through
+    -- Mute All OR an individually-targeted mute (an admin could otherwise
+    -- ADMINMUTE a fellow admin directly). Same notification shape as Mute
+    -- All's own EXEMPT case - still a real, confirmable outcome, just not
+    -- an actual restriction.
     if SB:IsRaidAdmin() then
         SB:Print(string.format(
             "|cffaaaaaaA Soundbook mute attempt from %s was ignored - you're exempt as Raid Lead/Assist/Party Lead.|r",
@@ -1983,9 +1881,9 @@ local function HandleAdminMute(payload, sender)
         SendAdminAck("EXEMPT", sender)
         return
     end
-    -- Explicit requirement: a lower-privilege admin must not be able to
-    -- override another admin's already-active restriction - only the
-    -- original source re-issuing it, or the current leader, may.
+    -- A lower-privilege admin must not be able to override another
+    -- admin's already-active restriction - only the original source
+    -- re-issuing it, or the current leader, may.
     if not CanSenderModifyOverride(sender) then
         SB:Debug("Ignoring ADMINMUTE from %s - a stronger restriction from %s is already active.",
             sender, SB.raidOverride and SB.raidOverride.source or "?")
@@ -1997,11 +1895,11 @@ end
 
 local function HandleAdminUnmute(sender)
     if not IsSenderAuthorizedAdmin(sender) then return end
-    -- Explicit requirement: a targeted unmute must not weaken an already-
-    -- active MUTE ALL unless it comes from that restriction's own source or
-    -- the current leader - an ordinary assistant's individual unmute (aimed
-    -- at what might have been an EARLIER, individual mute) must never
-    -- accidentally lift someone out of a stronger raid-wide restriction.
+    -- A targeted unmute must not weaken an already-active MUTE ALL unless
+    -- it comes from that restriction's own source or the current leader -
+    -- an ordinary assistant's individual unmute (aimed at what might have
+    -- been an EARLIER, individual mute) must never accidentally lift
+    -- someone out of a stronger raid-wide restriction.
     if not CanSenderModifyOverride(sender) then
         SB:Debug("Ignoring ADMINUNMUTE from %s - can't lift %s's active restriction.",
             sender, SB.raidOverride and SB.raidOverride.source or "?")
