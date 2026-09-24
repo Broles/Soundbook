@@ -7,8 +7,8 @@
 - Replaced the paged, right-side-tabbed book with one continuously scrolling Sound Library: Favourites first (compact - occupied slots only, expanding to all 20 as drop targets during a drag), then a collapsible section per category. Collapse state is remembered per category.
 - New compact toolbar (Settings / Raid Admin / Lock / Search / Quick Audio / Close) replaces the old tall crest header and the right-side category-tab dock.
 - Search and the tag filter pills (New/Trending/Popular/Loved/Legendary/Cringe/Dusty) now render as one flat cross-category result list, auto-expanding matching sections and restoring their collapsed state afterward.
-- New Output Rail (`ALL` / `G` / `P/R` / `F` / `NO`, left edge) replaces the old header dropdown for the global Default Output Channel. Hovering Guild/Party-Raid/Friends opens a flyout offering the whole group or an individual recipient subset, fanned out through the existing Direct/whisper transport - no new wire protocol.
-- Community Analytics finally has a real menu entry (Settings -> Advanced/Debug -> "Community Analytics"), alongside a visible "Share Anonymous Analytics" checkbox.
+- New Output Rail (`ALL` / `G` / `P/R` / `F` / `NO`, left edge) replaces the old header dropdown for the global Default Output Channel. Hovering Guild/Party-Raid/Friends opens a flyout offering the whole group or an individual recipient subset, fanned out through the existing Direct/whisper transport - no new wire protocol. **Superseded later within 3.0.0** - see "Later within 3.0.0" below; the Output Rail and its per-player subset mechanism are not part of the current build.
+- Community Analytics finally has a real menu entry (Settings -> Advanced/Debug -> "Community Analytics"), alongside a visible "Share Anonymous Analytics" checkbox. **Later within 3.0.0**, both were removed again by explicit requirement - analytics collection is always-on and invisible to normal users; opt-out is `/sb analytics off` only, and the statistics window is reachable via `/sb analytics`.
 
 ### Announcer (replaces the Mini Soundbook window)
 
@@ -16,7 +16,7 @@
 - Handles overlapping sounds (`+N` badge, promotes the next one when the primary ends) and shows a compact queue indicator when remote sounds are waiting.
 - Right-click the active banner to mute just that one sound; right-click the idle icon for Quick Options (mute incoming, lock, muted players, open Soundbook).
 - Expands away from whichever screen edge it's closest to, so it always stays fully on-screen. Small indicators for an active incoming-mute or raid-admin restriction show directly on the idle icon.
-- Favourites themselves moved out of this HUD and into the Main Soundbook's own Library (see above) - the Announcer's only job now is "what is Soundbook doing right now."
+- Favourites themselves moved out of this HUD and into the Main Soundbook's own Library (see above) - the Announcer's only job at this point was "what is Soundbook doing right now." **Later within 3.0.0**, the Announcer regained a compact "Mini Soundbook" popup (click or hover the idle icon) as a read/play-only favourites shortcut - see below; favourite management still lives only in the Main Library.
 
 ### Edit Sound
 
@@ -28,6 +28,15 @@
 
 - SavedVariables migrated automatically and non-destructively on first login (database v26 -> v27) - existing favourites, keybinds, sound customizations, history, analytics, and settings all carry over. The old Mini Soundbook's position/visibility/opacity seed the new Announcer's once; its own SavedVariables fields are left untouched, not deleted.
 - Every existing slash command, the minimap button, companion-addon sound registration (`Soundbook_Private`/`Soundbook_MySounds`), and the `/sb play` macro contract are unchanged.
+
+### Later within 3.0.0 (current end state, database now v28)
+
+Several bullets above describe how 3.0.0 first shipped and have since been superseded by later work still under the same 3.0.0 version number. The current build instead has:
+
+- **"Send to:" dropdown** (single-select: All/Guild/Raid-Party/Friends/a specific player/Self Only) plus a **Settings gear icon** at the header's top-left, replacing the Output Rail and its flyouts entirely. The per-player subset send mechanism (`SUBSET`/`SB.ComputeEffectiveRecipients`) has been removed from the code; `SB.db.ui.outputRail`'s SavedVariables shape is kept only for backward-compatible loading of old data, not as an active routing path.
+- **Settings** is a two-pane layout (fixed left nav + scrolling content), consolidated to six sections: General, Playback, Multiplayer, Appearance, Categories, Advanced (Favourites' old standalone section was folded into General).
+- **Announcer** regained a compact "Mini Soundbook" popup (click/hover the idle icon) as a favourites shortcut, on top of its banner/Quick-Options role.
+- Database schema advanced to **v28**; a handful of now-dead internal helpers and a legacy top-level `ui.favScale` field (distinct from the live `ui.announcer.favScale` "Mini Soundbook Size" setting) were removed as unreachable code, with no SavedVariables migration needed.
 
 ## 2.7.2
 
@@ -85,7 +94,9 @@
 
 ---
 
-## 3.0.0
+## 3.0.0 (earlier milestone within the same version)
+
+This entry documents an earlier 3.0.0 development milestone - the original backend/data-model foundation work, which advanced the database to v24 - that chronologically predates the Main Soundbook/Announcer UI redesign documented in the 3.0.0 entry at the top of this file. It is kept here, out of chronological order, because it was never renumbered at the time. The database continued past v24 through v25-v28; see the top 3.0.0 entry's "Later within 3.0.0" note for the current end state.
 
 ### Core and data
 

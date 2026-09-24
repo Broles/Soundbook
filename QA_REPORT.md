@@ -1,4 +1,8 @@
-# Soundbook 2.5.0 QA report
+# Soundbook QA report
+
+Historical technical protocol, oldest entry first: the original 2.5.0 release candidate report below, followed by dated/named development rounds carrying the product through the Soundbook 3.0 redesign up to the current build (3.0.0, database v28). Each entry reflects the state and understanding at the time it was written; later entries supersede earlier claims about current behavior where they conflict - see `README.md`, `CHANGELOG.md`, and `MIGRATION.md` for the current-state summary instead of relying on any single entry here in isolation.
+
+## Soundbook 2.5.0 QA report (original entry)
 
 Version: **2.5.0**  
 Database: **24**  
@@ -2058,3 +2062,14 @@ real layout engine. Needs an in-game check against the task's own
 row at both 560px and 720px Main window width, the gear icon's actual
 legibility/contrast at 24x24, and the nav's restrained active-state
 actually reading as "selected" rather than just "slightly different."
+
+## Note: development continued past Round 16
+
+Round 16 above is the last dated round entry in this file, but it is not the final state of the product - further work happened afterward without a corresponding dated round being logged here. None of the bullets above were rewritten to account for it (per this report's own historical-record policy); this note only points at what changed, for anyone reading Round 16 as if it were current:
+
+- Settings' section count changed from the seven Round 16 shipped with to **six** - the standalone Favourites section was folded into General.
+- The Settings gear icon no longer uses WoW's built-in Trade_Engineering texture Round 16 describes; it - and the header's audio and close icons - were replaced with custom artwork (`Assets/SettingsGear.tga`, `AudioIcon.tga`, `CloseIcon.tga`).
+- A four-phase dead-code cleanup (re-verified against HEAD at each step, not blindly copied from any single audit) removed: `FavouritesWindow.lua` and `Assets/ButtonFrame.tga` entirely; the `SUBSET` per-player output target and `SB.ComputeEffectiveRecipients` (the Output Rail's old routing mechanism, already non-functional since Round 16 removed its UI); the legacy top-level `ui.favScale` SavedVariables field (distinct from the live `ui.announcer.favScale` "Mini Soundbook Size" setting, which is unaffected); `SB.DefaultOutputChannelColor`; the unused `pinFavWindow` parameter of `SB.OpenSendMenu`; `Theme.MiniArcanePanel`; and `SB:PinFavAlpha`/`SB:UnpinFavAlpha`, consolidated into the existing `SB:RefreshAnnouncerAlpha`. `SB.IsSendMenuOpen` was evaluated for removal and kept - the mock regression suite uses it as its only way to check the send/context menu's open state.
+- Database schema advanced from v27 (current at Round 16) to **v28**.
+
+See `README.md`, `CHANGELOG.md` ("Later within 3.0.0"), and `MIGRATION.md` for the current-state description; no further dated rounds are recorded in this file as of this note.

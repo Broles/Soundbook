@@ -2,7 +2,7 @@
 
 Soundbook is an Arcane Codex-style soundboard for **World of Warcraft**. It combines local playback, a 20-slot Favourites system, per-sound customization, multiplayer sharing, receive controls, raid administration, history, and anonymous community statistics in one lightweight addon.
 
-Version 3.0.0 is a full UI/UX redesign of the Main Soundbook and the always-on HUD - see "What's new in 3.0" below - built on top of the same 2.7.2 backend (multiplayer protocol, SavedVariables, Favourites, Analytics). It ships a single TOC file covering every currently live WoW client family, using the comma-separated multi-interface format:
+Version 3.0.0 is a full UI/UX redesign of the Main Soundbook and the always-on HUD - see "Main Soundbook" below - built on top of the same 2.7.2 backend (multiplayer protocol, SavedVariables, Favourites, Analytics). It ships a single TOC file covering every currently live WoW client family, using the comma-separated multi-interface format:
 
 ```
 ## Interface: 11509, 16001, 20506, 50504, 120100
@@ -26,16 +26,15 @@ Season of Discovery and Hardcore realms run on the same client build as Classic 
 
 The WoW Forever beta client (confirmed on builds 1.60.1.69893 and 1.60.1.69913) has an active, widely-reported bug: addon SavedVariables are written to disk correctly but are **not loaded back** on the next login, `/reload`, or character switch - every session effectively starts blank. This is a client bug, not a Soundbook bug; it's tracked in multiple threads on Blizzard's own forums, and a third-party workaround tool ([`ForeverSVFix`](https://github.com/nobewayo/ForeverSVFix)) exists. Until Blizzard fixes it, expect favourites, settings, and history to reset on Forever between sessions regardless of what this addon does. Not something we can code around from inside Soundbook.
 
-## What's new in 3.0
+## Main Soundbook
 
-The Main Soundbook is now one continuously scrolling Sound Library instead of a paged, right-side-tabbed book:
+The Main Soundbook is one continuously scrolling Sound Library, not a paged, right-side-tabbed book:
 
-- **Favourites first**, then a collapsible section per category (click a section header to expand/collapse it - state is remembered).
-- **Search and tag filters** (New/Trending/Popular/Loved/Legendary/Cringe/Dusty) live in a compact toolbar at the top, alongside Settings, Raid Admin, Lock, and a Quick Audio shortcut.
-- **Output Rail** (left edge: `ALL` / `G` / `P/R` / `F` / `NO`) replaces the old header dropdown for where a plain click sends a sound. Hovering Guild/Party-Raid/Friends opens a flyout to pick the whole group or an individual recipient subset.
-- **Announcer** replaces the old Mini Soundbook window: a small idle icon that expands into a compact banner (sound name, sender, channel, real playback progress) whenever a Soundbook sound plays, local or received, then collapses back down. Right-click an active banner to mute just that sound; right-click the idle icon for quick options (mute incoming, lock, muted players).
-- **Edit Sound** is more compact - "Change Icon" opens a picker popup instead of permanently embedding the icon grid - and now warns before discarding unsaved changes.
-- **Community Analytics** finally has a real menu entry (Settings -> Advanced/Debug), not just `/sb analytics`.
+- **My Favourites first**, then a collapsible section per category (click a section header to expand/collapse it - state is remembered).
+- **Search and tag filters** (New/Trending/Popular/Loved/Legendary/Cringe/Dusty), plus a **"Send to:"** dropdown, sit in a row below the header. "Send to:" is a single-select control choosing where a plain left-click sends a sound: All (whichever channels are enabled under Settings -> Multiplayer), a specific group (Guild/Raid-Party/Friends), a specific player, or Self Only.
+- A gear icon at the header's top-left opens **Settings** inside the same window (two-pane layout: General, Playback, Multiplayer, Appearance, Categories, Advanced). Quick Audio, Lock, and Close sit at the header's top-right; Raid Admin appears as its own tab when you have the authority to use it.
+- **Announcer** replaces the old Mini Soundbook window as the always-on HUD - see "Announcer" below.
+- **Edit Sound** is compact - "Change Icon" opens a picker popup instead of permanently embedding the icon grid - and warns before discarding unsaved changes.
 
 Existing data (favourites, keybinds, sound customizations, history, analytics, settings) carries over automatically on first login after upgrading - nothing needs to be redone.
 
@@ -52,14 +51,14 @@ Existing data (favourites, keybinds, sound customizations, history, analytics, s
 4. Confirm that the final path is `Interface/AddOns/Soundbook/Soundbook.toc`.
 5. Start the game, enable Soundbook, log in, and run `/sb doctor`.
 
-Do not delete `Soundbook.lua` from SavedVariables when upgrading. Soundbook 2.5.0 migrates supported older data in place only after a detached copy has passed migration, sanitation, and validation. See `MIGRATION.md` for details.
+Do not delete `Soundbook.lua` from SavedVariables when upgrading. Soundbook migrates supported older data in place only after a detached copy has passed migration, sanitation, and validation. See `MIGRATION.md` for details.
 
 ## Everyday controls
 
 - `/sb` opens or closes the main Soundbook.
-- Left-click a sound card to play it using its effective output target (per-sound override, else the Output Rail, else Self).
+- Left-click a sound card to play it using its effective output target (per-sound override, else the "Send to:" default, else All).
 - Right-click a sound card to edit its name, icon, favourite/mute state, alternate sound, and macro command.
-- Shift-left-click toggles a favourite; Shift-right-click opens a one-off "send to..." menu without changing the Output Rail.
+- Shift-left-click toggles a favourite; Shift-right-click opens a one-off "send to..." menu without changing the "Send to:" default.
 - Search and the tag pills filter across every category at once; category sections auto-expand to show matches and restore their collapsed state afterward.
 - The Library adapts its column count to the window's width as you resize.
 - `/sb fav` toggles the Announcer.
@@ -75,7 +74,7 @@ The Announcer is the always-on HUD that replaces the old Mini Soundbook window -
 - handles overlapping sounds (shows a `+N` badge, promotes the next one when the primary ends) and a compact queue indicator when remote sounds are waiting;
 - expands away from whichever screen edge it's closest to, so it always stays fully on-screen.
 
-Favourites themselves live in the Main Soundbook's own Library now, not in the Announcer - see "What's new in 3.0" above.
+Left-click the idle icon (or hover it, if "Open on hover" is enabled) to expand a compact "Mini Soundbook" grid of your favourites for quick access without opening the Main window. Managing favourites - adding, removing, renaming - still happens in the Main Soundbook's own Library (see "Main Soundbook" above); the Announcer's popup is a read/play-only shortcut to the same 20 slots.
 
 ## Multiplayer
 
@@ -98,7 +97,7 @@ Player identity comparisons are realm-aware. Two characters with the same name o
 
 Analytics stores and shares per-sound aggregate usage through a random installation ID. Analytics records contain no character name, realm, guild name, GUID, BattleTag, or account identifier.
 
-Analytics is enabled by default - the Trending/Popular/Legendary/... tags only work with a wide, shared data pool. A player who wants out can flip "Share Anonymous Analytics" under Settings -> Advanced/Debug, or use `/sb analytics off`; either immediately stops collection, cancels delayed/repeating sync work, and removes unsent analytics packets from the transport queue. Existing local history remains available and is not deleted.
+Analytics is enabled by default and always-on - the Trending/Popular/Legendary/... tags only work with a wide, shared data pool, so there is no toggle for it in Settings. A player who wants out uses `/sb analytics off`, which immediately stops collection, cancels delayed/repeating sync work, and removes unsent analytics packets from the transport queue. Existing local history remains available and is not deleted.
 
 Use `/sb analytics on` to enable it again and `/sb analytics` to open the statistics window.
 
