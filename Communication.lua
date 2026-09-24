@@ -325,8 +325,7 @@ end
 local function SendToPlayerSilent(soundID, name)
     if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
     -- Ignore blocking (explicit requirement) - the single shared funnel
-    -- for a Default-Output single-player target AND a SUBSET (multi-select
-    -- Guild/Raid/Friends submenu) send, so both get this for free. Silent,
+    -- for a Default-Output single-player target send. Silent,
     -- matching this whole function's own established "no chat line" design
     -- (see its callers' own comments) - SB:SendSoundToPlayer below is the
     -- one surface with an explicit chat confirmation, and checks this
@@ -443,38 +442,6 @@ function SB.ComputeReachablePlayers()
     return result
 end
 
-------------------------------------------------------------------------
--- Right-side broadcast tabs (explicit request) - Guild/Raid/Friends are no
--- longer a single-choice radio group; any combination of individually
--- selected recipients may be active at once (SB.db.ui.outputRail.selected,
--- one array per bucket - see Database.lua's SanitizeDatabase). This is the
--- ONE central place that unions and deduplicates them, by the same
--- realm-aware SB.PlayerKey identity SB.ComputeReachablePlayers itself
--- already uses - both actual sending (SB:DispatchDefaultOutput's SUBSET
--- branch) and every UI total (the Favourites popup summary - Announcer.lua)
--- call this, never compute their own count independently, so they can
--- never drift apart. `selfOnly` short-circuits to an empty set - explicit
--- requirement: Self Only is exclusive and never combines with a real send.
-------------------------------------------------------------------------
-function SB.ComputeEffectiveRecipients()
-    local rail = SB.db and SB.db.ui and SB.db.ui.outputRail
-    if not rail or rail.selfOnly then return {} end
-    local seen, list = {}, {}
-    for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        local names = rail.selected and rail.selected[bucket]
-        if type(names) == "table" then
-            for _, name in ipairs(names) do
-                local key = SB.PlayerKey and SB.PlayerKey(name)
-                if key and not seen[key] and SB.IsValidPlayerTarget(name) then
-                    seen[key] = true
-                    list[#list + 1] = name
-                end
-            end
-        end
-    end
-    return list
-end
-
 function SB.ComputeOutputTargetOptions()
     local opts = { { text = "All (checked in Settings)", value = "ALL", isHeader = true } }
     local reachable = SB.ComputeReachablePlayers()
@@ -567,9 +534,9 @@ end
 --- precedent as OutputTargetRowFont above - stays the normal text colour
 --- wherever this is used). "PLAYER:<name>" (one specific person picked as
 --- the default target) is a Direct send, same as everywhere else isDirect
---- is handled - explicit request: FavouritesWindow.lua's hover name bar
---- uses this to colour the sound name by where it would actually go right
---- now if clicked.
+--- is handled - originally added for the old Mini Soundbook's hover name
+--- bar, to colour the sound name by where it would actually go right now
+--- if clicked.
 function SB.DefaultOutputChannelColor()
     local target = (SB.db and SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
     if target == "ALL" then return nil end
@@ -591,12 +558,13 @@ end
 ---      exactly what SB.ComputeOutputTargetOptions' own "All (checked in
 ---      Settings)" label already promises: SB:BroadcastSound below, fanned
 ---      out to whichever channels Settings -> Multiplayer's Send matrix
----      currently has enabled - never SB.ComputeEffectiveRecipients'
----      per-player SUBSET (that mechanism - the old right-side broadcast
----      tabs' individual-player picks - has no surviving UI to populate it
----      any more, but is left fully intact/reachable for any explicit
----      override or SB.db.ui.outputRail data a player already has saved;
----      see UI.lua's Default Output redesign for the full reasoning).
+---      currently has enabled. The old right-side broadcast tabs'
+---      per-player multi-select ("SUBSET") mechanism has been removed
+---      entirely (Phase-1 cleanup) - it had no surviving UI to populate it
+---      and nothing ever produced that value as an override or a stored
+---      setting. SB.db.ui.outputRail's own SavedVariables data is left
+---      untouched regardless (compatibility only - see Database.lua's
+---      SanitizeDatabase), it just has no routing consumer any more.
 ---   4. "ALL" itself as the last-resort fallback (matches
 ---      defaults.settings.defaultOutputTarget - see Core.lua) - never
 ---      "nothing selected".
@@ -616,7 +584,7 @@ end
 --- The SB.CHANNEL_COLOR entry matching `soundID`'s OWN per-sound "Default
 --- Output" override, or nil if it doesn't have one set (or it's "ALL") -
 --- explicit request: colours its icon border/wash/name text everywhere it
---- appears (UI.lua's grid, FavouritesWindow.lua's favourite slots).
+--- appears (UI.lua's grid, including its own favourite slots).
 --- Deliberately separate from SB.DefaultOutputChannelColor above (the
 --- GLOBAL setting's own colour, used for the Mini Soundbook's hover name
 --- bar) - a per-sound override and the global default are two different
@@ -662,26 +630,6 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
         -- raid-admin mute; anything else stays blocked.
         if SB:IsSendBlockedByRaid() and not SB:IsFriend(playerName) then return end
         SendToPlayerSilent(soundID, playerName)
-        return
-    end
-
-    -- Right-side broadcast tabs' combined recipient set (any mix of
-    -- Guild/Raid/Friends selections, union+deduplicated by
-    -- SB.ComputeEffectiveRecipients above) - fanned out through the exact
-    -- same Direct/whisper send every other single-player target already
-    -- uses (SendToPlayerSilent), one message per unique recipient.
-    -- Deliberately NOT a new wire command - this is purely a local UI
-    -- convenience over the existing protocol. The per-recipient friend
-    -- exemption below is an EXTRA filter on top of ComputeEffectiveRecipients'
-    -- own dedup, same as the single-PLAYER branch above - a raid-admin
-    -- "Mute Sending" still lets the set send through to whichever members
-    -- are mutual Friends, blocking only the rest.
-    if target == "SUBSET" then
-        for _, name in ipairs(SB.ComputeEffectiveRecipients()) do
-            if not (SB:IsSendBlockedByRaid() and not SB:IsFriend(name)) then
-                SendToPlayerSilent(soundID, name)
-            end
-        end
         return
     end
 
@@ -744,8 +692,8 @@ end
 -- fire already passes - explicit bugfix: every caller below used to omit
 -- it entirely, so the Mini Soundbook's Announcement Bar had no idea what
 -- a SendMenu.lua-driven send actually went to and always fell back to
--- "Self", even for a real Direct/Guild/Friends send. See FavouritesWindow.
--- lua's LOCAL_SOUND_PLAYED handler for how this gets turned into the
+-- "Self", even for a real Direct/Guild/Friends send. See Announcer.lua's
+-- own LOCAL_SOUND_PLAYED handler for how this gets turned into the
 -- displayed source label (and, for a Direct send, the recipient's name).
 local function PlayLocally(soundID, target)
     local saved = SB:GetSoundSaved(soundID)
@@ -818,9 +766,9 @@ function SB:SendSoundToPlayer(soundID, name)
     -- Ignore blocking (explicit requirement) - checked first, ahead of the
     -- raid-mute Friend exemption below: absolute, no exceptions. This is
     -- THE single-target "Direct/specific send" surface the exact required
-    -- wording belongs on; DispatchDefaultOutput's own PLAYER/SUBSET
-    -- targets share the same underlying block via SendToPlayerSilent, but
-    -- stay silent there on purpose (that whole codepath is deliberately
+    -- wording belongs on; DispatchDefaultOutput's own PLAYER target
+    -- shares the same underlying block via SendToPlayerSilent, but
+    -- stays silent there on purpose (that whole codepath is deliberately
     -- chat-line-free, see its own header comment) - this deliberate,
     -- explicitly-confirmed SendMenu.lua action gets the explicit message.
     if SB:IsIgnored(name) then
@@ -890,9 +838,8 @@ local function ReceiveAllowedForChannel(channel, isDirect)
     return false
 end
 
--- User-facing label for the "Now Playing" display in the Favourites
--- mini-window (see FavouritesWindow.lua), keyed by the same channel
--- values CHAT_MSG_ADDON reports.
+-- User-facing label for received-sound notifications and queue entries,
+-- keyed by the same channel values CHAT_MSG_ADDON reports.
 local CHANNEL_LABEL = {
     PARTY = "Party", RAID = "Raid", RAID_LEADER = "Raid",
     GUILD = "Guild", OFFICER = "Guild", WHISPER = "Friend",
@@ -1889,8 +1836,9 @@ local function ApplyRaidOverride(kind, durationCode, source)
         -- Absolute GetTime() this expires at - set for 30/60 min AND, as a
         -- safety-net backstop only, for F/B too (see DurationSecondsFor's
         -- own comment) - "R" alone stays nil (no timer at all). UI code
-        -- showing a LIVE COUNTDOWN from this (FavouritesWindow.lua,
-        -- AdminPanel.lua) deliberately still only does so for 30/60 - F/B
+        -- showing a LIVE COUNTDOWN from this (Settings.lua's compact
+        -- receive-mute info, AdminPanel.lua) deliberately still only
+        -- does so for 30/60 - F/B
         -- having a non-nil expiresAt here is for the backstop TIMER to
         -- fire, not meant to imply a countdown-worthy fixed duration.
         expiresAt = seconds and (GetTime() + seconds) or nil,
@@ -2751,8 +2699,9 @@ function SB:GetReceiveMuteDurationMinutes()
 end
 
 ------------------------------------------------------------------------
--- Individual Mute - Mini Soundbook mute button's right-click dropdown
--- (see FavouritesWindow.lua's MutePlayers panel). Separate from the
+-- Individual Mute - reached from the Mini Soundbook's Quick Options menu
+-- (MutePlayers.lua's own panel, see Announcer.lua's OpenMutePlayersMenu
+-- call). Separate from the
 -- global receive-mute above (blocks EVERYONE) and from a per-sound mute
 -- (blocks one SOUND from everyone) - this blocks one specific PERSON's
 -- sounds, all of them, only from them.
@@ -2854,7 +2803,7 @@ SB:On("DB_READY", function()
         -- Still active, just resuming - StartReceiveMute isn't called here
         -- (that would re-snapshot `previous` from the current, already-
         -- muted state), so fire this explicitly: anything already listening
-        -- (Settings.lua, FavouritesWindow.lua's title) needs to know the
+        -- (Settings.lua, Announcer.lua's own indicators) needs to know the
         -- mute carried over from before this reload/restart.
         SB:Fire("RECEIVE_MUTE_CHANGED")
     end

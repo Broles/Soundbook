@@ -2129,8 +2129,8 @@ local function BuildMainFrame()
     -- Targeted correction round (explicit requirement): Lock no longer
     -- blocks moving Main - "Main Soundbook must still be movable by
     -- dragging its header" while locked, only resizing is disabled now.
-    -- Mini Soundbook's own lock (FavouritesWindow.lua) is untouched and
-    -- still blocks both move and resize - this change is Main-only.
+    -- Mini Soundbook's own lock (Announcer.lua) is untouched and still
+    -- blocks moving it - this change is Main-only.
     main:SetScript("OnDragStart", function()
         main:StartMoving()
     end)

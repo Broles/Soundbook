@@ -448,9 +448,9 @@ local function StopAllOwnSounds()
     end
 end
 
--- Public wrapper - the Mini Soundbook's Stop button and "/sb stop" (see
--- FavouritesWindow.lua / Core.lua) both funnel through this single place
--- rather than reaching into activeHandles themselves.
+-- Public wrapper - the Mini Soundbook's Stop button (Announcer.lua) and
+-- "/sb stop" (Core.lua) both funnel through this single place rather
+-- than reaching into activeHandles themselves.
 function SB:StopAllSounds()
     StopAllOwnSounds()
     if SB.ClearQueuedSoundMessages then SB:ClearQueuedSoundMessages() end
@@ -687,8 +687,8 @@ function SB:TriggerSound(soundID, targetOverride)
         -- about to send with, per-sound "Default Output" override
         -- included - see SB:ResolveOutputTarget, Communication.lua) rides
         -- along too, so the Mini Soundbook can show the real destination
-        -- (e.g. "Guild") instead of always "Self" - see FavouritesWindow.
-        -- lua's LOCAL_SOUND_PLAYED handler.
+        -- (e.g. "Guild") instead of always "Self" - see Announcer.lua's
+        -- own LOCAL_SOUND_PLAYED handler.
         local resolvedTarget = SB.ResolveOutputTarget and SB:ResolveOutputTarget(soundID, targetOverride)
             or targetOverride or (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
         SB:Fire("LOCAL_SOUND_PLAYED", soundID, resolvedTarget)

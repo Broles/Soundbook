@@ -73,7 +73,7 @@ SB.VALID_CHANNELS   = { Master = true, SFX = true, Music = true, Ambience = true
 
 -- Explicit request: one consistent colour per "where did/does this sound
 -- go", used EVERYWHERE a channel/source label is shown - Now Playing
--- (FavouritesWindow.lua), Settings' Send/Receive matrix row labels, the
+-- (Announcer.lua), Settings' Send/Receive matrix row labels, the
 -- Default Output Channel/Macro Output dropdowns' group headers
 -- (Communication.lua's SB.ComputeOutputTargetOptions), SendMenu.lua's
 -- popup group headers, and the chat notification lines (PrintReceived/
@@ -217,8 +217,9 @@ end
 -- objects - never the originals - so changing Soundbook's font (see
 -- SB:RefreshMainFont below) never touches any other addon's or Blizzard's
 -- own UI text, only Soundbook's. The Mini Soundbook is handled separately
--- (FavouritesWindow.lua) since its text already resizes dynamically with
--- the window and sets its font directly rather than via a shared object.
+-- (Announcer.lua's own SB:RefreshAnnouncerFont) since its text already
+-- resizes dynamically with the window and sets its font directly rather
+-- than via a shared object.
 ------------------------------------------------------------------------
 SB.Fonts = {}
 

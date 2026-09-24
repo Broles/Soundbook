@@ -1,8 +1,8 @@
 -- Announcer.lua
 --
 -- Soundbook 3.0's replacement for the old Mini Soundbook/Favourites window
--- (FavouritesWindow.lua, no longer loaded - see Soundbook.toc). The old
--- window bundled a Favourite grid, Now Playing, Last Sound, mute controls,
+-- (formerly FavouritesWindow.lua, removed - superseded entirely by this
+-- file). The old window bundled a Favourite grid, Now Playing, Last Sound, mute controls,
 -- Send menus, lock and resize into one frame; the Announcer owns exactly
 -- one job - "what is Soundbook doing right now" - while the Favourite grid
 -- itself moves into the Main Soundbook's Sound Library (a later 3.0 stage).

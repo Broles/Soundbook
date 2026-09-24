@@ -94,13 +94,17 @@ end
 
 -- Exposed so Announcer.lua's single-active-transient-surface rule (Mini
 -- Soundbook regression fix) can close this menu when Quick Options opens
--- ("Context menu -> Quick Options: close context menu first"), and check
--- whether it's currently open without duplicating this module's own
--- `menu`/`catcher` state.
+-- ("Context menu -> Quick Options: close context menu first") without
+-- duplicating this module's own `menu`/`catcher` state.
 SB.CloseSendMenu = CloseMenu
-function SB.IsSendMenuOpen()
-    return menu ~= nil and menu:IsShown()
-end
+
+-- `menu`/`catcher` above are module-local with no other externally-visible
+-- handle (no named global frame), so this is the only way anything outside
+-- this file can check whether the send/context menu is currently open. No
+-- live product code calls it today, but the mock regression suite's
+-- mutual-exclusion test (transient-surface rule: Mini Soundbook / Quick
+-- Options / this menu) does, and has no other way to make that assertion.
+function SB.IsSendMenuOpen() return menu ~= nil and menu:IsShown() end
 
 local function ClearRows()
     for _, row in ipairs(rows) do
@@ -374,8 +378,8 @@ end
 --
 -- `pinFavWindow` (optional): forces the Mini Soundbook to full alpha while
 -- this menu is open - only wanted when the menu itself was opened FROM the
--- Mini Soundbook (a slot's own right-click, see FavouritesWindow.lua),
--- since this popup then visually sits on top of/right next to it and it
+-- Mini Soundbook (a slot's own right-click), since this popup then
+-- visually sits on top of/right next to it and it
 -- shouldn't fade out from under the player mid-interaction. Opening this
 -- same menu from the main Soundbook window (UI.lua, Shift+Right Click) has
 -- nothing to do with the Mini Soundbook at all - explicit bug fix: it used

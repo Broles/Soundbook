@@ -118,8 +118,7 @@ end
 -- as "the same material, much quieter", never a second full Main window.
 -- `washAlpha` (default 0.82) is how opaque that darkening layer is - a
 -- caller wanting a specific zone (header vs. grid) slightly more or less
--- textured than the rest passes a different value; see FavouritesWindow.
--- lua's BuildFrame for how the header/status/grid/footer split it up.
+-- textured than the rest passes a different value.
 function Theme.MiniArcanePanel(frame, washAlpha)
     frame:SetBackdrop({
         bgFile = ARCANE_BG,
@@ -576,8 +575,8 @@ end
 --
 -- IMPORTANT PRECONDITION: `frame` must already be anchored via a single
 -- CENTER point (either directly, or via a small never-scaled "holder"
--- frame it's permanently centred on - see FavouritesWindow.lua's grid
--- slots for that pattern). SetScale always grows a frame symmetrically
+-- frame it's permanently centred on - see Intro.lua's own sound button
+-- for that pattern). SetScale always grows a frame symmetrically
 -- around whichever point it's anchored by, so CENTER is what makes this
 -- read as "zoom from the middle" - anything else drifts toward whatever
 -- corner/edge was used. An earlier version of this function tried to

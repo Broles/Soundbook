@@ -281,15 +281,16 @@ local function SanitizeDatabase(db, defaults)
         end
     end
 
-    -- Right-side broadcast tabs - a per-bucket MULTI-select recipient set
-    -- (explicit request: Guild/Raid/Friends are no longer a single-choice
-    -- radio group; any combination may be simultaneously active), plus a
-    -- `selfOnly` flag. There is deliberately no separate "entire channel"
-    -- mode flag - "Entire Guild"/"All Friends" is a derived, not stored,
-    -- state: SelectedCount == EligibleCount (see UI.lua's broadcast-tab
-    -- code). SB.ComputeEffectiveRecipients (Communication.lua) is the one
-    -- central place that unions + deduplicates these three lists for
-    -- actual sending and for any UI total - never computed independently.
+    -- LEGACY/compatibility data only (Phase-1 cleanup note): this used to
+    -- back the right-side broadcast tabs' per-bucket MULTI-select
+    -- recipient set (Guild/Raid/Friends, any combination simultaneously
+    -- active, plus a `selfOnly` flag). That UI and its routing consumer
+    -- (SB.ComputeEffectiveRecipients/DispatchDefaultOutput's old "SUBSET"
+    -- target) have both been removed entirely - nothing reads this data
+    -- for routing any more. The shape-repair/sanitization below is left
+    -- fully intact regardless, purely so an existing player's old saved
+    -- selections stay in a valid shape rather than causing a nil-index
+    -- error on load - not because anything still consumes them.
     ui.outputRail = type(ui.outputRail) == "table" and ui.outputRail or {}
     if type(ui.outputRail.selected) ~= "table" then
         -- One-time migration from the OLD single-bucket shape (Soundbook

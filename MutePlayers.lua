@@ -1,6 +1,6 @@
 -- MutePlayers.lua
--- Individual Mute - right-click the Mini Soundbook's mute button (see
--- FavouritesWindow.lua) to open a dropdown listing every reachable person
+-- Individual Mute - reached from the Mini Soundbook's Quick Options menu
+-- ("Muted Players...", Announcer.lua) to open a dropdown listing every reachable person
 -- (same Friends/Guild/Raid/Party groups SendMenu.lua's own popup and the
 -- Default Output Channel dropdown already use) - explicit request: same
 -- look and feel as those (title icon strip, gold divider, scroll/mouse

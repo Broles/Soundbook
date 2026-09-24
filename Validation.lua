@@ -113,13 +113,7 @@ end
 
 function SB.IsValidOutputTarget(value)
     if value == "ALL" or value == "SELF" or value == "FRIENDS"
-        or value == "GUILD" or value == "PARTY" or value == "RAID"
-        -- Right-side broadcast tabs' combined recipient set (UI.lua's
-        -- Guild/Raid/Friends multi-select flyouts) - the actual selection
-        -- lives in SB.db.ui.outputRail.selected (one array per bucket),
-        -- never encoded into this value itself; see Communication.lua's
-        -- SB.ComputeEffectiveRecipients/SB:DispatchDefaultOutput.
-        or value == "SUBSET" then
+        or value == "GUILD" or value == "PARTY" or value == "RAID" then
         return true
     end
     local player = type(value) == "string" and value:match("^PLAYER:(.+)$")
