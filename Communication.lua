@@ -529,21 +529,6 @@ function SB.OutputTargetRowFont(text, opt)
     end
 end
 
---- The SB.CHANNEL_COLOR entry (Core.lua) matching the CURRENT Default
---- Output Channel setting, or nil for "ALL" (no single channel, same
---- precedent as OutputTargetRowFont above - stays the normal text colour
---- wherever this is used). "PLAYER:<name>" (one specific person picked as
---- the default target) is a Direct send, same as everywhere else isDirect
---- is handled - originally added for the old Mini Soundbook's hover name
---- bar, to colour the sound name by where it would actually go right now
---- if clicked.
-function SB.DefaultOutputChannelColor()
-    local target = (SB.db and SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
-    if target == "ALL" then return nil end
-    if type(target) == "string" and target:match("^PLAYER:") then return SB.CHANNEL_COLOR.DIRECT end
-    return SB.CHANNEL_COLOR[target]
-end
-
 --- The Output target a LOCAL click on `soundID` right now would actually
 --- use, if `explicitOverride` is nil - priority order:
 ---   1. `explicitOverride` (a macro's own "::Target" suffix, or an
@@ -585,10 +570,6 @@ end
 --- Output" override, or nil if it doesn't have one set (or it's "ALL") -
 --- explicit request: colours its icon border/wash/name text everywhere it
 --- appears (UI.lua's grid, including its own favourite slots).
---- Deliberately separate from SB.DefaultOutputChannelColor above (the
---- GLOBAL setting's own colour, used for the Mini Soundbook's hover name
---- bar) - a per-sound override and the global default are two different
---- things, even though they share the same SB.CHANNEL_COLOR palette.
 --- Target -> SB.CHANNEL_COLOR mapping shared by SB.SoundOutputOverrideColor
 --- below (soundID-based, for rendering an already-saved sound) and
 --- EditWindow.lua's live dropdown preview (draft-value-based, before the

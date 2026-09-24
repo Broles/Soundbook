@@ -376,24 +376,12 @@ end
 -- silently if soundID is missing/unknown, or if there is currently nothing
 -- to send to at all (no group, no friends).
 --
--- `pinFavWindow` (optional): forces the Mini Soundbook to full alpha while
--- this menu is open - only wanted when the menu itself was opened FROM the
--- Mini Soundbook (a slot's own right-click), since this popup then
--- visually sits on top of/right next to it and it
--- shouldn't fade out from under the player mid-interaction. Opening this
--- same menu from the main Soundbook window (UI.lua, Shift+Right Click) has
--- nothing to do with the Mini Soundbook at all - explicit bug fix: it used
--- to always pin, popping the Mini Soundbook to full visibility out of
--- nowhere even while the mouse was nowhere near it.
---
 -- `sourceSlot` (optional): the actual slot Button that was right-clicked,
 -- if it has hover-zoom (Theme.ApplyHoverZoom - Mini Soundbook slots only,
 -- never the main window's own grid). Explicit request: the icon should
 -- stay visibly zoomed, exactly as if the mouse were still resting on it,
--- for as long as this popup covers it and steals the real mouse focus -
--- same reasoning as pinFavWindow above, just for the one slot's zoom
--- state instead of the whole window's alpha.
-function SB.OpenSendMenu(soundID, pinFavWindow, sourceSlot)
+-- for as long as this popup covers it and steals the real mouse focus.
+function SB.OpenSendMenu(soundID, sourceSlot)
     if not soundID or not SB.registry[soundID] then return end
     -- Single-active-transient-surface rule (explicit requirement): Quick
     -- Options and the context menu never coexist - opening this one
@@ -401,7 +389,7 @@ function SB.OpenSendMenu(soundID, pinFavWindow, sourceSlot)
     -- Announcer.lua's own close function), not a strata change. The
     -- expanded Mini Soundbook (favMenu) itself is deliberately left
     -- alone here - the context menu is opened FROM one of its rows and
-    -- is meant to coexist with it (see pinFavWindow/PinFavAlpha above).
+    -- is meant to coexist with it.
     if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
     -- Stale presence pruning happens inside SB.ComputeReachablePlayers
     -- itself now (BuildMenu -> BuildGroups below), not duplicated here.
@@ -429,9 +417,6 @@ function SB.OpenSendMenu(soundID, pinFavWindow, sourceSlot)
         menu:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMLEFT", x, y)
     end
 
-    if pinFavWindow then
-        SB:PinFavAlpha(true)
-    end
     -- Un-pin whatever was pinned by a previous, still-open call before
     -- pinning the new one - guards against two OpenSendMenu calls in a
     -- row without a CloseMenu in between ever leaving a stale slot

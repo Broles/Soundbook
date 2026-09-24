@@ -737,7 +737,6 @@ local function GetDefaultDB()
             -- where the main (centered) Soundbook window opens, so the two
             -- don't start out overlapping each other.
             favPos    = { point = "TOPRIGHT", relPoint = "TOPRIGHT", x = -60, y = -80 },
-            favScale  = 1.0,
             favLocked = false,
             favShown  = true,
             favWidth  = 0,  -- 0 = not yet resized, use the computed default
@@ -1779,7 +1778,6 @@ local function HandleSlash(msg)
         SB.db.ui.favPos = defaults.ui.favPos
         SB.db.ui.favWidth = defaults.ui.favWidth
         SB.db.ui.favHeight = defaults.ui.favHeight
-        SB.db.ui.favScale = defaults.ui.favScale
         SB.db.ui.announcer.pos = defaults.ui.announcer.pos
         SB:Print("Window positions and Announcer position reset. /reload to see it take effect everywhere.")
     else
