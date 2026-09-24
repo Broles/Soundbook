@@ -887,7 +887,10 @@ function Theme.CreateAudioGlyph(parent, size)
     icon:SetPoint("TOPLEFT", 2, -2)
     icon:SetPoint("BOTTOMRIGHT", -2, 2)
     icon:SetTexture(AUDIO_ICON)
-    icon:SetVertexColor(0.58, 0.78, 1.0, 0.92)
+    -- Explicit report: "same style as the others" - AudioIcon.tga now
+    -- bakes in the same gold-frame/blue-glass colour language as
+    -- ControlIcons.tga's own lock/mute/close glyphs itself, so (unlike
+    -- the first version) it's no longer vertex-tinted on top.
     btn.icon = icon
     return btn
 end
