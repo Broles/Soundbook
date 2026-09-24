@@ -11,6 +11,13 @@ local ENTRY_W     = 190
 local ROW_H       = 32
 local ICON_SIZE   = 22
 local THREE_COLUMN_WIDTH = 600
+-- Shared with LayoutEntries' own hotkeyWidth clamp and CreateEntryButton's
+-- own tag pill caps respectively (both reference these same constants
+-- below) - kept here, not re-guessed in two places, specifically so the
+-- 3-column breakpoint derived from them (RefreshLibraryImpl) can never
+-- silently drift out of sync with the actual row layout it's protecting.
+local HOTKEY_WIDTH_MIN = 70
+local TAG_CAP_W = 7
 -- Explicit report: category headers (Favourites/Legacy/...) should stand
 -- out more from the sound rows below them, and the collapse caret wasn't
 -- obviously a collapse control. Grown from 24, then again in the UI/UX
@@ -905,7 +912,7 @@ local function CreateEntryButton(index)
     -- flat middle that stretches to fit the label, rather than a plain
     -- rectangle; the same cap texture is reused mirrored for the right
     -- side, so only one small asset was needed.
-    local TAG_CAP_W, TAG_H = 7, 14
+    local TAG_H = 14 -- TAG_CAP_W is a module-level shared constant (see top of file)
     local tag = SB.CreateFrame("Frame", nil, btn)
     tag:SetHeight(TAG_H)
     tag:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
@@ -1246,14 +1253,29 @@ local function CreateSectionHeaderRow(index)
     count:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     hdr.count = count
 
-    -- Favourites-only shortcut, replacing count in that one row - a clear
-    -- secondary action (explicit requirement: "feel like a clear secondary
-    -- action, not a floating unrelated element") via the same flat
-    -- secondary-button chrome Settings/Edit Sound already use for their
-    -- own secondary actions, sized to comfortably clear the row's own
-    -- height rather than looking squeezed into it.
+    -- Favourites-only shortcut - a clear secondary action (explicit
+    -- requirement: "feel like a clear secondary action, not a floating
+    -- unrelated element") via the same flat secondary-button chrome
+    -- Settings/Edit Sound already use for their own secondary actions,
+    -- sized to comfortably clear the row's own height rather than
+    -- looking squeezed into it. My Favourites header layout (explicit
+    -- requirement): "[icon] My Favourites [Keybindings] 18/20" - count
+    -- now shows alongside this button rather than replacing it, so the
+    -- button no longer owns the row's own right-edge anchor; it centres
+    -- instead in whatever room is actually left between the title and
+    -- the count via a plain anchor-stretched spacer frame (LEFT pinned
+    -- to the title's own right edge, RIGHT to the count's own left edge -
+    -- both already dynamic, text-driven anchors) - never a hardcoded X
+    -- offset, so it can't collide with either at a narrower window width,
+    -- and needs no manual recomputation when the title or count text changes.
+    local keybindsSpacer = CreateFrame("Frame", nil, hdr)
+    keybindsSpacer:SetHeight(1)
+    keybindsSpacer:SetPoint("LEFT", title, "RIGHT", 0, 0)
+    keybindsSpacer:SetPoint("RIGHT", count, "LEFT", 0, 0)
+    hdr.keybindsSpacer = keybindsSpacer
+
     local keybindsBtn = SB.Theme.CreateSecondaryButton(hdr, "Keybinds", 92, SECTION_HEADER_H - 10)
-    keybindsBtn:SetPoint("RIGHT", -GRID_LEFT_PAD, 0)
+    keybindsBtn:SetPoint("CENTER", keybindsSpacer, "CENTER", 0, 0)
     keybindsBtn:SetScript("OnClick", function() SB:ToggleKeybindMode() end)
     keybindsBtn:Hide()
     hdr.keybindsBtn = keybindsBtn
@@ -1336,15 +1358,23 @@ local function ConfigureHeader(hdr, sectionKey, title, icon, collapsed, count, i
     -- Unicode geometric shapes.
     hdr.caret:SetText(collapsed and ">" or "v")
     if isFavourites then
-        -- Keybinds is only useful (and only shown) while expanded, mirroring
-        -- a category's own count - collapsed swaps it for the same kind of
-        -- "how much is hidden here" count a category shows.
+        -- Same right-side count treatment as a normal category (explicit
+        -- requirement) - shown regardless of collapsed state now, just
+        -- with the fixed Favourite capacity appended ("occupied/20"), so
+        -- it reads as "how many of my Favourite slots are filled" rather
+        -- than a plain sound count. `count` here is SB:GetFavouriteCount()
+        -- (Favorites.lua) - it already counts actually-occupied slots by
+        -- scanning every one of the fixed SB.MAX_FAVOURITES positions,
+        -- never the highest-occupied index, so an intentional gap in the
+        -- middle of the list correctly does NOT inflate this number.
+        hdr.count:SetText(string.format("%d/%d", count or 0, SB.MAX_FAVOURITES))
+        hdr.count:Show()
+        -- Keybinds is only useful (and only shown) while expanded - same
+        -- gating as before, just no longer swapping places with the count
+        -- (see keybindsBtn's own comment above for where it sits instead).
         if collapsed then
-            hdr.count:SetText(tostring(count or 0))
-            hdr.count:Show()
             hdr.keybindsBtn:Hide()
         else
-            hdr.count:Hide()
             hdr.keybindsBtn:Show()
         end
     else
@@ -1468,7 +1498,33 @@ local function RefreshLibraryImpl()
     -- column width).
     local fontScale = math.max(1, (SB.db.settings and SB.db.settings.mainFontScale) or 1)
     ROW_H = math.floor(32 * fontScale + 0.5)
-    THREE_COLUMN_WIDTH = math.floor(600 * fontScale + 0.5)
+    local iconExtent = 24
+    -- 3-column breakpoint, derived from the same fixed-cost geometry each
+    -- row actually spends - not a flat guessed pixel constant. Regression
+    -- fix: the previous flat 600 was never revisited when the Main
+    -- window's own default width became its minimum resizable size (560 -
+    -- roughly 530px of real grid content width after insets/scrollbar
+    -- clearance, comfortably under 600), so the grid stopped ever showing
+    -- 3 columns at the window's own default even though nothing about a
+    -- row's actual content needs that much room.
+    --
+    -- leftReserve: the icon slot plus its gap to the name text (every row).
+    -- rightReserve: the larger of the two optional right-side elements a
+    -- row can show - a Favourites hotkey label (its own existing width
+    -- floor below, HOTKEY_WIDTH_MIN, plus its gap) or a tag pill (its caps
+    -- + internal padding + "Legendary", the longest tag label, plus its
+    -- gap) - only one of the two, or neither, ever shows on a given row.
+    -- minNameW: the smallest name-text width a column still reads cleanly
+    -- at - the actual floor this breakpoint protects.
+    -- All three grow with fontScale exactly like ROW_H above (a larger
+    -- Soundbook Text Size needs more per-column width, never less).
+    local leftReserve = GRID_LEFT_PAD + iconExtent + 8
+    local rightReserve = math.max(
+        GRID_LEFT_PAD + HOTKEY_WIDTH_MIN + 8,
+        GRID_LEFT_PAD + (TAG_CAP_W * 2 + 8) + 46 + 6
+    )
+    local minNameW = 52
+    THREE_COLUMN_WIDTH = math.floor(3 * (leftReserve + minNameW + rightReserve) * fontScale + GRID_LEFT_PAD + 0.5)
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
     -- Explicit report: the first (leftmost) column's icons were visibly
     -- clipped, the others weren't - column 0 sits flush at x=0 of
@@ -1481,8 +1537,7 @@ local function RefreshLibraryImpl()
     -- there was never visible. A small left grid margin gives column 0 the
     -- same breathing room every other column already had.
     local entryW = math.floor((contentWidth - GRID_LEFT_PAD) / columns)
-    local iconExtent = 24
-    local hotkeyWidth = math.max(70, math.min(104, entryW * 0.28))
+    local hotkeyWidth = math.max(HOTKEY_WIDTH_MIN, math.min(104, entryW * 0.28))
 
     usedEntries, usedHeaders = 0, 0
     local y = 0
