@@ -2169,11 +2169,13 @@ local function BuildMainFrame()
     -- Shared header-icon metrics (needed by the gear button below, so
     -- declared before it rather than down with the close/lock/audio zone
     -- that also uses them). One shared chrome family (Theme.CreateMiniControlButton)
-    -- - identical 24x24 visual size, each padded to an effective ~28x28
-    -- hitbox via SetHitRectInsets (visual stays compact; the actual click
-    -- target is comfortably bigger).
-    local HEADER_ICON_SIZE = LAYOUT.ICON_BTN
-    local HEADER_ICON_HIT_PAD = 2 -- 24 + 2*2 = 28px effective hitbox
+    -- - identical 28x28 visual size (explicit request: 15% larger than
+    -- the previous 24px, every header icon left AND right kept exactly
+    -- equal), each padded to an effective ~32x32 hitbox via
+    -- SetHitRectInsets (visual stays compact; the actual click target is
+    -- comfortably bigger).
+    local HEADER_ICON_SIZE = math.floor(LAYOUT.ICON_BTN * 1.15 + 0.5) -- 24 -> 28
+    local HEADER_ICON_HIT_PAD = 2 -- 28 + 2*2 = 32px effective hitbox
     local HEADER_ICON_INSET = 16
     local function ExpandHitbox(btn)
         btn:SetHitRectInsets(-HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD, -HEADER_ICON_HIT_PAD)

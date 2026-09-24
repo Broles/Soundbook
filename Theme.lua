@@ -91,6 +91,7 @@ local ARCANE_HEADER = "Interface\\AddOns\\Soundbook\\Assets\\ArcaneHeader"
 local FRAME_CORNER = "Interface\\AddOns\\Soundbook\\Assets\\FrameCorner"
 local ICON_FRAME = "Interface\\AddOns\\Soundbook\\Assets\\IconFrame"
 local CONTROL_ICONS = "Interface\\AddOns\\Soundbook\\Assets\\ControlIcons"
+local SETTINGS_GEAR = "Interface\\AddOns\\Soundbook\\Assets\\SettingsGear"
 
 -- Clean single-border surface for compact HUDs and context menus. These
 -- elements are too small for the large book corners/inner frame used by
@@ -893,30 +894,25 @@ end
 
 -- Settings gear (Main window header, top-left) - explicit requirement:
 -- a compact gear icon button replacing the old external "Settings" text
--- tab. No gear quadrant exists in the addon's own control-icon atlas
--- (Assets/ControlIcons.tga is a binary asset that can't be extended from
--- here), so this reuses WoW's own built-in Trade_Engineering icon -
--- universally read as "settings/gear" across the WoW addon ecosystem -
--- desaturated and gold-tinted to match every other header glyph here
--- rather than showing as full-color game art.
+-- tab, and explicitly NOT a WoW item/spell/inventory icon (an earlier
+-- attempt reused WoW's built-in Trade_Engineering texture, which reads
+-- as a bug/beetle at this size rather than a gear - explicit report).
+-- Assets/SettingsGear.tga is a purpose-made navy/gold/arcane gear glyph
+-- (Assets/ControlIcons.tga's own atlas is a binary sprite sheet that
+-- can't be extended with a new quadrant from here, hence its own file).
+-- Already carries its own baked colour, so unlike the atlas-based glyphs
+-- above this one is never vertex-tinted - only its alpha changes between
+-- idle and active, to keep the artwork's own colour true.
 function Theme.CreateSettingsGlyph(parent, size)
     size = size or 16
     local btn = Theme.CreateMiniControlButton(parent, size)
     local icon = btn:CreateTexture(nil, "ARTWORK")
-    icon:SetPoint("TOPLEFT", 3, -3)
-    icon:SetPoint("BOTTOMRIGHT", -3, 3)
-    icon:SetTexture(134936) -- Trade_Engineering
-    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-    if icon.SetDesaturated then icon:SetDesaturated(true) end
+    icon:SetPoint("TOPLEFT", 2, -2)
+    icon:SetPoint("BOTTOMRIGHT", -2, 2)
+    icon:SetTexture(SETTINGS_GEAR)
     btn.icon = icon
-    -- Same idle/active language as CreateLockGlyph's :SetLocked() - muted
-    -- gold at rest, brighter gold while Settings is the open view.
     function btn:SetActive(active)
-        if active then
-            icon:SetVertexColor(1, 0.82, 0.38, 1)
-        else
-            icon:SetVertexColor(0.72, 0.66, 0.50, 0.85)
-        end
+        icon:SetAlpha(active and 1 or 0.72)
     end
     btn:SetActive(false)
     return btn
