@@ -1334,40 +1334,35 @@ local function PopulateFavMenu()
 end
 
 ------------------------------------------------------------------------
--- Proximity-based auto-close (explicit requirement, Mini Soundbook
--- layering/proximity regression fix) - a single shared, throttled
--- ticker covering BOTH transient surfaces (the expanded Mini Soundbook/
--- favMenu and Quick Options/quickMenu), rather than one competing timer
--- per element. Inactive (no ticker at all) whenever both are closed -
--- "do not run permanent Every Frame proximity checks while closed".
+-- Proximity-based auto-close: a single shared, throttled ticker covering
+-- BOTH transient surfaces (the expanded Mini Soundbook/favMenu and Quick
+-- Options/quickMenu), rather than one competing timer per element.
+-- Inactive (no ticker at all) whenever both are closed - no permanent
+-- every-frame proximity checks while closed.
 ------------------------------------------------------------------------
 
--- Regression fix (explicit user report): the original 60px/0.3s pairing
--- closed the Mini Soundbook almost the instant it opened - real screen
--- distance for a given "UI px" tolerance shrinks a lot at higher UI
--- scale settings, and 300ms is barely enough time to even register that
--- something opened, let alone react. Loosened substantially - "in der
--- Nähe reicht" - plus a separate opening grace period below so the very
--- act of opening can never itself be followed by an immediate close.
+-- Real screen distance for a given "UI px" tolerance shrinks at higher
+-- UI scale settings, so this and the close delay are loose enough that
+-- opening a surface is never immediately followed by a close - plus a
+-- separate opening grace period below for the very moment of opening.
 local PROXIMITY_TOLERANCE = 150  -- px, around the combined active area
 local PROXIMITY_CLOSE_DELAY = 0.6 -- seconds continuously outside before closing
 local PROXIMITY_SAMPLE_INTERVAL = 0.1 -- ~0.1s throttled polling, not every frame
--- Explicit requirement: "the icon is definitely nearby" - a short window
--- right after opening (icon click, hover-open, or a forced size-preview
--- open) during which outside-time can never accumulate at all, regardless
--- of where the cursor happens to be at that exact instant. Guarantees a
--- minimum reaction window on every single open, not just a looser ongoing
+-- A short window right after opening (icon click, hover-open, or a
+-- forced size-preview open) during which outside-time can never
+-- accumulate, regardless of cursor position at that instant - guarantees
+-- a minimum reaction window on every open, not just a looser ongoing
 -- tolerance.
 local PROXIMITY_OPEN_GRACE = 0.6 -- seconds
 
 local proximityTicker
 local proximityOutsideElapsed = 0
 local proximityGraceRemaining = 0
--- Interaction priority (explicit requirement): while true, the ticker
--- never accumulates outside-time at all - "restart the outside-distance
--- timer only after the active interaction ends" - set by icon drag
--- (BuildIcon above) and the Announcer/Mini Soundbook Size sliders
--- (SB.ShowAnnouncerQuickOptions below).
+-- Interaction priority: while true, the ticker never accumulates
+-- outside-time - the outside-distance timer restarts only after the
+-- active interaction ends. Set by icon drag (BuildIcon above) and the
+-- Announcer/Mini Soundbook Size sliders (SB.ShowAnnouncerQuickOptions
+-- below).
 local proximityActiveInteraction = false
 
 SetMiniActiveInteraction = function(active)
@@ -1379,20 +1374,13 @@ local function AddMiniBounds(combined, frame)
     if not frame or not frame.IsShown or not frame:IsShown() then return combined end
     local l, r, t, b = frame:GetLeft(), frame:GetRight(), frame:GetTop(), frame:GetBottom()
     if not (l and r and t and b) then return combined end
-    -- Regression fix (explicit user report: the Mini Soundbook closes
-    -- instantly while the cursor is hovering directly over it, but only
-    -- once Mini Soundbook Size reaches the 3-column layout, ~120%+).
     -- GetLeft/Right/Top/Bottom are returned in the frame's OWN local unit
     -- space (1 unit = that frame's own effective-scale pixels) - icon and
-    -- favMenu both carry their own independent SetScale (Announcer Size /
-    -- Mini Soundbook Size), so comparing their raw numbers directly
-    -- against the cursor position (normalized to UIParent's own scale
-    -- below) silently skews by exactly the scale ratio - the same class
-    -- of bug already fixed once for SB.ResolvePopoutDirection's
-    -- GetCenter() call (see that function's own comment). Below ~1.2 the
-    -- skew happened to stay inside the tolerance band, masking it; at 1.2+
-    -- (also a wider frame in raw units, compounding the error) it
-    -- regularly exceeded even a generous tolerance.
+    -- favMenu both carry independent SetScale (Announcer Size / Mini
+    -- Soundbook Size), so comparing their raw numbers directly against the
+    -- cursor position (normalized to UIParent's scale below) would skew by
+    -- the scale ratio. Same class of fix as SB.ResolvePopoutDirection's
+    -- GetCenter() call above.
     local scaleRatio = (frame.GetEffectiveScale and frame:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
     l, r, t, b = l * scaleRatio, r * scaleRatio, t * scaleRatio, b * scaleRatio
     if not combined then
@@ -1405,13 +1393,11 @@ local function AddMiniBounds(combined, frame)
     return combined
 end
 
--- Explicit requirement: "use its complete visible bounds plus relevant
--- child dropdown/popup bounds... include the Mini Soundbook trigger/icon
--- as part of the valid interaction area." The icon is always included
--- (it's the shared trigger for both surfaces); favMenu/quickMenu are
--- included only while actually shown; the Popout Direction dropdown's
--- own floating list (a separate top-level frame, see
--- SB.CloseAnnouncerQuickOptions above) is included only while open.
+-- The icon is always included in the combined bounds (it's the shared
+-- trigger for both surfaces); favMenu/quickMenu are included only while
+-- actually shown; the Popout Direction dropdown's own floating list (a
+-- separate top-level frame, see SB.CloseAnnouncerQuickOptions above) is
+-- included only while open.
 local function GetCombinedMiniBounds()
     local combined
     combined = AddMiniBounds(combined, icon)
@@ -1457,10 +1443,10 @@ local function MiniProximityTick()
     proximityOutsideElapsed = proximityOutsideElapsed + PROXIMITY_SAMPLE_INTERVAL
     if proximityOutsideElapsed < PROXIMITY_CLOSE_DELAY then return end
     proximityOutsideElapsed = 0
-    -- Explicit requirement: return each surface to its own normal closed
-    -- lifecycle - SB.CloseFavMenu/SB.CloseAnnouncerQuickOptions already
-    -- do exactly that (real Hide(), no setting/position/size/scale/lock
-    -- changes, dropdown list closed too).
+    -- Return each surface to its own normal closed lifecycle -
+    -- SB.CloseFavMenu/SB.CloseAnnouncerQuickOptions already do exactly that
+    -- (real Hide(), no setting/position/size/scale/lock changes, dropdown
+    -- list closed too).
     if quickMenu and quickMenu:IsShown() then SB.CloseAnnouncerQuickOptions() end
     if favMenu and favMenu:IsShown() then SB.CloseFavMenu() end
     if not ((quickMenu and quickMenu:IsShown()) or (favMenu and favMenu:IsShown())) then
@@ -1482,43 +1468,37 @@ end
 -- Canonical "a transient surface just hid" signal - called from BOTH
 -- favMenu's and quickMenu's own OnHide scripts (not just from
 -- SB.CloseFavMenu/SB.CloseAnnouncerQuickOptions) so the ticker stops
--- promptly no matter WHICH code path actually hid the frame (a row's own
--- click-to-play, the outside-click catcher, Escape, proximity itself,
--- ...) - Hide() always fires OnHide reliably, making it the one
--- authoritative place to check this, rather than duplicating the same
--- "is the other one still open" check at every individual call site.
+-- promptly no matter WHICH code path hid the frame (a row's click-to-play,
+-- the outside-click catcher, Escape, proximity itself, ...) - Hide()
+-- always fires OnHide reliably, making it the one authoritative place to
+-- check this.
 NoteMiniSurfaceHidden = function()
     if not ((quickMenu and quickMenu:IsShown()) or (favMenu and favMenu:IsShown())) then
         StopMiniProximityTicker()
     end
 end
 
--- Mini Soundbook activation mode (explicit requirement): the icon's own
--- native OnEnter hook (BuildIcon above) - fires once per genuine
--- transition into the icon's bounds, never on a poll. Gated by both the
--- persisted setting AND Quick Options' own open state ("opening Quick
--- Options must suppress automatic hover-opening... must not immediately
--- reopen... requires a fresh valid hover entry after Quick Options
--- closes" - satisfied for free here: nothing re-checks this while the
--- cursor merely continues resting on the icon after Quick Options closes
--- elsewhere, only a genuine new OnEnter does, and that only ever fires
--- after a real OnLeave).
+-- The icon's native OnEnter hook (BuildIcon above) fires once per
+-- genuine transition into the icon's bounds, never on a poll. Gated by
+-- both the persisted setting AND Quick Options' own open state: opening
+-- Quick Options suppresses automatic hover-opening, and nothing re-opens
+-- it just because the cursor is still resting on the icon after Quick
+-- Options closes elsewhere - only a genuine new OnEnter (after a real
+-- OnLeave) does.
 HandleMiniIconHoverEnter = function()
     if not (SB.db and SB.db.ui and SB.db.ui.announcer and SB.db.ui.announcer.openOnHover) then return end
     if quickMenu and quickMenu:IsShown() then return end
     if SB.ShowFavMenu then SB.ShowFavMenu(icon) end
 end
 
--- Exposed on SB (not a plain local) - BuildIcon's OnClick handler above
--- calls this by name before this point in the file is even reached at
--- load time; only actually invoked later, on a real click, by which time
--- this assignment has long since run (same pattern SB.ShowAnnouncerQuickOptions
--- already used successfully here).
--- Regression fix: single-active-transient-surface rule. Reuses favMenu's
--- OWN existing OnHide handler (already hides its catcher) rather than
--- duplicating that lifecycle here - "return to its normal closed state
--- using the existing lifecycle" (explicit requirement). A real Hide(),
--- never a strata change, so the frame genuinely stops taking clicks.
+-- Exposed on SB (not a plain local) since BuildIcon's OnClick handler
+-- above calls this by name before this point in the file is reached at
+-- load time; only actually invoked later, on a real click, by which
+-- time this assignment has already run.
+-- Single-active-transient-surface rule: reuses favMenu's own OnHide
+-- handler (already hides its catcher) rather than duplicating that
+-- lifecycle here. A real Hide(), never a strata change, so the frame
+-- genuinely stops taking clicks.
 function SB.CloseFavMenu()
     if favMenu then favMenu:Hide() end
 end
@@ -1526,8 +1506,8 @@ end
 -- Shared build+populate+position+show logic, factored out of ShowFavMenu so
 -- the Mini Soundbook Size live-preview path (below) can reuse it WITHOUT
 -- going through ShowFavMenu's own Quick-Options-closing side effect - the
--- preview is an explicit, narrow exception to the single-active-surface
--- rule, scoped only to the slider-drag interaction.
+-- preview is a narrow exception to the single-active-surface rule, scoped
+-- only to the slider-drag interaction.
 --
 -- `positionAnchor` (optional) is ONLY used for the one-time SetPoint call
 -- below - `favMenu.__anchor` (used by SB:RefreshPopoutPositions and every
@@ -1547,42 +1527,35 @@ local function DisplayFavMenu(anchor, directionOverride, positionAnchor)
 end
 
 function SB.ShowFavMenu(anchor)
-    -- Single-active-transient-surface rule (explicit requirement): Quick
-    -- Options never coexists with the expanded Mini Soundbook - closed
-    -- first if it was open ("Quick Options -> Mini Soundbook: close Quick
-    -- Options, then open Mini Soundbook"). The context/send menu is
-    -- deliberately left alone here - it's opened FROM a favMenu row and
-    -- is meant to coexist with it.
+    -- Single-active-transient-surface rule: Quick Options never coexists
+    -- with the expanded Mini Soundbook - closed first if it was open.
+    -- The context/send menu is deliberately left alone here - it's
+    -- opened FROM a favMenu row and is meant to coexist with it.
     if SB.CloseAnnouncerQuickOptions then SB.CloseAnnouncerQuickOptions() end
     DisplayFavMenu(anchor)
     StartMiniProximityTicker()
 end
 
--- Mini Soundbook Size live preview (explicit, narrow exception to the
--- single-active-transient-surface rule, scoped ONLY to dragging this one
--- slider): while the user drags, the Mini Soundbook must be visible and
--- reflect the size continuously, coexisting with Quick Options rather than
--- closing it. If the Mini Soundbook was already legitimately open, it is
--- left exactly as-is and untouched on release. If it had to be force-opened
--- for the preview, it is closed again on release via the SAME CloseFavMenu
--- lifecycle everything else uses.
+-- Mini Soundbook Size live preview: a narrow exception to the single-
+-- active-transient-surface rule, scoped only to dragging this one slider.
+-- While the user drags, the Mini Soundbook must be visible and reflect
+-- the size continuously, coexisting with Quick Options rather than
+-- closing it. If it was already legitimately open, it's left untouched
+-- on release. If it had to be force-opened for the preview, it's closed
+-- again on release via the same CloseFavMenu lifecycle everything else uses.
 local miniSizePreviewForcedOpen = false
 
 local function StartMiniSizePreview()
     if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end
     if not (favMenu and favMenu:IsShown()) then
         miniSizePreviewForcedOpen = true
-        -- Regression fix: an independently-computed "opposite side of the
-        -- icon" direction looked correct on paper, but near a screen edge
-        -- SetClampedToScreen pulls an off-screen placement back on-screen -
-        -- straight back toward the icon (and quickMenu, which sits
-        -- immediately next to it), overlapping after all. Chaining off
-        -- quickMenu's own ACTUAL resolved rectangle instead, continuing in
-        -- the SAME direction quickMenu already opened toward (the side
-        -- ResolvePopoutDirection picked specifically because it has room),
-        -- guarantees adjacency to quickMenu with never less than the
-        -- normal POPOUT_GAP between them - it can only ever be pushed
-        -- further into the open screen area, never back toward quickMenu.
+        -- Chains off quickMenu's own ACTUAL resolved rectangle (continuing in
+        -- the SAME direction quickMenu already opened toward) rather than
+        -- independently computing an "opposite side" direction - near a
+        -- screen edge, SetClampedToScreen would otherwise pull an
+        -- independently-placed popup back on-screen, straight into
+        -- quickMenu, overlapping it. This guarantees adjacency with never
+        -- less than POPOUT_GAP between them.
         if quickMenu and quickMenu:IsShown() then
             local dir = SB.ResolvePopoutDirection(icon)
             DisplayFavMenu(icon, dir, quickMenu)
@@ -1604,11 +1577,9 @@ end
 -- Mini Soundbook Size - independent of Announcer Size (SB:RefreshAnnouncerScale
 -- above): scales ONLY the favourite-area popup (icons, sound-name text,
 -- dropdown/name-area width, spacing) via a plain frame SetScale, same
--- technique the Announcer itself uses for its own scale. Safe to call
--- before the popup has ever been built (BuildFavMenu hasn't run yet, e.g.
--- Settings -> Mini's slider before the icon is ever right-clicked) - just
--- no-ops until the frame exists, exactly like SB:RefreshAnnouncerScale's
--- own icon/banner guards.
+-- technique the Announcer itself uses. Safe to call before the popup has
+-- ever been built (BuildFavMenu hasn't run yet) - just no-ops until the
+-- frame exists, like SB:RefreshAnnouncerScale's own icon/banner guards.
 function SB:RefreshMiniSoundbookScale()
     if favMenu then favMenu:SetScale(SB.db.ui.announcer.favScale or 1.0) end
 end
