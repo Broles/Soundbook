@@ -92,6 +92,7 @@ local FRAME_CORNER = "Interface\\AddOns\\Soundbook\\Assets\\FrameCorner"
 local ICON_FRAME = "Interface\\AddOns\\Soundbook\\Assets\\IconFrame"
 local CONTROL_ICONS = "Interface\\AddOns\\Soundbook\\Assets\\ControlIcons"
 local SETTINGS_GEAR = "Interface\\AddOns\\Soundbook\\Assets\\SettingsGear"
+local AUDIO_ICON = "Interface\\AddOns\\Soundbook\\Assets\\AudioIcon"
 
 -- Clean single-border surface for compact HUDs and context menus. These
 -- elements are too small for the large book corners/inner frame used by
@@ -870,23 +871,22 @@ function Theme.CreateMuteGlyph(parent, size)
     return btn
 end
 
--- Quick Audio (Main window header) - reuses the EXACT same speaker-with-
--- slash artwork CreateMuteGlyph draws (Assets/ControlIcons.tga's second
--- quadrant is literally a speaker glyph, not a generic square), but with a
--- single static tint rather than the red/green toggle state, since Quick
--- Audio opens a menu - it isn't itself a mute toggle. Explicit requirement:
--- "should visually read as a speaker/audio control... do NOT use WoW item/
--- spell/inventory artwork for Quick Audio... prefer the existing Soundbook
--- control-icon system/asset where possible" - this is that asset, not a
--- new one.
+-- Quick Audio (Main window header) - explicit report: this used to reuse
+-- CreateMuteGlyph's own atlas quadrant, which is a speaker-WITH-SLASH
+-- drawing - reads as "muted" even though Quick Audio just opens a menu,
+-- not a mute toggle. Assets/AudioIcon.tga is a dedicated, neutral plain-
+-- speaker glyph (a filled speaker cone + two sound-wave arcs, no slash)
+-- - a white silhouette with alpha, same convention as SettingsGear.tga
+-- and the ControlIcons.tga atlas glyphs, so the existing vertex-colour
+-- tint below still applies correctly. Not WoW item/spell/inventory
+-- artwork, per the same explicit requirement as the Settings gear.
 function Theme.CreateAudioGlyph(parent, size)
     size = size or 16
     local btn = Theme.CreateMiniControlButton(parent, size)
     local icon = btn:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("TOPLEFT", 2, -2)
     icon:SetPoint("BOTTOMRIGHT", -2, 2)
-    icon:SetTexture(CONTROL_ICONS)
-    icon:SetTexCoord(0.25, 0.50, 0, 1)
+    icon:SetTexture(AUDIO_ICON)
     icon:SetVertexColor(0.58, 0.78, 1.0, 0.92)
     btn.icon = icon
     return btn
