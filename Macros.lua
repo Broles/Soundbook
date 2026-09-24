@@ -1,36 +1,27 @@
 -- Macros.lua
 --
--- Soundbook does not create or edit macros directly (that used the
--- protected CreateMacro/EditMacro API, which is blocked in combat, limited
--- by macro slot counts, and generally opaque to the user about what it did).
--- Instead, the Edit window shows a ready-to-use macro command inline that
--- the player copies into a macro they create themselves through WoW's own
--- macro UI - simpler, always available, and impossible to get into a
--- broken state.
+-- Soundbook never creates/edits macros itself: CreateMacro/EditMacro are
+-- protected API (blocked in combat) and macro slots are limited. Instead
+-- the Edit window shows a ready-to-use "/sb play" command for the player
+-- to paste into a macro they create through WoW's own macro UI.
 --
--- The command always goes through the exact same central playback function
--- as every other trigger (see SoundPlayer.lua / Core.lua's slash handler):
+-- The command routes through the same central playback function as every
+-- other trigger (see SoundPlayer.lua / Core.lua's slash handler):
 --   /sb play 2::wir wipen
 --
--- Optional output override - a trailing "::<Target>" segment - lets a
--- specific macro always send to one particular place instead of whatever
--- Settings -> Default Output Channel is currently set to:
+-- An optional trailing "::<Target>" overrides the output channel for that
+-- macro instead of using Settings -> Default Output Channel:
 --   /sb play German Memes::Auf Alkohol::Guild
---   /sb play German Memes::Auf Alkohol::Friends
---   /sb play German Memes::Auf Alkohol::Party
---   /sb play German Memes::Auf Alkohol::PlayerABC
--- Omitting it (the plain "/sb play <category::name>" form every macro used
--- before this existed) keeps behaving exactly as before - local play, then
--- SB:DispatchDefaultOutput's normal Default-Output-Channel logic.
+-- Omitting it keeps the plain "/sb play <category::name>" form working
+-- exactly as it did before this feature existed (local play, then
+-- SB:DispatchDefaultOutput's normal Default-Output-Channel logic).
 
 local ADDON_NAME, SB = ...
 
 -- Recognized channel keywords for the trailing "::<Target>" (case-
--- insensitive) - mirrors the GUILD/PARTY/RAID/FRIENDS/PLAYER: shape
--- Settings -> Default Output Channel already uses (Communication.lua/
--- Settings.lua's SB.ComputeOutputTargetOptions), just spelled the way a
--- human types it into a macro. Anything that doesn't match one of these is
--- treated as a player name instead.
+-- insensitive), matching the GUILD/PARTY/RAID/FRIENDS/PLAYER: shape used
+-- by Settings -> Default Output Channel (Communication.lua/Settings.lua's
+-- SB.ComputeOutputTargetOptions). Anything unmatched is a player name.
 local TARGET_KEYWORDS = {
     guild = "GUILD",
     party = "PARTY",
