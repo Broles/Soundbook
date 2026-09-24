@@ -656,6 +656,36 @@ function SB.GetChannelSubsetCount(bucket)
     return selected, #reachable
 end
 
+------------------------------------------------------------------------
+-- Explicit user request: the subset survives a /reload but resets to
+-- "everyone selected" after a genuine relog/client restart - the CHANNEL
+-- choice itself (SB.db.settings.defaultOutputTarget) is unaffected
+-- either way, already an ordinary persisted setting with its own
+-- unrelated storage. PLAYER_ENTERING_WORLD's own `isInitialLogin`
+-- argument is the native, documented way to tell a fresh login/relog
+-- apart from a /reload while already in world (a /reload re-executes
+-- every addon file from scratch, same as this whole module reloading,
+-- but is NOT a fresh login) - no custom heuristic needed. Resetting to
+-- nil (rather than explicitly "ALL") is enough: every read function
+-- above already treats nil exactly like "ALL" for display/dispatch
+-- purposes, so this reproduces "everyone selected" with no special case.
+------------------------------------------------------------------------
+function SB.ResetChannelSubsetsOnFreshLogin(isInitialLogin)
+    if not isInitialLogin then return end
+    for _, bucket in ipairs(SUBSET_BUCKETS) do
+        SetSubset(bucket, nil)
+    end
+end
+
+-- Named (not anonymous) purely so the mock harness used in this
+-- codebase's own pre-flight testing can reach it and simulate
+-- PLAYER_ENTERING_WORLD directly - no other addon code ever needs to.
+local subsetLoginFrame = CreateFrame("Frame", "SoundbookSubsetLoginFrame")
+subsetLoginFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+subsetLoginFrame:SetScript("OnEvent", function(_, _, isInitialLogin)
+    SB.ResetChannelSubsetsOnFreshLogin(isInitialLogin)
+end)
+
 function SB.ComputeOutputTargetOptions()
     local opts = { { text = "All (checked in Settings)", value = "ALL", isHeader = true } }
     local reachable = SB.ComputeReachablePlayers()
