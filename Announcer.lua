@@ -142,6 +142,30 @@ function SB.SuppressMiniHoverGate()
     miniHoverGateArmed = false
 end
 
+-- Single source of truth for what a click on the icon itself does (see
+-- BuildIcon's OnClick below) - ALSO called from favMenu's/quickMenu's own
+-- catcher OnClick further down when a click meant for the icon lands on
+-- one of those full-screen catchers instead, because a catcher covers the
+-- entire screen at a strata above the icon, including directly over it
+-- (same strata fact the gate above is built on). Without redispatching,
+-- that first right-click/shift-right-click would silently just close
+-- whichever popup was open and do nothing else - Open Soundbook/Quick
+-- Options only firing on a SECOND click - and with hover ON, hover could
+-- reopen the popup again before that second click ever landed, making
+-- the icon look permanently stuck. Only called for a button/click that
+-- should actually change what's open - see each catcher's own comment
+-- for when it's skipped (a plain re-click that would just toggle the
+-- SAME surface back open).
+local function PerformMiniIconClick(button)
+    if button == "LeftButton" then
+        if SB.ShowFavMenu then SB.ShowFavMenu(icon) end
+    elseif IsShiftKeyDown() then
+        if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(icon) end
+    else
+        SB:Fire("TOGGLE_MAIN_UI")
+    end
+end
+
 ------------------------------------------------------------------------
 -- Frame construction
 ------------------------------------------------------------------------
@@ -217,13 +241,7 @@ local function BuildIcon()
     -- Right click: Open Soundbook
     -- Shift+Right click: Quick Options
     icon:SetScript("OnClick", function(self, mouseButton)
-        if mouseButton == "LeftButton" then
-            if SB.ShowFavMenu then SB.ShowFavMenu(self) end
-        elseif IsShiftKeyDown() then
-            SB.ShowAnnouncerQuickOptions(self)
-        else
-            SB:Fire("TOGGLE_MAIN_UI")
-        end
+        PerformMiniIconClick(mouseButton)
     end)
 
     icon:SetScript("OnEnter", function(self)
@@ -1274,7 +1292,21 @@ local function BuildFavMenu()
     catcher:SetFrameLevel(favMenu:GetFrameLevel() > 1 and favMenu:GetFrameLevel() - 1 or 1)
     catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     catcher:Hide()
-    catcher:SetScript("OnClick", function() favMenu:Hide(); catcher:Hide() end)
+    catcher:SetScript("OnClick", function(self, button)
+        favMenu:Hide()
+        catcher:Hide()
+        -- The click only landed on this catcher because it covers the
+        -- whole screen above the icon's own strata - if the cursor is
+        -- actually over the icon (the common case: the Mini Soundbook is
+        -- hover-open and the player then right-clicks the icon itself),
+        -- this was meant for the icon's own click handling (Open
+        -- Soundbook / Quick Options), not just "click outside to
+        -- dismiss". Redispatch it now instead of swallowing it - see
+        -- PerformMiniIconClick's own comment for why this matters.
+        if IsCursorActuallyOnIcon() then
+            PerformMiniIconClick(button)
+        end
+    end)
     favMenu.catcher = catcher
     favMenu:SetScript("OnHide", function()
         catcher:Hide()
@@ -1702,7 +1734,17 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         catcher:SetFrameLevel(quickMenu:GetFrameLevel() > 1 and quickMenu:GetFrameLevel() - 1 or 1)
         catcher:RegisterForClicks("LeftButtonUp", "RightButtonUp")
         catcher:Hide()
-        catcher:SetScript("OnClick", function() SB.CloseAnnouncerQuickOptions() end)
+        catcher:SetScript("OnClick", function(self, button)
+            SB.CloseAnnouncerQuickOptions()
+            -- Same redispatch as favMenu's own catcher, with one
+            -- exception: Shift+Right-click is Quick Options' OWN
+            -- toggle-close gesture (see the icon's click binding) -
+            -- closing above already IS that action, so redispatching it
+            -- too would just reopen the very menu it was meant to close.
+            if IsCursorActuallyOnIcon() and not (button == "RightButton" and IsShiftKeyDown()) then
+                PerformMiniIconClick(button)
+            end
+        end)
         quickMenu.catcher = catcher
         quickMenu:SetScript("OnHide", function()
             catcher:Hide()

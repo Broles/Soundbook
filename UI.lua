@@ -1922,16 +1922,30 @@ local function BuildTagFilterBar(parent)
         pill:SetScript("OnLeave", function() GameTooltip:Hide() end)
     end
 
-    -- Left-aligned starting at GRID_LEFT_PAD (explicit requirement,
-    -- sections 4-5: "align the toolbar to the same interior content
-    -- guides as the library below it" / filter pills "alignment with the
-    -- main content column") - the same left guide the Library's own
-    -- section headers and sound rows start from, instead of centring
-    -- across the bar's full width independent of that column. Kept the
-    -- function name (still recomputes every pill's position on resize;
-    -- only the alignment rule changed).
+    -- Centred as one block within the bar's own width (regression fix:
+    -- the previous plain left-pack from GRID_LEFT_PAD had no right-edge
+    -- awareness at all - at a wider Main window, or a larger Settings ->
+    -- General text scale growing every pill's own text width, the row
+    -- either read as strongly left-biased with a large empty gap on the
+    -- right, or - once wide enough - ran straight into the window's own
+    -- right border/frame). GRID_LEFT_PAD is kept as a floor, not the
+    -- fixed start, so the row still never begins further left than the
+    -- Library's own column guide below it, but centres properly (equal
+    -- margin both sides) whenever there's slack to do so. Kept the
+    -- function name (still recomputes every pill's position on resize).
     local function RecenterFilterPills()
-        local x = GRID_LEFT_PAD
+        local totalW, shownCount = 0, 0
+        for _, pill in ipairs(filterPills) do
+            if pill:IsShown() then
+                totalW = totalW + pill:GetWidth()
+                shownCount = shownCount + 1
+            end
+        end
+        if shownCount > 1 then
+            totalW = totalW + (shownCount - 1) * FILTER_PILL_GAP
+        end
+        local barW = tagFilterBar:GetWidth() or 0
+        local x = math.max(GRID_LEFT_PAD, (barW - totalW) / 2)
         for _, pill in ipairs(filterPills) do
             if pill:IsShown() then
                 pill:ClearAllPoints()
