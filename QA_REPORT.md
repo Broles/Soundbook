@@ -2073,3 +2073,31 @@ Round 16 above is the last dated round entry in this file, but it is not the fin
 - Database schema advanced from v27 (current at Round 16) to **v28**.
 
 See `README.md`, `CHANGELOG.md` ("Later within 3.0.0"), and `MIGRATION.md` for the current-state description; no further dated rounds are recorded in this file as of this note.
+
+## Soundbook 3.0.1: WoW-client compatibility hardening audit
+
+A dedicated compatibility pass, on `dev/3.0.1`, targeting all five interfaces already declared in `Soundbook.toc` (Classic Era/Hardcore/SoD `11509`, WoW Forever `16001`, TBC Anniversary `20506`, Mists of Pandaria Classic `50504`, Retail `120100`). This is hardening, not a redesign - no feature, UI, SavedVariables format, DB version, `SB.COMM_PREFIX`, `SB.PROTOCOL_VERSION`, wire payload format, or sound ID changed. TBC Anniversary is the only client confirmed by live play; it was the regression baseline this pass was checked against throughout.
+
+### APIs audited
+
+Every `.lua` file listed in `Soundbook.toc` was checked for API calls that differ across the five target clients, with particular attention to the namespaces Blizzard has been migrating globals into (`C_AddOns`, `C_ChatInfo`, `C_FriendList`, `C_Sound`), plus timers, group/raid/guild/friend/Ignore APIs, addon metadata, sound playback/handles, keybindings, combat lockdown, frame templates/`BackdropTemplate`, and realm/name handling. Most of the addon already carried a "modern API first, capability-detected legacy fallback second" pattern (`SB.GetNumFriends`, `SB.GetFriendInfoByIndex`, `SB.SendAddonMessage`, `SB.GetUnitFullName`, `SB.RegisterAddonPrefix`, `SB.CreateFrame`'s `BackdropTemplate` mixin) and needed no change. `C_Timer`, `PlaySoundFile`, `SetOverrideBindingClick`/`ClearOverrideBindings`, `InCombatLockdown`, and the guild-roster globals (`GetNumGuildMembers`/`GetGuildRosterInfo`, already existence-guarded at every call site) were reviewed and found to already degrade safely; no verified modern replacement exists for the guild-roster globals as of this audit, so they were left as-is rather than guessing at an unverified `C_GuildInfo` signature.
+
+### Compatibility wrappers added/fixed
+
+- **Ignore list** (`Core.lua`): `SB:IsIgnored` relied solely on the legacy `GetNumIgnores`/`GetIgnoreName` globals. Added `SB.GetNumIgnores()`/`SB.GetIgnoreName(index)`, preferring `C_FriendList.GetNumIgnores`/`C_FriendList.GetIgnoreName` and falling back to the legacy globals - the exact pattern the Friends-list wrappers already used. `SB.PlayerKey`, realm-aware identity, Ignore ACK behavior, and the higher-level "have I ignored them" semantics are unchanged.
+
+### Transport changes
+
+`Transport.lua`'s `SendNow()` used to treat "the API call didn't raise a Lua error" as "the message was sent" - `C_ChatInfo.SendAddonMessage` can return a non-Success `Enum.SendAddonMessageResult` (throttle/rejection) without erroring at all, and that result was never inspected by any caller. Fixed: a new `ClassifySendResult` distinguishes success (`Enum.SendAddonMessageResult.Success`, or a `nil` result on clients/legacy APIs with no result signal at all) from a genuine failure, which is now retried up to a bounded `MAX_SEND_ATTEMPTS` (3) rather than silently discarded or retried forever; an entry that fails on its very first, no-queue-yet attempt now falls through into the normal bounded priority queue instead of being lost. The queue itself, its priority order (admin/ACK > PLAY > presence > analytics), duplicate-collapsing, and max-age expiry are unchanged. Also lowered `TOKEN_CAPACITY` (24 → 10) and `TOKEN_REFILL_PER_SECOND` (12 → 1), which were tuned far more aggressively than Blizzard's own per-prefix throttle tolerates in practice - reliability over raw throughput, per this round's own goal.
+
+### Raid enumeration change
+
+Five `GetRaidRosterInfo(i)` scans (`Communication.lua` x4, `AdminPanel.lua` x1) iterated `1..SB.GetNumGroupMembers()`, assuming raid indices are always a compact run - not guaranteed (a member can sit at an index past the current member count after roster churn). All five now iterate `1..SB.MAX_RAID_MEMBERS` (a new `Core.lua` constant: the `MAX_RAID_MEMBERS` global when present, else the standard fallback of 40), with the existing nil-guards unchanged. Party-branch loops (`party1..N` unit IDs, always contiguous) were deliberately left untouched. Recipient calculation, online checks, admin authority checks, leader/assistant handling, realm-aware identity, Raid Admin mute logic, and ACK logic are all otherwise unchanged - only the enumeration range.
+
+### Tests performed
+
+Static: `luac -p` across all 29 `Soundbook.toc`-listed files (clean); confirmed every listed file exists on disk. Regression: the full existing mock suite (13 scripts) still passes unchanged. A new `loader_compat.lua` (14th script) adds focused coverage for this round specifically: (1) Ignore-list lookups across a modern-only, legacy-only, mixed (modern must win), and neither-API-present environment - the last of these confirms `SB:IsIgnored` degrades to `false` without ever raising a Lua error; (2) a simulated permanent addon-message throttle - confirms a throttled send is never counted as sent, is retried a bounded number of times (exactly `MAX_SEND_ATTEMPTS`, verified by call count), is eventually dropped rather than queued forever, and that the transport recovers cleanly once the throttle clears; (3) a raid roster with a real member deliberately placed at index 25 while `GetNumGroupMembers()` reports 3 - confirmed reachable end-to-end through the public `SB.ComputeReachablePlayers()` path, not just via the raw loop bound.
+
+### Remaining limitation
+
+No physical Classic Era, WoW Forever, Mists of Pandaria Classic, or Retail client was available to this session - those four are technically/static validated only (audited against each client's documented API surface and this addon's own compatibility layer), not live-tested. TBC Anniversary remains the sole live-tested baseline. See `README.md`'s compatibility table for the per-client status this round leaves in place.

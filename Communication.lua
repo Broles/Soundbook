@@ -196,7 +196,9 @@ local function GetGroupCoveredNames(modes)
     -- Raid and Party share the one "RAID" toggle (see SB.ResolveGroupChannel
     -- above) - whichever of the two is actually live gets scanned here.
     if modes.RAID and IsInRaid() then
-        for i = 1, SB.GetNumGroupMembers() do
+        -- Compatibility hardening: raid indices aren't guaranteed compact -
+        -- scan the full valid range, not just up to the current member count.
+        for i = 1, SB.MAX_RAID_MEMBERS do
             local name = GetRaidRosterInfo(i)
             if name then covered[IdentityKey(name)] = true end
         end
@@ -380,7 +382,10 @@ function SB.ComputeReachablePlayers()
     end)
     CollectInto("RAID", function(add)
         if IsInRaid() then
-            for i = 1, SB.GetNumGroupMembers() do
+            -- Compatibility hardening: raid indices aren't guaranteed
+            -- compact - scan the full valid range, not just up to the
+            -- current member count.
+            for i = 1, SB.MAX_RAID_MEMBERS do
                 local name, _, _, _, _, _, _, online = GetRaidRosterInfo(i)
                 if name and online then add(name) end
             end
@@ -1552,7 +1557,9 @@ local function IsSenderAuthorizedAdmin(sender)
     local senderKey = IdentityKey(sender)
     if not senderKey then return false end
     if IsInRaid() then
-        for i = 1, SB.GetNumGroupMembers() do
+        -- Compatibility hardening: raid indices aren't guaranteed compact -
+        -- scan the full valid range, not just up to the current member count.
+        for i = 1, SB.MAX_RAID_MEMBERS do
             local rname, rank = GetRaidRosterInfo(i)
             if rname and IdentityKey(rname) == senderKey then
                 return (rank or 0) >= 1 -- 1 = assistant, 2 = leader
@@ -1583,7 +1590,9 @@ local function IsSenderCurrentLeader(sender)
     local senderKey = IdentityKey(sender)
     if not senderKey then return false end
     if IsInRaid() then
-        for i = 1, SB.GetNumGroupMembers() do
+        -- Compatibility hardening: raid indices aren't guaranteed compact -
+        -- scan the full valid range, not just up to the current member count.
+        for i = 1, SB.MAX_RAID_MEMBERS do
             local rname, rank = GetRaidRosterInfo(i)
             if rname and IdentityKey(rname) == senderKey then
                 return rank == 2

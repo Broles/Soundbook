@@ -374,6 +374,17 @@ function SB.GetNumGroupMembers()
     return 0
 end
 
+-- Compatibility hardening: the valid range for GetRaidRosterInfo(i) is NOT
+-- guaranteed to be a compact 1..SB.GetNumGroupMembers() run - raid indices
+-- can have holes (e.g. someone leaving/rejoining without every client's
+-- roster re-compacting in the same instant), so a member can sit at an
+-- index past the current member COUNT. Every GetRaidRosterInfo scan in
+-- this addon (Communication.lua, AdminPanel.lua) iterates up to this
+-- bound instead and skips nil entries, rather than assuming compactness.
+-- MAX_RAID_MEMBERS itself is a Blizzard global on clients that have it;
+-- 40 is the long-standing safe fallback everywhere else.
+SB.MAX_RAID_MEMBERS = MAX_RAID_MEMBERS or 40
+
 -- Whether the player currently has game audio effectively muted: either the
 -- master "Disable All Sound" option, or the Master Volume slider at 0.
 -- Read-only - Soundbook never sets/changes either CVar; this only checks
@@ -429,19 +440,38 @@ function SB:IsFriend(name)
     return false
 end
 
--- Whether `name` is on the player's own Ignore list. Uses the older
--- GetNumIgnores/GetIgnoreName globals, available across every supported
--- client, unlike a name-keyed C_FriendList.IsIgnored which isn't
--- universally present. Only ever tells us "have I ignored them", never
--- the reverse (WoW has no API for "who has ignored me") -
--- Communication.lua's Ignore-blocking enforcement is built entirely
--- around that asymmetry.
+-- Ignore-list iteration: same prefer-modern-fall-back-to-legacy pattern as
+-- SB.GetNumFriends/SB.GetFriendInfoByIndex above - Retail has migrated
+-- this off the bare GetNumIgnores/GetIgnoreName globals onto C_FriendList,
+-- which older Classic-family clients don't have.
+function SB.GetNumIgnores()
+    if C_FriendList and C_FriendList.GetNumIgnores then
+        return C_FriendList.GetNumIgnores()
+    elseif GetNumIgnores then
+        return GetNumIgnores()
+    end
+    return 0
+end
+
+function SB.GetIgnoreName(index)
+    if C_FriendList and C_FriendList.GetIgnoreName then
+        return C_FriendList.GetIgnoreName(index)
+    elseif GetIgnoreName then
+        return GetIgnoreName(index)
+    end
+    return nil
+end
+
+-- Whether `name` is on the player's own Ignore list. Only ever tells us
+-- "have I ignored them", never the reverse (WoW has no API for "who has
+-- ignored me") - Communication.lua's Ignore-blocking enforcement is built
+-- entirely around that asymmetry.
 function SB:IsIgnored(name)
     local requestedKey = SB.PlayerKey and SB.PlayerKey(name) or SB.NormalizeName(name)
     if not requestedKey then return false end
-    local n = GetNumIgnores and GetNumIgnores() or 0
+    local n = SB.GetNumIgnores()
     for i = 1, n do
-        local ignoreName = GetIgnoreName and GetIgnoreName(i)
+        local ignoreName = SB.GetIgnoreName(i)
         local ignoreKey = ignoreName and (SB.PlayerKey and SB.PlayerKey(ignoreName) or SB.NormalizeName(ignoreName))
         if ignoreKey and ignoreKey == requestedKey then
             return true

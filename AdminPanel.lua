@@ -123,7 +123,10 @@ local function GetRosterWithRoles()
     local me = SB.NormalizeName(UnitName("player"))
 
     if IsInRaid() then
-        for i = 1, SB.GetNumGroupMembers() do
+        -- Compatibility hardening: raid indices aren't guaranteed compact -
+        -- scan the full valid range (SB.MAX_RAID_MEMBERS), not just up to
+        -- the current member count, and skip nils (already done below).
+        for i = 1, SB.MAX_RAID_MEMBERS do
             local name, rank, _, _, _, _, _, online = GetRaidRosterInfo(i)
             if name then
                 name = SB.NormalizeName(name)

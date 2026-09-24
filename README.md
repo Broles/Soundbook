@@ -12,15 +12,15 @@ This is the same mechanism [BigWigs](https://github.com/BigWigsMods/BigWigs/blob
 
 | Client | Interface | Status |
 | --- | --- | --- |
-| Classic Era (incl. Season of Discovery, Hardcore) | 11509 | Static-analysis verified only, not yet live-tested |
-| WoW Forever (beta) | 16001 | Static-analysis verified only, not yet live-tested — see the known upstream bug below before relying on it |
-| Burning Crusade Classic (Anniversary) | 20506 | Confirmed in live use |
-| Mists of Pandaria Classic (progression realms) | 50504 | Not yet audited, not yet live-tested |
-| Retail | 120100 | Added without a dedicated audit pass — see note below |
+| Classic Era (incl. Season of Discovery, Hardcore) | 11509 | Technically/static validated |
+| WoW Forever (beta) | 16001 | Technically/static validated, subject to known client-specific upstream limitations — see the known upstream bug below before relying on it |
+| Burning Crusade Classic (Anniversary) | 20506 | Live tested |
+| Mists of Pandaria Classic (progression realms) | 50504 | Technically/static validated |
+| Retail | 120100 | Technically/static validated |
 
 Season of Discovery and Hardcore realms run on the same client build as Classic Era, so interface 11509 covers them too. Wrath Classic and Cataclysm Classic are not listed separately: as of this writing those expansions aren't offered as standalone live realm types (the progression-realm cycle has moved past them to Mists) — add their interface numbers to the comma list if/when Blizzard reopens them.
 
-"Static-analysis verified" means the code was audited against the target client's known API surface and the existing compatibility layer in `Core.lua`, but has not been confirmed by an actual playtest on that client. The Mists and Retail entries have not had that audit pass at all yet; they rely on `Core.lua`'s existing fallbacks (which all prefer the modern API most recent clients use natively) but haven't been checked for flavor-specific concerns such as combat-lockdown/taint edge cases. Report issues if something breaks.
+"Technically/static validated" means the code was audited against the target client's known API surface and the existing compatibility layer (`Core.lua`, `Transport.lua`) — including a dedicated compatibility-hardening pass covering Ignore-list lookups, addon-message send-result handling, and raid-roster enumeration — but has not been confirmed by an actual playtest on that client, since a live MoP/Retail/Forever/Classic Era client was not available during that pass. TBC Anniversary remains the only entry confirmed by live play; it is the baseline every other client's static audit is checked against for regressions. Report issues if something breaks.
 
 ### Known upstream bug: WoW Forever SavedVariables
 
@@ -144,7 +144,9 @@ Stable sound IDs use `<category>::<name>`. A customized display name does not ch
 ## Compatibility and recovery
 
 - Target interfaces: `16001` (WoW Forever), `11509` (Classic Era), `20506` (Burning Crusade Classic Anniversary), `50504` (Mists of Pandaria Classic), `120100` (Retail) — see the table above for verification status.
-- Retail-style APIs are used only when available and have Classic-compatible fallbacks where required.
+- Retail-style APIs are used only when available and have Classic-compatible fallbacks where required: `C_FriendList` (friends and Ignore-list lookups) over the legacy globals, `C_ChatInfo.SendAddonMessage`/`RegisterAddonMessagePrefix` over the legacy globals, `C_AddOns.GetAddOnMetadata` over the legacy global, `GetNormalizedRealmName` over `GetRealmName`, and `BackdropTemplate` mixed in only where a frame actually needs it.
+- Outbound addon-message transport (`Transport.lua`) checks the actual send result rather than assuming success just because the API call didn't error - a throttled/rejected send is retried a bounded number of times, never silently dropped or infinitely retried, and the rate limiter is tuned conservatively against Blizzard's own per-prefix throttle rather than against maximum theoretical throughput.
+- Raid-roster scans (`Communication.lua`, `AdminPanel.lua`) iterate the full valid `GetRaidRosterInfo` index range rather than assuming it's a compact run up to the current member count, so a member sitting at a non-contiguous index is never missed.
 - Optional sound-handle progress tracking degrades cleanly when `C_Sound.IsPlaying` is unavailable.
 - A database written by a newer Soundbook version is opened in non-committing compatibility mode; it is never downgraded.
 - A corrupt or cyclic SavedVariables table falls back to safe runtime defaults without overwriting the original table.
