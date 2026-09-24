@@ -85,7 +85,7 @@ local pinnedZoomSlot
 local function CloseMenu()
     if menu then menu:Hide() end
     if catcher then catcher:Hide() end
-    SB:UnpinFavAlpha()
+    SB:RefreshAnnouncerAlpha()
     if pinnedZoomSlot and pinnedZoomSlot.SetHoverZoomPinned then
         pinnedZoomSlot:SetHoverZoomPinned(false)
     end

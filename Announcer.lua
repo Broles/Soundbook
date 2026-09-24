@@ -2079,16 +2079,6 @@ function SB:RefreshAnnouncerAlpha()
     end
 end
 
--- Restores the Mini Soundbook icon to its normal alpha (idle, unless the
--- mouse is still over it) - called from SendMenu.lua's CloseMenu every
--- time the right-click context menu closes, as a safety reset.
-function SB:UnpinFavAlpha()
-    if not icon then return end
-    if not icon:IsMouseOver() then
-        icon:SetAlpha((SB.db.ui.announcer.alphaIdle or 100) / 100)
-    end
-end
-
 -- Explicit report: Settings' "Announcer Font"/"Announcer Text Size"
 -- controls (SB.db.settings.miniFont/miniFontScale) had no effect - this
 -- was a placeholder stub, never actually implemented after the 3.0
