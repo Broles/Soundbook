@@ -987,7 +987,16 @@ end
 local NAV_ROW_H = 31
 
 local function CreateNavRow(parent, entry)
-    local btn = CreateFrame("Button", nil, parent)
+    -- Bugfix (live-client crash report): the raw WoW CreateFrame() global
+    -- was used here instead of SB.CreateFrame - on every currently
+    -- supported client, a frame only gets SetBackdrop/SetBackdropColor/
+    -- SetBackdropBorderColor if it inherits "BackdropTemplate", which the
+    -- bare global never adds. SB.CreateFrame (Core.lua) is this addon's
+    -- own wrapper that always mixes that template in - used everywhere
+    -- else a frame needs a backdrop, just missed here. The mock test
+    -- harness never caught this because its own CreateFrame stub doesn't
+    -- distinguish backdrop-template frames from plain ones.
+    local btn = SB.CreateFrame("Button", nil, parent)
     btn:SetSize(NAV_W, NAV_ROW_H)
     btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
     btn:SetBackdropColor(0, 0, 0, 0)
