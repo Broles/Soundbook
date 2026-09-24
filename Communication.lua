@@ -566,8 +566,12 @@ function SB:DispatchDefaultOutput(soundID, overrideTarget)
     elseif target == "RAID" or target == "PARTY" then
         -- "RAID" is the merged Raid/Party target (see
         -- SB.ResolveGroupChannel), resolved to whichever is actually live.
-        -- "PARTY" is only checked here as a defensive fallback for a stray
-        -- unmigrated saved value; nothing should save it going forward.
+        -- "PARTY" as an input here is not just stale data: the UI itself
+        -- never produces it (one merged Raid/Party option), but it is
+        -- still live via the "/sb play id::party" macro keyword
+        -- (Macros.lua's TARGET_KEYWORDS) and via per-sound overrides saved
+        -- before the Raid/Party merge - both keep working, resolved the
+        -- same as "RAID".
         local resolved = SB.ResolveGroupChannel()
         if resolved then SendToSingleChannelSilent(soundID, resolved) end
     elseif target == "FRIENDS" then
@@ -631,11 +635,17 @@ function SB:SendSoundToChannel(soundID, channel)
     if not SB.registry[soundID] then return end
     -- "RAID" is the merged Raid/Party target (SendMenu.lua's single
     -- Raid/Party group row), resolved here to whichever is actually live
-    -- (see SB.ResolveGroupChannel). "PARTY" is only a defensive fallback,
-    -- same reasoning as SB:DispatchDefaultOutput above.
+    -- (see SB.ResolveGroupChannel). "PARTY" as an input is handled the
+    -- same as SB:DispatchDefaultOutput above - not just stale data, still
+    -- reachable via the "/sb play id::party" macro keyword and pre-merge
+    -- saved overrides.
     if channel == "RAID" or channel == "PARTY" then
         channel = SB.ResolveGroupChannel()
     end
+    -- From here on "PARTY"/"RAID"/"GUILD" are real WoW channel names, not
+    -- output-target values - ResolveGroupChannel above can itself resolve
+    -- to the literal wire channel "PARTY" when the player is in a
+    -- non-raid group, which is what this check is actually validating.
     if channel ~= "GUILD" and channel ~= "PARTY" and channel ~= "RAID" then return end
     if SB:IsSendBlockedByRaid() then
         SB:Print("Sending is currently disabled by your raid leader.")

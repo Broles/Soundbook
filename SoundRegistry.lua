@@ -327,32 +327,14 @@ end
 
 local NEW_TAG_DAYS = 2 -- 48h
 
--- One-time list for the release this "New" tag feature itself shipped in
--- - these sounds already existed in Sounds.lua before SB.db.knownSoundIDs
--- had any history, so they wouldn't otherwise show "New" on first run.
--- Any sound added in a LATER Sounds.lua update is auto-detected by
--- BackfillAddedAt's normal path instead (a soundID not yet in
--- SB.db.knownSoundIDs).
---
--- Permanently dead as of the "Default" category split (Core.lua's
--- MigrateDB v17->v18) - these exact ids can never exist again, so this
--- table can never match anything. Left in place; harmless.
-local MIGRATION_NEW_SOUND_IDS = {
-    ["Default::Zehahaha"] = true,
-    ["Default::Schoki"] = true,
-    ["Default::Donkey Hee Haw"] = true,
-    ["Default::Mir Egal"] = true,
-}
-
 -- Walks every CURRENTLY REGISTERED soundID once (idempotent - a soundID
 -- already in SB.db.knownSoundIDs is never touched again) and decides,
 -- once and permanently, whether it's "New" (real addedAt timestamp) or
 -- "legacy" (no addedAt at all, never shows the New tag):
 --   - The very first time this ever runs for this player (no
 --     knownSoundIDs table yet), every sound already in the registry is
---     legacy EXCEPT MIGRATION_NEW_SOUND_IDS above - we have no real
---     history for an existing library, so marking it all "New" on upgrade
---     would be wrong.
+--     legacy - we have no real history for an existing library, so
+--     marking it all "New" on upgrade would be wrong.
 --   - On every run after that, any soundID never seen before is genuinely
 --     new - stamped with time() right away.
 -- Must run before the grid ever renders (see Core.lua's PLAYER_LOGIN/
@@ -366,7 +348,7 @@ function SB:BackfillAddedAt()
     for soundID in pairs(SB.registry) do
         if not SB.db.knownSoundIDs[soundID] then
             SB.db.knownSoundIDs[soundID] = true
-            if MIGRATION_NEW_SOUND_IDS[soundID] or not isFirstRun then
+            if not isFirstRun then
                 local saved = SB:GetSoundSaved(soundID)
                 saved.addedAt = time()
             end

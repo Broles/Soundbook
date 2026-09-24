@@ -13,7 +13,7 @@
 -- The per-sound "Volume" slider therefore stores a value in SavedVariables
 -- but it is NOT currently applied to actual audio output.
 
-local ADDON_NAME, SB = ...
+local _, SB = ...
 
 -- Handles of sounds this addon itself started, so "stop overlap" only
 -- ever stops Soundbook's own sounds and never touches unrelated game audio.
@@ -304,15 +304,6 @@ local function TrackNewPlayback(soundID, handle, duration)
     StartPollTicker()
     SB:Fire("PLAYBACK_PROGRESS_STARTED", BuildPlaybackState(instanceID))
     return instanceID
-end
-
---- Re-marks an already-tracked instance as primary, without starting a new
---- play or touching activeSoundCount/ambiguousOverlap - for a caller that
---- wants to fall back to an older still-playing sound after a newer,
---- shorter one finishes first. No-op if the instance is no longer tracked.
-function SB:PromoteTrackedHandle(instanceID)
-    if not trackedInstances[instanceID] then return end
-    primaryInstanceID = instanceID
 end
 
 --- The WoW sound handle for the instance most recently started via
