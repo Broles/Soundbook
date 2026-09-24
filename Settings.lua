@@ -1111,23 +1111,18 @@ local function BuildSidebarFooter(nav, hostParent)
     footer:SetFrameLevel(nav:GetFrameLevel() + 1)
     footer:SetPoint("BOTTOMLEFT", nav, "BOTTOMLEFT", NAV_ROW_INSET, 8)
     footer:SetPoint("RIGHT", nav, "RIGHT", -NAV_ROW_INSET, 0)
-    footer:SetHeight(28)
+    footer:SetHeight(14)
 
+    -- Version deliberately NOT repeated here - the Advanced section
+    -- already shows "Soundbook vX.Y.Z" (see BuildAdvancedSection's own
+    -- versionText), and showing it a second time in the sidebar read as
+    -- redundant. Twitch line only.
     local twitchLine = footer:CreateFontString(nil, "OVERLAY")
     twitchLine:SetFontObject(SB.Fonts.DisableSmall)
     twitchLine:SetPoint("BOTTOMLEFT", 0, 0)
     twitchLine:SetJustifyH("LEFT")
     twitchLine:SetText("twitch.tv/broles87")
     twitchLine:SetTextColor(TWITCH_PURPLE[1], TWITCH_PURPLE[2], TWITCH_PURPLE[3])
-
-    local versionLine = footer:CreateFontString(nil, "OVERLAY")
-    versionLine:SetFontObject(SB.Fonts.DisableSmall)
-    versionLine:SetPoint("BOTTOMLEFT", twitchLine, "TOPLEFT", 0, 3)
-    versionLine:SetJustifyH("LEFT")
-    -- Dynamic, same pattern as the Advanced section's own version line -
-    -- never a hardcoded literal.
-    versionLine:SetText("Soundbook v" .. tostring(SB.VERSION or "?"))
-    versionLine:SetTextColor(unpack(SB.Theme.TEXT_DIM))
 
     return footer
 end
