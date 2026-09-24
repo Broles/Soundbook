@@ -466,16 +466,12 @@ local function ValidDuration(d)
 end
 
 ------------------------------------------------------------------------
--- Persistent "RAID MUTED" banner - explicit requirement: an active Raid
--- Admin restriction must be unmistakable even while the Announcer is
--- otherwise idle (no sound currently playing), using the existing header
--- area rather than a new floating window. Reuses the exact same banner
--- frame/elements RenderPrimary above uses for a real sound - just fed
--- different content - so this is the SAME "header extension" mechanism,
--- not a second implementation. Wired into CollapseToIdle below, which is
--- already the one place every "nothing real left to show" path already
--- funnels through (ScheduleCollapse, RemoveAnnouncerDisplayForSound,
--- RestoreRealAnnouncerState) - so it doesn't need its own call sites.
+-- Persistent "RAID MUTED" banner: an active Raid Admin restriction must
+-- be unmistakable even while the Announcer is otherwise idle. Reuses the
+-- same banner frame/elements RenderPrimary uses for a real sound, fed
+-- different content. Wired into CollapseToIdle below, the one place
+-- every "nothing real left to show" path funnels through, so it needs
+-- no separate call sites.
 ------------------------------------------------------------------------
 
 local raidMuteTicker
@@ -509,9 +505,8 @@ local function ShowRaidMuteBanner()
     banner.slot.texture:SetTexture(SB.ADMIN_ICON)
     banner.slot.texture:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     banner.slot.texture:SetVertexColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3], 1)
-    -- Primary state reads clearly as MUTED, per explicit requirement -
-    -- "RAID MUTED" covers both an individual admin mute and Mute All
-    -- alike (the subtitle line spells out the actual scope difference).
+    -- "RAID MUTED" covers both an individual admin mute and Mute All alike;
+    -- the subtitle line spells out the actual scope difference.
     banner.nameText:SetText("RAID MUTED")
     banner.nameText:SetTextColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3])
     banner.subText:SetText(ov.mutedAll and "Sending & receiving disabled" or "Sending to Raid/Party + Guild disabled")
@@ -521,16 +516,15 @@ local function ShowRaidMuteBanner()
 
     StopRaidMuteTicker()
     if ov.expiresAt and (ov.durationCode == "30" or ov.durationCode == "60") then
-        -- Live countdown, explicit requirement ("RAID MUTED · 24:18") -
-        -- the fill also drains as a visual progress-style cue, same
-        -- element a real sound's own duration bar already uses.
+        -- Live countdown; the fill also drains as a visual progress-style
+        -- cue, reusing the same element a real sound's own duration bar uses.
         banner.track:Show()
         banner.fill:Show()
         TickRaidMuteBanner()
         raidMuteTicker = C_Timer.NewTicker(1, TickRaidMuteBanner)
     else
-        -- F/B/R - semantic label only, explicit requirement: never show
-        -- the internal safety-net timer as if it were the real duration.
+        -- F/B/R: semantic label only - never show the internal safety-net
+        -- timer as if it were the real duration.
         banner.track:Hide()
         banner.fill:Hide()
         banner.timeText:SetText(RAID_DURATION_LABEL[ov.durationCode] or "Active")
@@ -549,10 +543,9 @@ end
 
 local function RenderPrimary()
     -- A resize/drag preview currently owns the banner's content and
-    -- position - a real playback event must not overwrite it (explicit
-    -- requirement). activeDisplays itself was already updated normally by
-    -- the caller; RestoreRealAnnouncerState() repaints from it once the
-    -- preview ends.
+    -- position - a real playback event must not overwrite it. activeDisplays
+    -- is still updated normally by the caller; RestoreRealAnnouncerState()
+    -- repaints from it once the preview ends.
     if IsPreviewActive() then return end
     local entry = activeDisplays[#activeDisplays]
     if not entry then return end
@@ -573,9 +566,9 @@ local function RenderPrimary()
     -- Library's section-header carets in UI.lua).
     local color = SB.GetChannelColor(entry.channelLabel or "Self")
     banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
-    -- Explicit request: the progress bar takes on the channel's own colour
-    -- (green for Guild, etc.) instead of always gold - same SB.CHANNEL_COLOR
-    -- semantics used everywhere else a channel is shown.
+    -- Progress bar takes on the channel's own colour (green for Guild, etc.)
+    -- instead of always gold - same SB.CHANNEL_COLOR semantics used
+    -- everywhere else a channel is shown.
     banner.fill:SetVertexColor(color.r, color.g, color.b, 1)
 
     local extra = #activeDisplays - 1
@@ -594,8 +587,8 @@ local function RenderPrimary()
         banner.track:Show()
         banner.fill:Show()
     else
-        -- Never fake a percentage for an unknown duration (3.0 spec
-        -- section 10) - hide the bar entirely rather than guess.
+        -- Never fake a percentage for an unknown duration - hide the bar
+        -- entirely rather than guess.
         banner.track:Hide()
         banner.fill:Hide()
     end
@@ -637,11 +630,9 @@ local function CollapseToIdle()
 
     -- Nothing real left to show - fall back to the persistent Raid Admin
     -- display instead of the bare idle icon while a restriction is still
-    -- active (explicit requirement: unmistakable even while collapsed).
-    -- This is THE one place every "nothing real left" path already
-    -- funnels through, so a genuine mute/unmute/expiry (RAID_OVERRIDE_
-    -- CHANGED, further below) simply calls this again to pick the right
-    -- one, without needing its own separate show/hide logic.
+    -- active. This is the one place every "nothing real left" path funnels
+    -- through, so a genuine mute/unmute/expiry (RAID_OVERRIDE_CHANGED,
+    -- below) just calls this again to pick the right one.
     local ov = SB.raidOverride
     if ov and (ov.mutedSend or ov.mutedAll) then
         ShowRaidMuteBanner()
@@ -702,8 +693,7 @@ function SB.RemoveAnnouncerDisplayForSound(soundID)
 end
 
 ------------------------------------------------------------------------
--- Event wiring - same event contract the old Mini Soundbook used
--- (SoundPlayer.lua / Communication.lua), so nothing there needed to change.
+-- Event wiring (SoundPlayer.lua / Communication.lua).
 ------------------------------------------------------------------------
 
 local LOCAL_TARGET_LABEL = { GUILD = "Guild", PARTY = "Party", RAID = "Raid", FRIENDS = "Friends", ALL = "All" }
@@ -714,9 +704,8 @@ local function LocalTargetToChannelLabel(target)
 end
 
 local function AddDisplay(soundID, sender, channelLabel)
-    -- Matches the old Mini Soundbook's own behaviour: no Now Playing
-    -- display at all while the HUD itself is hidden (a fresh install
-    -- defaults to hidden - see Core.lua's "safer first start").
+    -- No Now Playing display at all while the HUD itself is hidden (a
+    -- fresh install defaults to hidden - see Core.lua's "safer first start").
     if not icon or not icon:IsShown() then return end
     BuildBanner()
     local start = pendingStart
@@ -730,14 +719,12 @@ local function AddDisplay(soundID, sender, channelLabel)
     table.insert(activeDisplays, {
         handle = handle, soundID = soundID, sender = sender,
         channelLabel = channelLabel, duration = duration, startedAt = startedAt,
-        -- instanceID (SoundPlayer.lua's own playback-instance token, may
-        -- be nil if this AddDisplay call couldn't be paired with a
-        -- PLAYBACK_PROGRESS_STARTED - e.g. a fully synthetic/test call) -
-        -- the one true correlator for PLAYBACK_PROGRESS_ENDED below, never
-        -- the WoW handle (which can legitimately be nil, and can't
-        -- distinguish two different handle-less instances from each
-        -- other) and never soundID alone (a retrigger/overlap would
-        -- confuse two different instances of the same sound).
+        -- instanceID (SoundPlayer.lua's playback-instance token, may be nil if
+        -- this call wasn't paired with a PLAYBACK_PROGRESS_STARTED) is the one
+        -- true correlator for PLAYBACK_PROGRESS_ENDED below - never the WoW
+        -- handle (can be nil, can't distinguish handle-less instances) and
+        -- never soundID alone (would confuse overlapping instances of the
+        -- same sound).
         instanceID = instanceID,
     })
     if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
@@ -745,11 +732,10 @@ local function AddDisplay(soundID, sender, channelLabel)
 end
 
 -- Instance-scoped removal (unlike SB.RemoveAnnouncerDisplayForSound above,
--- which is deliberately soundID-scoped for its own callers - a retrigger's
--- own dedup, and a sound going muted). Used by the ENDED handler below,
--- including from inside a deferred minimum-display-duration timer - safe
--- to call on an instanceID that's already gone (retriggered/muted/stopped
--- out from under it in the meantime): finds nothing, does nothing.
+-- which is soundID-scoped for its callers - a retrigger's own dedup, and a
+-- sound going muted). Used by the ENDED handler below, including from a
+-- deferred minimum-display-duration timer - safe to call on an instanceID
+-- that's already gone: finds nothing, does nothing.
 local function RemoveDisplayByInstance(instanceID)
     local removed = false
     for i = #activeDisplays, 1, -1 do
@@ -771,13 +757,12 @@ SB:On("PLAYBACK_PROGRESS_STARTED", function(state)
     pendingStart = { soundID = state.soundID, handle = state.handle, duration = state.duration, startedAt = GetTime(), instanceID = state.instanceID }
 end)
 
--- Regression fix (explicit requirement - the Announcer must never
--- disappear before the configured Announcement Duration minimum, but
--- must also never depend on a WoW handle or linger past a known duration
--- just because C_Sound.IsPlaying still claims otherwise - see
--- SoundPlayer.lua's own duration-ceiling fix). Matched purely by
--- instanceID now, never by handle (which SoundPlayer.lua now allows to
--- be nil, and which can't tell two handle-less instances apart anyway).
+-- The Announcer must never disappear before the configured Announcement
+-- Duration minimum, but must also never linger past a known duration
+-- just because C_Sound.IsPlaying still claims otherwise (see
+-- SoundPlayer.lua's duration-ceiling handling). Matched purely by
+-- instanceID, never by handle (SoundPlayer.lua allows that to be nil,
+-- and it can't tell two handle-less instances apart anyway).
 SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
     if not state or not state.instanceID then return end
     for _, entry in ipairs(activeDisplays) do
@@ -852,13 +837,12 @@ end
 
 SB:On("RAID_OVERRIDE_CHANGED", function()
     RefreshIndicators()
-    -- Explicit requirement: the persistent header state appears/clears
-    -- automatically the moment the restriction is applied/lifted/expires
-    -- - CollapseToIdle is the one place that already decides between the
-    -- Raid Admin display and the bare idle icon, so a genuine change just
-    -- re-runs it (only while nothing real is currently playing - a real
-    -- sound's own banner already wins, see RenderPrimary above, and will
-    -- itself fall through to CollapseToIdle the moment it naturally ends).
+    -- The persistent header state appears/clears automatically the moment
+    -- the restriction is applied/lifted/expires. CollapseToIdle already
+    -- decides between the Raid Admin display and the bare idle icon, so a
+    -- genuine change just re-runs it (only while nothing real is playing -
+    -- a real sound's banner wins and falls through to CollapseToIdle once
+    -- it naturally ends).
     if icon and #activeDisplays == 0 then
         BuildBanner()
         CollapseToIdle()
@@ -867,21 +851,17 @@ end)
 SB:On("RECEIVE_MUTE_CHANGED", RefreshIndicators)
 
 ------------------------------------------------------------------------
--- Quick Options - compact right-click menu on the idle icon (3.0 spec
--- sections 13/51, minimal first pass: mute incoming, lock, muted players,
--- open Settings - the full Quick Audio panel is a later 3.0 stage).
+-- Quick Options - compact right-click menu on the idle icon: mute
+-- incoming, lock, muted players, open Settings.
 ------------------------------------------------------------------------
 
 local quickMenu
 
 -- Shared preview content for BOTH the Announcer Size slider's resize
--- preview and the icon-drag preview (explicit requirement: "the same
--- populated Announcer preview... do not create a second fake
--- implementation" - one content function, reusing the REAL banner frame
--- and all its real elements, rather than a second mocked-up layout).
--- Deliberately fixed/deterministic (never real user data) - see the
--- "must not pollute user data" requirement in SB:PlaySound's own "test"
--- source handling.
+-- preview and the icon-drag preview - one content function, reusing the
+-- real banner frame and elements rather than a second mocked-up layout.
+-- Deliberately fixed/deterministic, never real user data (see the "test"
+-- source handling in SB:PlaySound).
 local function PopulatePreviewBanner()
     BuildBanner()
     banner.soundbookSoundID = nil
@@ -897,15 +877,13 @@ local function PopulatePreviewBanner()
 end
 
 ------------------------------------------------------------------------
--- Icon-drag preview - explicit request: while Popout Direction is
--- Automatic and the player drags the Soundbook icon, show the same
--- populated Announcer preview as above, repositioning live as the icon
--- crosses screen regions (A/B/C, 1/2 - see SB.ResolvePopoutDirection), so
--- the automatic placement rule is understandable just by watching it
--- happen. Also carries the deliberate 10-second easter egg (section 16):
--- while the preview's own progress bar completes a 10-second cycle, one
--- random LOCAL-ONLY sound plays and the cycle restarts, for as long as
--- the drag continues.
+-- Icon-drag preview: while dragging the Soundbook icon, show the same
+-- populated Announcer preview, repositioning live as the icon crosses
+-- screen regions (see SB.ResolvePopoutDirection), so the automatic
+-- placement rule is understandable just by watching it happen. Also
+-- carries a deliberate 10-second easter egg: while the preview's progress
+-- bar completes a 10-second cycle, one random LOCAL-ONLY sound plays and
+-- the cycle restarts, for as long as the drag continues.
 ------------------------------------------------------------------------
 
 local DRAG_SOUND_CYCLE = 10.0
@@ -943,14 +921,12 @@ local function PlayRandomLocalDragSound()
     SB:PlaySound(soundID, "test")
 end
 
--- Runs every frame ONLY while the icon is actively being dragged (section
--- 24 explicitly allows OnUpdate here: "the user is actively moving the
--- frame"); StopIconDragPreview below unconditionally detaches it the
--- instant the drag ends. Recomputing the resolved direction and
--- repositioning every tick is deliberately simple rather than diffing
--- against the last-known region - both are O(1) and this is exactly the
--- sanctioned exception to "no idle polling" (there is no idle polling:
--- this handler exists for zero frames outside an active drag).
+-- Runs every frame ONLY while the icon is actively being dragged;
+-- StopIconDragPreview below unconditionally detaches it the instant the
+-- drag ends - there is no idle polling, this handler exists for zero
+-- frames outside an active drag. Recomputing direction/position every
+-- tick (rather than diffing against the last region) is deliberately
+-- simple since both are O(1).
 local function DragPreviewOnUpdate(_, elapsed)
     LayoutBanner()
 
@@ -972,15 +948,9 @@ function StartIconDragPreview()
     dragCandidateSounds = nil
     PopulatePreviewBanner()
     LayoutBanner()
-    -- BUGFIX (3.0 QA round, section 3) - "idle drag shows no preview, but
-    -- dragging while a sound plays works": the actual root cause was
-    -- never playback state at all, it was stale alpha. CollapseToIdle
-    -- fades the banner to alpha 0 and then Hides it once nothing real is
-    -- left to show; a bare banner:Show() (what this used to do) leaves
-    -- that alpha 0 in place, so an idle drag's preview was technically
-    -- shown but fully transparent. Dragging DURING active playback never
-    -- hit this because RenderPrimary's own fade always finishes at alpha
-    -- 1 first.
+    -- CollapseToIdle fades the banner to alpha 0 then Hides it once nothing
+    -- real is left to show; without resetting alpha here, a bare Show() would
+    -- leave that faded-out alpha in place and the preview would be invisible.
     if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
     banner:SetAlpha(1)
     banner:Show()
@@ -988,13 +958,11 @@ function StartIconDragPreview()
     icon:SetScript("OnUpdate", DragPreviewOnUpdate)
 end
 
--- No delayed callback (C_Timer.After) is used anywhere in this feature -
--- the entire 10-second cycle runs synchronously inside DragPreviewOnUpdate,
--- which this unconditionally detaches before this function returns. That
--- makes "a sound fires after the mouse was already released" structurally
--- impossible (section 20's explicit edge case) without needing a
--- drag-session token/generation ID - there is no async window for a stale
--- callback to fire from in the first place.
+-- No delayed callback (C_Timer.After) anywhere in this feature - the
+-- 10-second cycle runs synchronously inside DragPreviewOnUpdate, which
+-- this unconditionally detaches before returning. That makes "a sound
+-- fires after the mouse was already released" structurally impossible
+-- without needing a drag-session token.
 function StopIconDragPreview()
     if not dragPreviewActive then return end
     dragPreviewActive = false
@@ -1004,30 +972,24 @@ function StopIconDragPreview()
 end
 
 ------------------------------------------------------------------------
--- Favourites quick-play menu - explicit request: left-click the icon
--- opens up to 20 Favourites as an icon grid (2 or 3 columns, same
--- icon+name row style as the Library's own entries - see UI.lua's
--- LayoutEntries), titled with exactly where a click will actually send
--- them ("Send Sound to Guild (2):", matching the Output Rail's own
--- current selection). Column count follows the Announcer Size setting
--- (SB.db.ui.announcer.scale) - a bigger Announcer gets the wider 3-column
--- grid. Picking a sound plays it through SB:TriggerSound with no
--- override, identical to a normal Library click.
+-- Favourites quick-play menu: left-click the icon opens up to 20
+-- Favourites as an icon grid (2 or 3 columns, same icon+name row style
+-- as the Library's entries - see UI.lua's LayoutEntries), titled with
+-- exactly where a click will actually send them. Column count follows
+-- the Mini Soundbook Size setting (see GetFavMenuColumns below). Picking
+-- a sound plays it through SB:TriggerSound with no override, identical
+-- to a normal Library click.
 ------------------------------------------------------------------------
 
 local favMenu
 
 local BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid", FRIENDS = "Friends" }
 
--- Main Soundbook redesign: the title now describes exactly what the
--- SAME single-select Default Output SB:ResolveOutputTarget/
--- SB:DispatchDefaultOutput would actually use for a normal click
--- (SB.db.settings.defaultOutputTarget - the Main window's own "Send to:"
--- control, see UI.lua) - never a separately-computed guess. The old
--- right-side broadcast tabs' own multi-select outputRail state has no
--- surviving UI to drive it any more; this reads live reachable-player
--- counts (SB.ComputeReachablePlayers, the same source used everywhere
--- else in the addon) instead.
+-- The title describes exactly what the SAME single-select Default
+-- Output (SB.db.settings.defaultOutputTarget, the Main window's "Send
+-- to:" control) would actually use for a normal click - never a
+-- separately-computed guess. Reads live reachable-player counts
+-- (SB.ComputeReachablePlayers, the same source used everywhere else).
 -- @return total (int), perBucket ({GUILD=n, RAID=n, FRIENDS=n}),
 --         isLocal (bool), directName (string or nil), isAllTarget (bool)
 local function ComputeLiveTargetCounts()
@@ -1066,18 +1028,15 @@ end
 -- Describes the CURRENT Default Output target as a short phrase
 -- ("Guild (10)", "People (6)", "Bob", ...) plus an optional secondary
 -- breakdown line ("Guild (4)  -  Friends (2)") for the multi-source "All"
--- case - explicit requirement, preferred over one long "Guild and Friends
--- and Raid..." sentence. `isLocal` is true for Self Only AND "selected
--- but zero real recipients right now" (explicit requirement: zero actual
--- remote recipients always reads as "Play for Yourself", regardless of
--- which target is technically active) - see SB:ResolveOutputTarget's own
--- fallback, Communication.lua, for the equivalent send-side rule.
--- "People" (never "N people" or a per-channel label) is used whenever
--- MORE than one channel actually contributes a real recipient under
--- "All", or when "All" is the target at all (isAllTarget) even if only
--- one channel happens to have anyone reachable at this instant - explicit
--- requirement, since the user's actual intent was "everyone", not one
--- specific group.
+-- case. `isLocal` is true for Self Only AND "selected but zero real
+-- recipients right now" - zero actual remote recipients always reads as
+-- "Play for Yourself" regardless of which target is technically active
+-- (see SB:ResolveOutputTarget's fallback, Communication.lua, for the
+-- send-side equivalent). "People" (never "N people" or a per-channel
+-- label) is used whenever more than one channel contributes a real
+-- recipient under "All", or whenever "All" is the target at all, even
+-- if only one channel happens to have anyone reachable right now - the
+-- user's actual intent was "everyone", not one specific group.
 local function DescribeEffectiveTargetPhrase()
     local total, perBucket, isLocal, directName, isAllTarget = ComputeLiveTargetCounts()
     if directName then return directName, nil, false end
@@ -1108,13 +1067,13 @@ local function DescribeEffectiveTargetPhrase()
     return string.format("People (%d)", total), secondary, false
 end
 
--- Section 20: a per-sound "Default Output" override on one of the
--- VISIBLE Favourites would make a header promising "Play for X:"
--- actively misleading for that one sound - it won't actually go there.
--- Switches to "Default destination: X" (describing what applies to
--- everything WITHOUT its own override) whenever at least one visible
--- Favourite has one; GetOrCreateFavMenuRow below adds a small routing
--- badge on that sound's own tile so it's clear WHICH one differs.
+-- A per-sound "Default Output" override on one of the VISIBLE Favourites
+-- would make a header promising "Play for X:" misleading for that sound
+-- - it won't actually go there. Switches to "Default destination: X"
+-- (describing what applies to everything WITHOUT its own override)
+-- whenever at least one visible Favourite has one; GetOrCreateFavMenuRow
+-- below adds a routing badge on that sound's tile so it's clear WHICH
+-- one differs.
 local function AnyVisibleFavouriteHasOverride()
     local favourites = SB.GetFavourites and SB:GetFavourites() or {}
     for slot = 1, SB.MAX_FAVOURITES do
@@ -1133,64 +1092,40 @@ local function GetFavMenuHeaderText()
     local phrase, secondary, isLocal = DescribeEffectiveTargetPhrase()
     local overridesPresent = AnyVisibleFavouriteHasOverride()
     local primary
-    -- Explicit requirement: "Play sound locally"/"Play locally" reads as
-    -- technical jargon - "Play for Yourself" says the same thing (only
-    -- you hear it) in plain language, used consistently everywhere this
-    -- Mini Soundbook state is presented.
+    -- "Play for Yourself" reads as plain language (vs. technical "Play
+    -- locally") and is used consistently everywhere this Mini Soundbook
+    -- state is presented.
     if overridesPresent then
         primary = isLocal and "Default destination: Play for Yourself" or ("Default destination: " .. phrase)
     else
-        -- Regression fix: "Play for Guild/Raid/Friends (X):" / "Play for
-        -- People (X):" (was "Send sound to X:") - matches the wording
-        -- DescribeEffectiveTargetPhrase's own phrase fragments are built
-        -- for now ("Guild (10)", "People (6)", ...).
         primary = isLocal and "Play for Yourself:" or ("Play for " .. phrase .. ":")
     end
     return primary, secondary
 end
 
--- Up to 8 rows visible before scrolling (24px each) - "wenn zu lang dann
--- scrollbar" - taller than that and the thumb (already part of
--- Theme.CreateScrollFrame) takes over, same as every other scroll area
--- in this addon. Declared here (above every function that closes over it)
--- so those functions actually capture it as an upvalue - a local declared
--- below the function that references it would instead resolve to a global.
+-- Row height for the Favourites grid. Declared here (above every
+-- function that closes over it) so those functions capture it as an
+-- upvalue - a local declared below the function that references it
+-- would resolve to a global instead.
 local FAV_MENU_ROW_H = 24
 
 -- Column count mirrors UI.lua's own 2-vs-3 column switch, keyed off the
--- Mini Soundbook Size slider (SB.db.ui.announcer.favScale, 0.5-2.0) -
--- targeted correction round: this used to key off the Announcer Size
--- slider, which was wrong (resizing the Announcer resized favourites
--- too) - favScale is the independent scale that owns the favourite-area
--- UI exclusively. 1.15 is the same relative midpoint as before, just
--- against the new field.
--- Widened again, 2nd pass (explicit requirement: "Emotional Damage" is
--- still truncated at 100% Mini Soundbook Size - increase the base width
--- ~20%, target roughly 170px minimum usable text/name width after icon/
--- padding") - width only, not font size; row height (FAV_MENU_ROW_H),
--- the icon's own size, and the icon<->text/text<->edge gaps below are
--- all unchanged, exactly as required ("retain normal icon/text
--- spacing"). Usable text width = colW - 33 (4px icon inset + 20px icon +
--- 5px icon->text gap + 4px text->edge gap, GetOrCreateFavMenuRow below) -
--- 205 for the 2-column case lands at exactly 171px, just over the 170px
--- target; the 3-column width is scaled by the same ~1.23x this round
--- applied to the 2-column one, keeping their existing 165:130 ratio
--- rather than picking an unrelated new number for it. PopulateFavMenu's
--- own favMenu:SetWidth(columns * colW + 8) already grows the whole popup
--- to fit - no separate overflow handling needed. The whole favMenu frame
--- is additionally SetScale'd by favScale (see SB:RefreshMiniSoundbookScale
--- below) for the continuous 50%-200% range - these fixed base widths are
--- what that scale multiplies from.
+-- independent Mini Soundbook Size slider (SB.db.ui.announcer.favScale),
+-- not the Announcer Size slider - favScale exclusively owns the
+-- favourite-area UI. Column width tuned so usable text width (colW - 33:
+-- 4px icon inset + 20px icon + 5px icon->text gap + 4px text->edge gap,
+-- see GetOrCreateFavMenuRow) stays above ~170px even for long sound
+-- names. The whole favMenu frame is additionally SetScale'd by favScale
+-- (see SB:RefreshMiniSoundbookScale below) for the continuous 50%-200%
+-- range these base widths multiply from.
 local FAV_COL_W = { [2] = 205, [3] = 160 }
--- `count` (optional - the number of Favourites about to be laid out) adds
--- an adaptive safety net on top of the scale-based choice above (3.0 QA
--- round, section 4): now that the popup never scrolls and always shows
--- every entry at once, 2 columns' worth of a large list could still grow
--- into an awkwardly tall popup on a short screen. Only ever escalates
--- 2->3 (never overrides an explicit large-Mini-Soundbook-Size 3 back down
--- to 2) - column WIDTH readability is already handled by FAV_COL_W's
--- fixed, pre-tuned values, this only ever reacts to available screen
--- HEIGHT.
+-- `count` (optional) adds an adaptive safety net on top of the scale-
+-- based choice above: since the popup never scrolls and always shows
+-- every entry at once, 2 columns' worth of a large list could grow into
+-- an awkwardly tall popup on a short screen. Only ever escalates 2->3
+-- (never overrides an explicit large-Mini-Soundbook-Size 3 back down to
+-- 2) - this only reacts to available screen HEIGHT, column WIDTH is
+-- handled by FAV_COL_W's fixed values.
 local function GetFavMenuColumns(count)
     local scale = (SB.db.ui.announcer and SB.db.ui.announcer.favScale) or 1
     local columns = scale >= 1.15 and 3 or 2
@@ -1221,11 +1156,10 @@ local function GetOrCreateFavMenuRow(index)
     icon:SetPoint("LEFT", 4, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     row.icon = icon
-    -- Small routing badge (section 20) - only shown on a sound with its
-    -- OWN per-sound "Default Output" override, so it's clear which
-    -- Favourite(s) don't follow the header's "Send sound to X:" summary.
-    -- Same colour source as the Library's own override tint
-    -- (SB.SoundOutputOverrideColor, Communication.lua).
+    -- Small routing badge, shown only on a sound with its own per-sound
+    -- "Default Output" override, so it's clear which Favourite(s) don't
+    -- follow the header summary. Same colour source as the Library's own
+    -- override tint (SB.SoundOutputOverrideColor, Communication.lua).
     local overrideDot = row:CreateTexture(nil, "OVERLAY")
     overrideDot:SetSize(7, 7)
     overrideDot:SetPoint("TOPRIGHT", icon, "TOPRIGHT", 1, 1)
@@ -1317,11 +1251,10 @@ local function BuildFavMenu()
     favMenu.emptyText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     favMenu.emptyText:Hide()
 
-    -- No ScrollFrame (3.0 QA round, section 4, explicit requirement): the
-    -- popup shows every current Favourite at once (max SB.MAX_FAVOURITES,
-    -- 20) with no scrollbar - PopulateFavMenu sizes both `content` and
-    -- `favMenu` itself from the actual row count every time it runs, so
-    -- fewer Favourites always means a smaller popup, never a fixed/
+    -- No ScrollFrame: the popup shows every current Favourite at once (max
+    -- SB.MAX_FAVOURITES, 20) with no scrollbar - PopulateFavMenu sizes both
+    -- `content` and `favMenu` from the actual row count every time it runs,
+    -- so fewer Favourites always means a smaller popup, never a fixed or
     -- clipped viewport.
     local content = CreateFrame("Frame", nil, favMenu)
     content:SetPoint("TOPLEFT", 4, -30)
@@ -1337,9 +1270,8 @@ local function PopulateFavMenu()
     favMenu.subtitle:SetShown(secondary ~= nil)
     if secondary then favMenu.subtitle:SetText(secondary) end
 
-    -- Extra headroom when the secondary breakdown line is showing - same
-    -- "measure the real rendered height, don't guess a fixed offset"
-    -- approach the old Output flyout's own subtitle used.
+    -- Extra headroom when the secondary breakdown line is showing - measure
+    -- the real rendered height rather than guessing a fixed offset.
     local subtitleH = secondary and ((favMenu.subtitle:GetHeight() or 0) + 2) or 0
     local topOffset = 30 + subtitleH
 
@@ -1390,12 +1322,9 @@ local function PopulateFavMenu()
     favMenu.emptyText:SetPoint("TOPLEFT", 10, -topOffset - 2)
     favMenu.emptyText:SetShown(shown == 0)
 
-    -- No scrollbar/viewport cap (3.0 QA round, section 4) - every row is
-    -- always laid out and shown above, so `content` and the popup itself
-    -- both just grow to fit ALL of them: max SB.MAX_FAVOURITES (20) is
-    -- 10 rows at 2 columns or 7 at 3, either comfortably on-screen
-    -- without ever needing to scroll. Fewer Favourites -> fewer rows ->
-    -- a smaller popup, every time this runs.
+    -- Every row is laid out and shown above, so `content` and the popup
+    -- both grow to fit all of them (max 20 Favourites is 10 rows at 2
+    -- columns, or 7 at 3 - comfortably on-screen without needing to scroll).
     local totalRows = math.ceil(shown / columns)
     local contentH = totalRows * FAV_MENU_ROW_H
     favMenu.content:SetHeight(math.max(1, contentH))

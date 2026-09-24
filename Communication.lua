@@ -733,15 +733,14 @@ end
 
 -- `isDirect` distinguishes a Direct-targeted send (SendMenu's "send to one
 -- specific person", from a Friend, Guild member, whoever) from a plain
--- Friends-list broadcast - both travel as WHISPER, but explicit request:
--- they now have their own separate receive toggle (receiveDirect vs
--- receiveFriends) rather than sharing one. Callers must resolve isDirect
--- (see ParsePlayPayload) BEFORE calling this for WHISPER traffic.
+-- Friends-list broadcast - both travel as WHISPER, but each has its own
+-- separate receive toggle (receiveDirect vs receiveFriends) rather than
+-- sharing one. Callers must resolve isDirect (see ParsePlayPayload)
+-- BEFORE calling this for WHISPER traffic.
 local function ReceiveAllowedForChannel(channel, isDirect)
     local s = SB.db.settings
-    -- Raid and Party share one Receive toggle now too (explicit request,
-    -- reversed from an earlier "Send merged, Receive still separate"
-    -- version) - receiveRaid covers both wire channels.
+    -- Raid and Party share one Receive toggle too - receiveRaid covers
+    -- both wire channels.
     if channel == "PARTY" or channel == "RAID" or channel == "RAID_LEADER" then return s.receiveRaid
     elseif channel == "GUILD" or channel == "OFFICER" then return s.receiveGuild
     elseif channel == "WHISPER" then return isDirect and s.receiveDirect or s.receiveFriends
@@ -761,8 +760,7 @@ local CHANNEL_LABEL = {
 -- broadcast within a second or two of each other). `mutedNames`/`rxOffNames`
 -- are SETs (not lists) purely to de-duplicate a retried MUTEACK/RXOFFACK
 -- the same way `entries` already de-dupes a retried ACK below - only their
--- counts are ever shown, never the names themselves (explicit request:
--- "sehen ob und wieviele", not who).
+-- counts are ever shown, never the names themselves.
 local pendingAcks = {} -- [soundID] = { entries = { {name=, code=}, ... }, mutedNames = {[name]=true}, mutedCount = 0, rxOffNames = {[name]=true}, rxOffCount = 0, ignoredNames = {[name]=true}, ignoredCount = 0, timer = <handle> }
 local ACK_DEBOUNCE = 1.5 -- seconds of quiet before printing
 
@@ -1911,21 +1909,20 @@ end
 
 local function HandleAdminMuteAll(payload, sender)
     if not VALID_ADMIN_DURATION[payload] then return end
-    -- Explicit requirement: ONLY the current leader may trigger Mute All -
-    -- an assistant no longer qualifies here (still fully able to send
-    -- targeted, individual mutes above).
+    -- ONLY the current leader may trigger Mute All - an assistant does
+    -- not qualify here (still fully able to send targeted, individual
+    -- mutes above).
     if not IsSenderCurrentLeader(sender) then
         SB:Debug("Ignoring ADMINMUTEALL from %s - not the current raid/party leader.", sender)
         return
     end
     if SB:IsRaidAdmin() then
-        -- Raid Lead/Assist/Party Lead are exempt from "mute all" - explicit
-        -- request. An individually-targeted ADMINMUTE can still reach them
+        -- Raid Lead/Assist/Party Lead are exempt from "mute all". An
+        -- individually-targeted ADMINMUTE can still reach them
         -- (HandleAdminMute above never checks this), just never a blanket
-        -- mute-all. Still gets the SAME notification everyone else does
-        -- (explicit request: "der Admin ... kriegt auch dieselbe
-        -- Nachrichten") - just phrased as informational (exempt) rather
-        -- than restrictive, since nothing is actually applied to them.
+        -- mute-all. Still gets the SAME notification everyone else does,
+        -- just phrased as informational (exempt) rather than restrictive,
+        -- since nothing is actually applied to them.
         SB:Print(string.format(
             "|cffaaaaaaMute All is now active raid-wide (%s), started by %s - you're exempt as Raid Lead/Assist/Party Lead.|r",
             ADMIN_DURATION_LABEL[payload] or "for now", NormalizeName(sender) or sender))
@@ -1952,8 +1949,8 @@ function SB:SendAdminMute(targetName, durationCode)
     durationCode = durationCode or "F"
     if not VALID_ADMIN_DURATION[durationCode] then return end
     SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "ADMINMUTE" .. SEP .. durationCode, "WHISPER", targetName)
-    -- Explicit requirement: other current admins see the same pending ->
-    -- confirmed transition, not just the one who clicked.
+    -- Other current admins see the same pending -> confirmed transition,
+    -- not just the one who clicked.
     SB:SendAdminPending(targetName, "mute", durationCode)
 end
 
@@ -1964,8 +1961,8 @@ function SB:SendAdminUnmute(targetName)
 end
 
 function SB:SendAdminMuteAll(durationCode)
-    -- Explicit requirement: ONLY the current leader, not an assistant -
-    -- matches HandleAdminMuteAll's own receiver-side check exactly, so an
+    -- ONLY the current leader, not an assistant - matches
+    -- HandleAdminMuteAll's own receiver-side check exactly, so an
     -- assistant's click never goes out looking like it might work only to
     -- be silently rejected by everyone who gets it.
     if not SB:IsCurrentGroupLeader() then return end
@@ -1996,19 +1993,18 @@ SB:On("ENCOUNTER_END", function()
 end)
 
 -- "Next Fight" duration - clears itself the moment ANY combat ends (Core.lua
--- fires this on PLAYER_REGEN_ENABLED), trash included - explicit request:
--- a rough trash pull can matter just as much as a tracked boss encounter.
+-- fires this on PLAYER_REGEN_ENABLED), trash included - a rough trash pull
+-- can matter just as much as a tracked boss encounter.
 SB:On("COMBAT_END", function()
     if SB.raidOverride and SB.raidOverride.clearOnCombatEnd then
         ClearRaidOverride("combat_end")
     end
 end)
 
--- Guarantees the override never outlives the raid/party it was set for, per
--- the explicit "reset to default when leaving the raid" requirement - the
--- disconnect/reload case is already covered for free (see this section's
--- own opening comment); this specifically catches "still connected, but
--- left or got removed from the group".
+-- Guarantees the override never outlives the raid/party it was set for -
+-- the disconnect/reload case is already covered for free (see this
+-- section's own opening comment); this specifically catches "still
+-- connected, but left or got removed from the group".
 local wasInGroup = false
 local groupCheckFrame = CreateFrame("Frame")
 groupCheckFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -2019,9 +2015,9 @@ groupCheckFrame:SetScript("OnEvent", function()
         ClearRaidOverride("leave_group")
     end
 
-    -- Explicit requirement: a restriction's SOURCE losing their required
-    -- role (demoted, leadership passed to someone else) must clear it too,
-    -- not just the source physically leaving the group entirely. Checked
+    -- A restriction's SOURCE losing their required role (demoted,
+    -- leadership passed to someone else) must clear it too, not just the
+    -- source physically leaving the group entirely. Checked
     -- against MY OWN current roster, same spoof-resistant source of truth
     -- as every other admin check here. mutedAll requires the source to
     -- still be the current LEADER specifically (only the leader can hold
@@ -2128,33 +2124,32 @@ local function OnAddonMessage(prefix, message, channel, sender)
     if cmd == "PLAY" then
         if type(payload) ~= "string" or payload == "" or #payload > 200 then return end
 
-        -- Parsed BEFORE the channel filter now (used to be after) - the
-        -- filter needs to know isDirect to tell a Direct send apart from a
-        -- plain Friends-list broadcast (both travel as WHISPER, see
-        -- ReceiveAllowedForChannel above).
+        -- Parsed BEFORE the channel filter - the filter needs to know
+        -- isDirect to tell a Direct send apart from a plain Friends-list
+        -- broadcast (both travel as WHISPER, see ReceiveAllowedForChannel
+        -- above).
         local plainID, isDirect = ParsePlayPayload(payload)
         if not SB.IsValidSoundID(plainID) then return end
         -- A direct flag is meaningful only on a real whisper. Never let an
         -- arbitrary raid/guild packet claim the friend/direct exemptions.
         isDirect = isDirect and channel == "WHISPER"
 
-        -- Channel filter - explicit request: a disabled "Receive Sounds
-        -- from" channel (Direct included) must still produce literally
-        -- nothing on THIS (the recipient's) side - no playback, no queue
-        -- entry, no notification, no chat line, no UI reaction at all. Only
-        -- Debug Mode may ever surface that something was dropped here. This
-        -- is deliberately different from a per-sound mute (HandlePlayCommand's
-        -- own notifyMutedAttempts branch further down), which still may
-        -- notify locally - turning off a whole channel is a much stronger
-        -- "I don't want to know about this at all" than muting one sound.
+        -- Channel filter - a disabled "Receive Sounds from" channel
+        -- (Direct included) must produce literally nothing on THIS (the
+        -- recipient's) side: no playback, no queue entry, no notification,
+        -- no chat line, no UI reaction. Only Debug Mode may ever surface
+        -- that something was dropped here. Deliberately different from a
+        -- per-sound mute (HandlePlayCommand's own notifyMutedAttempts
+        -- branch further down), which still may notify locally - turning
+        -- off a whole channel is a much stronger "I don't want to know
+        -- about this at all" than muting one sound.
         --
-        -- The SENDER's side gets a reply too now (explicit request), but
-        -- deliberately NOT the same MUTEACK the mute paths use - this isn't
-        -- a mute, it's a channel-level opt-out, a different thing, so it
-        -- gets its own "RXOFFACK" reply, its own aggregated count, its own
-        -- colour, and its own visibility rule (see HandleRxOffAck - shown
-        -- to the sender only in Debug Mode; a normal sender sees nothing
-        -- here at all, same as before this feature existed).
+        -- The SENDER's side gets a reply too, but deliberately NOT the
+        -- same MUTEACK the mute paths use - this is a channel-level
+        -- opt-out, not a mute, so it gets its own "RXOFFACK" reply, its
+        -- own aggregated count, its own colour, and its own visibility
+        -- rule (see HandleRxOffAck - shown to the sender only in Debug
+        -- Mode; a normal sender sees nothing here at all).
         if not ReceiveAllowedForChannel(channel, isDirect) then
             SB:Debug("Remote PLAY from %s on disabled channel %s ignored.", sender, tostring(channel))
             SB.SendAddonMessage(SB.COMM_PREFIX, SB.PROTOCOL_VERSION .. SEP .. "RXOFFACK" .. SEP .. plainID, "WHISPER", sender)
@@ -2233,10 +2228,10 @@ local function OnAddonMessage(prefix, message, channel, sender)
         HandleAdminUnmuteAll(sender)
     elseif cmd == "ADMINACK" then
         -- Confirmation that an admin command sent BY ME actually applied on
-        -- the target's client (see SendAdminAck above) - explicit
-        -- requirement: AdminPanel.lua only shows a command as successful
-        -- once this arrives, never just optimistically on send. `payload`
-        -- is one of MUTE/UNMUTE/MUTEALL/UNMUTEALL/EXEMPT.
+        -- the target's client (see SendAdminAck above) - AdminPanel.lua
+        -- only shows a command as successful once this arrives, never just
+        -- optimistically on send. `payload` is one of
+        -- MUTE/UNMUTE/MUTEALL/UNMUTEALL/EXEMPT.
         if VALID_ADMIN_ACK[payload] then
             SB:Fire("ADMIN_ACK_RECEIVED", NormalizeName(sender) or sender, payload)
         end
@@ -2299,25 +2294,24 @@ function SB:NoteKnownUser(sender, version)
         version = version or (existing and existing.version) or nil,
         playerName = sender,
     }
-    -- Regression fix: fired ONLY on a brand-new discovery (never on the
-    -- routine lastSeen refresh an already-known user gets on every single
-    -- recognized message - that would fire many times a second during
-    -- normal raid traffic). This is the one moment a previously-
-    -- ineligible player can newly become an eligible Soundbook recipient,
-    -- which the Mini Soundbook title needs to reflect live ("known
-    -- Soundbook presence changes" - explicit requirement).
+    -- Fired ONLY on a brand-new discovery, never on the routine lastSeen
+    -- refresh an already-known user gets on every recognized message
+    -- (that would fire many times a second during normal raid traffic).
+    -- This is the one moment a previously-ineligible player can newly
+    -- become an eligible Soundbook recipient, which the Mini Soundbook
+    -- title needs to reflect live.
     if not existing then
         SB:Fire("KNOWN_USER_CHANGED")
     end
 end
 
 -- How long a presence entry is trusted without a fresh HELLO/HELLOACK (or
--- any other recognized message) before it's pruned outright - explicit
--- requirement: someone who went offline or hasn't been seen in a long time
--- must not keep appearing as reachable forever. Comfortably longer than the
--- periodic HELLO ping interval (180s, see HELLO_INTERVAL further below - 3x
--- that) so a couple of missed periodic pings in a row (e.g. a brief
--- disconnect) doesn't drop someone who's still actually around.
+-- any other recognized message) before it's pruned outright - someone who
+-- went offline or hasn't been seen in a long time must not keep appearing
+-- as reachable forever. Comfortably longer than the periodic HELLO ping
+-- interval (180s, see HELLO_INTERVAL further below - 3x that) so a couple
+-- of missed periodic pings in a row (e.g. a brief disconnect) doesn't drop
+-- someone who's still actually around.
 local KNOWN_USER_TTL_SECONDS = 540
 
 --- Drops any SB.db.knownUsers entry not refreshed within
@@ -2347,10 +2341,9 @@ end
 --- unchanged.
 -- "2.4.2"/"2.4.1"/"2.0.0-final7" -> "2.4"/"2.4"/"2.0" - only major.minor,
 -- ignoring the patch number entirely (and anything after it, like a
--- "-final7" suffix) - explicit request: the patch number alone was never
--- meant to count as "incompatible", only a genuinely different
--- major.minor line is. nil for anything that doesn't even start with
--- digits (a malformed/unknown version).
+-- "-final7" suffix): the patch number alone was never meant to count as
+-- "incompatible", only a genuinely different major.minor line is. nil for
+-- anything that doesn't even start with digits (a malformed/unknown version).
 local function MajorMinor(version)
     if type(version) ~= "string" then return nil end
     local major, minor = version:match("^(%d+)%.(%d+)")
@@ -2399,19 +2392,17 @@ end)
 -- A remote sound actually played for you - the base "did I miss
 -- something" notification.
 --
--- Explicit bugfix: a single broadcast reaching us over SEVERAL enabled
--- channels at once (e.g. the sender has both Raid AND Guild broadcast
--- checked, and we're in both groups with them) used to print one
--- "[Soundbook] Sender (Channel): Sound" chat line PER channel it arrived
--- on. HandleIncomingPlay above already recognizes these as the same
--- broadcast (see its duplicate/priority-upgrade handling, SourcePriority -
--- Direct > Friends > Guild > Raid > Party) and re-fires REMOTE_SOUND_PLAYED
--- with the better label whenever a higher-priority copy arrives - that
--- upgrade is meant for the OTHER listeners on this same event (History,
--- the Announcement Bar, the playing-state highlight further up in this
--- file/UI.lua), which all still want the best/final label as soon as it's
--- known. The chat line itself, though, should only ever print once per
--- broadcast - "eine Nachricht reicht gemäß der bekannten Priorität".
+-- A single broadcast can reach us over SEVERAL enabled channels at once
+-- (e.g. the sender has both Raid AND Guild broadcast checked, and we're
+-- in both groups with them). HandleIncomingPlay above already recognizes
+-- these as the same broadcast (see its duplicate/priority-upgrade
+-- handling, SourcePriority - Direct > Friends > Guild > Raid > Party) and
+-- re-fires REMOTE_SOUND_PLAYED with the better label whenever a
+-- higher-priority copy arrives - that upgrade is meant for the OTHER
+-- listeners on this same event (History, the Announcement Bar, the
+-- playing-state highlight further up in this file/UI.lua), which all
+-- still want the best/final label as soon as it's known. The chat line
+-- itself, though, should only ever print once per broadcast.
 --
 -- Debounced by exactly SB.db.settings.remoteCooldown - the SAME window
 -- IsRecentDuplicate (above) uses to decide what counts as "the same
@@ -2471,11 +2462,10 @@ local function ApplyReceiveMuteState()
         SB.db.settings.receiveRaid = false
         SB.db.settings.receiveGuild = false
         SB.db.settings.receiveDirect = false
-        -- Explicit requirement: engaging a receive-mute must reliably drop
-        -- whatever's still waiting in the incoming queue too, not just stop
-        -- NEW sounds from being accepted - a queued sound that arrived
-        -- moments before the mute would otherwise still play once its turn
-        -- came up, defeating the point of muting right now.
+        -- Engaging a receive-mute must reliably drop whatever's still
+        -- waiting in the incoming queue too, not just stop NEW sounds from
+        -- being accepted - a queued sound that arrived moments before the
+        -- mute would otherwise still play once its turn came up.
         if SB.ClearPendingQueue then SB:ClearPendingQueue() end
     else
         local prev = m.previous or {}
@@ -2562,8 +2552,8 @@ end
 -- sounds, all of them, only from them.
 ------------------------------------------------------------------------
 
-local PLAYER_MUTE_SECONDS = 60 * 60 -- one left-click's worth (explicit request: 60 minutes)
-local PLAYER_MUTE_MAX_SECONDS = 600 * 60 -- explicit request: hard cap, 600 minutes (10h) total
+local PLAYER_MUTE_SECONDS = 60 * 60 -- one left-click's worth (60 minutes)
+local PLAYER_MUTE_MAX_SECONDS = 600 * 60 -- hard cap, 600 minutes (10h) total
 
 --- True (and cleans up the entry) if `name` is currently muted and that
 --- mute hasn't expired yet. `time()`, not GetTime(), matching
@@ -2593,9 +2583,9 @@ function SB:GetPlayerMuteRemaining(name)
     return expiresAt and math.max(0, expiresAt - time()) or nil
 end
 
---- One left-click's worth - explicit request: STACKS on top of whatever
---- time is already left (not reset to a flat 60 minutes), so repeated
---- clicks add up rather than each one just re-setting the same duration.
+--- One left-click's worth - STACKS on top of whatever time is already
+--- left (not reset to a flat 60 minutes), so repeated clicks add up
+--- rather than each one just re-setting the same duration.
 function SB:MutePlayerFor(name, seconds)
     local key = IdentityKey(name)
     if not key then return end
@@ -2605,10 +2595,10 @@ function SB:MutePlayerFor(name, seconds)
     local legacyKey = type(name) == "string" and not name:find("-", 1, true) and NormalizeName(name) or nil
     local existing = muted[key] or (legacyKey and muted[legacyKey])
     local base = (existing and existing > now) and existing or now
-    -- Explicit request: hard cap at 600 minutes total, even if the player
-    -- already had most of that stacked up from earlier clicks - clamps
-    -- the RESULT, not each individual click, so one click that would push
-    -- past the cap just tops out there instead of being silently ignored.
+    -- Hard cap at 600 minutes total, even if the player already had most
+    -- of that stacked up from earlier clicks - clamps the RESULT, not
+    -- each individual click, so one click that would push past the cap
+    -- just tops out there instead of being silently ignored.
     muted[key] = math.min(base + seconds, now + PLAYER_MUTE_MAX_SECONDS)
     if legacyKey and legacyKey ~= key then muted[legacyKey] = nil end
     SB:Fire("PLAYER_MUTE_CHANGED", key)
