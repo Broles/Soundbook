@@ -1877,6 +1877,191 @@ function SB:RefreshMiniSoundbookScale()
     if favMenu then favMenu:SetScale(SB.db.ui.announcer.favScale or 1.0) end
 end
 
+------------------------------------------------------------------------
+-- Proximity locator glow (Idle Opacity < 30% only): a soft Arcane blue/
+-- violet aura around the idle icon's own current footprint that fades in
+-- as the cursor approaches - pure discoverability for a player who has
+-- made the icon deliberately hard to see, never a functional/state
+-- indicator, never touching the icon's own Idle/Hover Opacity. Scoped
+-- entirely to this file's existing idle/hover/interaction machinery
+-- (icon/banner/favMenu/quickMenu/proximityActiveInteraction, all already
+-- in scope here) - no new persisted setting, no generic animation
+-- framework, just this one small helper.
+------------------------------------------------------------------------
+
+local LOCATOR_GLOW_TEX = "Interface\\AddOns\\Soundbook\\Assets\\LocatorGlow"
+local LOCATOR_ALPHA_THRESHOLD = 30 -- Idle Opacity %, strictly below this
+local LOCATOR_EXTENT    = 14   -- px the glow extends past the icon's own edges
+local LOCATOR_MAX_DIST  = 220  -- px: at/beyond this, fully invisible
+local LOCATOR_TICK      = 0.04 -- ~40ms throttle (spec range: 30-50ms)
+local LOCATOR_SMOOTH    = 0.30 -- per-tick lerp toward the target - smooth hand-off, never a pop
+local LOCATOR_OUTER_PEAK = 0.40 -- broad soft blue layer's alpha at full intensity
+local LOCATOR_INNER_PEAK = 0.62 -- tighter blue-violet core's alpha at full intensity (spec: ~0.55-0.70)
+
+local locatorGlow
+local locatorTicker
+local locatorIntensity = 0 -- currently-displayed (smoothed) 0..1 value
+
+local function BuildLocatorGlow()
+    if locatorGlow then return locatorGlow end
+    -- A SEPARATE top-level frame, deliberately NOT a child of `icon`: a
+    -- child's rendered alpha is the PRODUCT of its own alpha and every
+    -- ancestor's, so at a very low Idle Opacity (the exact condition
+    -- this feature exists for) a child glow would be crushed to the same
+    -- near-zero alpha as the icon it exists to help find. Anchored
+    -- purely via SetPoint to the icon's own edges instead, so it still
+    -- automatically follows the icon's movement and (Announcer Size)
+    -- rescaling with no per-frame repositioning code needed, while
+    -- keeping a fully independent alpha.
+    local f = SB.CreateFrame("Frame", "SoundbookMiniLocatorGlow", UIParent)
+    -- One strata below the icon's own idle strata (ICON_IDLE_STRATA) -
+    -- deterministically always renders behind/around the icon rather
+    -- than over it, regardless of the icon's own temporary strata
+    -- changes (RaiseIconAboveCatcher, only ever active while favMenu/
+    -- quickMenu are shown, which already disqualifies the glow below).
+    -- Mouse-disabled outright, so it can never intercept a click/drag or
+    -- alter any hitbox/click-through/locked behaviour - it simply never
+    -- participates in hit-testing at all.
+    f:SetFrameStrata("LOW")
+    f:EnableMouse(false)
+    f:SetPoint("TOPLEFT", icon, "TOPLEFT", -LOCATOR_EXTENT, LOCATOR_EXTENT)
+    f:SetPoint("BOTTOMRIGHT", icon, "BOTTOMRIGHT", LOCATOR_EXTENT, -LOCATOR_EXTENT)
+    f:Hide()
+
+    local outer = f:CreateTexture(nil, "ARTWORK")
+    outer:SetAllPoints(f)
+    outer:SetTexture(LOCATOR_GLOW_TEX)
+    outer:SetBlendMode("ADD")
+    outer:SetVertexColor(V3.ARCANE_BLUE[1], V3.ARCANE_BLUE[2], V3.ARCANE_BLUE[3])
+    outer:SetAlpha(0)
+    f.outer = outer
+
+    -- Tighter inner component: the SAME soft-radial texture, drawn
+    -- smaller/inset so it reads as a denser violet core rather than a
+    -- second identical ring - avoids needing a second art asset for
+    -- what is still one small effect.
+    local inset = LOCATOR_EXTENT * 0.55
+    local inner = f:CreateTexture(nil, "ARTWORK", nil, 1)
+    inner:SetPoint("TOPLEFT", f, "TOPLEFT", inset, -inset)
+    inner:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -inset, inset)
+    inner:SetTexture(LOCATOR_GLOW_TEX)
+    inner:SetBlendMode("ADD")
+    inner:SetVertexColor(V3.VIOLET[1], V3.VIOLET[2], V3.VIOLET[3])
+    inner:SetAlpha(0)
+    f.inner = inner
+
+    locatorGlow = f
+    return f
+end
+
+-- Shortest distance from the cursor to the icon's OWN rectangle bounds -
+-- 0 for anywhere inside it, never distance-to-center - so the response
+-- is correct regardless of the icon's size/aspect ratio. Same cursor/
+-- scale normalization this file's own IsCursorActuallyOnIcon (Hover
+-- re-arm gate, above) already relies on.
+local function DistanceToIconBounds()
+    if not (icon and icon.GetLeft) then return math.huge end
+    local l, r, t, b = icon:GetLeft(), icon:GetRight(), icon:GetTop(), icon:GetBottom()
+    if not (l and r and t and b) then return math.huge end
+    local scale = icon:GetEffectiveScale()
+    if not scale or scale == 0 then scale = 1 end
+    local x, y = GetCursorPosition()
+    x, y = x / scale, y / scale
+    local dx = math.max(l - x, 0, x - r)
+    local dy = math.max(b - y, 0, y - t)
+    return math.sqrt(dx * dx + dy * dy)
+end
+
+-- Continuous, eased proximity curve - deliberately NOT a linear ramp and
+-- NOT discrete distance bands (explicit requirement): a smoothstep base
+-- (continuous and differentiable, no snapping anywhere) further raised
+-- to an exponent >1, which pushes even MORE of the curve's rise toward
+-- the close end than plain smoothstep alone - the outer ~half of the
+-- range (220 down to ~120px) stays clearly subtle, and intensity climbs
+-- quickly only over the last ~120px, matching the spec's "very subtle /
+-- increasingly visible / near maximum" bands as a smooth continuum
+-- rather than three discrete steps. dist<=0 (cursor at/inside the icon's
+-- own bounds) is folded into the same 0 result as dist>=MAX - that is
+-- exactly the "mouse is already over it, hand off to hover" case, never
+-- a "maximum proximity" case.
+local function ProximityIntensity(dist)
+    if dist <= 0 or dist >= LOCATOR_MAX_DIST then return 0 end
+    local t = 1 - (dist / LOCATOR_MAX_DIST)
+    local smoothstep = t * t * (3 - 2 * t)
+    return smoothstep ^ 1.6
+end
+
+local function LocatorGlowTick()
+    if not locatorGlow then return end
+    -- Every one of these is re-checked live on every throttled tick,
+    -- rather than driving the glow off event hooks scattered across each
+    -- state's own open/close path - cheap, and correct by construction:
+    -- there is exactly one place that decides "is this genuine idle".
+    local eligible = icon and icon:IsShown()
+        and (SB.db.ui.announcer.alphaIdle or 100) < LOCATOR_ALPHA_THRESHOLD
+        and not (banner and banner:IsShown())       -- active playback forcing visibility
+        and not (favMenu and favMenu:IsShown())      -- normal hover/expanded, or Send-to pinning it open (opened FROM a favMenu row)
+        and not (quickMenu and quickMenu:IsShown())  -- Quick Options open
+        and not proximityActiveInteraction           -- icon being dragged, or a size slider being dragged
+
+    local target = eligible and ProximityIntensity(DistanceToIconBounds()) or 0
+
+    locatorIntensity = locatorIntensity + (target - locatorIntensity) * LOCATOR_SMOOTH
+    if locatorIntensity < 0.002 then locatorIntensity = 0 end
+
+    if locatorIntensity <= 0 then
+        -- Zero the actual displayed alpha along with hiding the frame -
+        -- otherwise the NEXT time it's shown again would briefly flash
+        -- whatever alpha it happened to fade through last, instead of
+        -- starting from genuinely invisible.
+        locatorGlow.outer:SetAlpha(0)
+        locatorGlow.inner:SetAlpha(0)
+        if locatorGlow:IsShown() then locatorGlow:Hide() end
+        return
+    end
+
+    if not locatorGlow:IsShown() then locatorGlow:Show() end
+    locatorGlow.outer:SetAlpha(locatorIntensity * LOCATOR_OUTER_PEAK)
+    locatorGlow.inner:SetAlpha(locatorIntensity * LOCATOR_INNER_PEAK)
+end
+
+local function StopLocatorTicker()
+    if locatorTicker then locatorTicker:Cancel(); locatorTicker = nil end
+    locatorIntensity = 0
+    if locatorGlow then
+        locatorGlow.outer:SetAlpha(0)
+        locatorGlow.inner:SetAlpha(0)
+        locatorGlow:Hide()
+    end
+end
+
+local function StartLocatorTicker()
+    if locatorTicker then return end
+    BuildLocatorGlow()
+    locatorTicker = C_Timer.NewTicker(LOCATOR_TICK, LocatorGlowTick)
+end
+
+-- The one gate for whether periodic proximity evaluation should be
+-- running AT ALL - deliberately broader than "genuinely idle right now"
+-- (that finer per-tick check lives in LocatorGlowTick above) so the
+-- ticker doesn't need to start/stop on every favMenu/banner open-close,
+-- only on the two things that make the feature possibly-relevant in the
+-- first place. A permanently >=30% Idle Opacity (the default) or a
+-- hidden icon costs nothing at all - no ticker exists until this
+-- decides one is actually warranted. Called on every lifecycle point
+-- that can change either input: ShowAnnouncer/HideAnnouncer (icon
+-- shown-state) and RefreshAnnouncerAlpha (Idle Opacity changing live
+-- from Settings, no /reload needed).
+local function UpdateLocatorTickerState()
+    local shouldRun = icon and icon:IsShown()
+        and (SB.db.ui.announcer.alphaIdle or 100) < LOCATOR_ALPHA_THRESHOLD
+    if shouldRun then
+        StartLocatorTicker()
+    else
+        StopLocatorTicker()
+    end
+end
+
 -- If the popup is open while its live reach/target summary changes -
 -- the "Send to:" dropdown (UI.lua) or a roster change via
 -- SB.RefreshDefaultOutputDisplay - the summary must update immediately,
@@ -2176,6 +2361,7 @@ function SB:ShowAnnouncer()
     icon:Show()
     SB:RefreshAnnouncerAlpha()
     SB:RefreshAnnouncerScale()
+    UpdateLocatorTickerState()
     RefreshIndicators()
     if #activeDisplays > 0 then
         BuildBanner()
@@ -2207,6 +2393,10 @@ function SB:HideAnnouncer()
     if icon then icon:Hide() end
     if banner then banner:Hide() end
     if quickMenu then quickMenu:Hide() end
+    -- Hide the locator glow immediately along with the icon it belongs
+    -- to - it's a standalone frame (see the section above), not a child,
+    -- so it would otherwise keep rendering on its own.
+    UpdateLocatorTickerState()
 end
 
 function SB:ToggleAnnouncer()
@@ -2229,6 +2419,10 @@ function SB:RefreshAnnouncerAlpha()
     if not icon:IsMouseOver() then
         icon:SetAlpha((SB.db.ui.announcer.alphaIdle or 100) / 100)
     end
+    -- The locator glow only ever runs below the 30% Idle Opacity
+    -- threshold - re-evaluated live so dragging the slider past that
+    -- line immediately starts/stops it, no /reload needed.
+    UpdateLocatorTickerState()
 end
 
 -- Settings' "Announcer Font"/"Announcer Text Size" controls
