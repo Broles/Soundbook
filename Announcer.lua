@@ -2298,6 +2298,21 @@ end
 local function StartAnnouncerSizePreview()
     icon:SetAlpha(1)
     FreezeQuickMenuPosition()
+    -- Explicit bug report: opening Quick Options from the Main Soundbook's
+    -- own toolbar and resizing Announcer Size there showed the preview
+    -- BEHIND the Main window, hiding the very thing being resized. Root
+    -- cause: banner's own strata is a plain "MEDIUM" always, while Main
+    -- (UI.lua) is "HIGH" - a strictly higher stacking tier, so Main always
+    -- won regardless of frame level/creation order. Bumped to "DIALOG" for
+    -- the duration of the preview only (matching quickMenu's own strata,
+    -- so the two remain in the same tier as each other) and restored back
+    -- to its normal MEDIUM once the preview ends - real, non-preview
+    -- playback has no reason to ever outrank the Main window. BuildBanner
+    -- (idempotent, a no-op once already built) runs first so this applies
+    -- even on the very first-ever preview, before anything else has had a
+    -- reason to construct the banner yet.
+    BuildBanner()
+    banner:SetFrameStrata("DIALOG")
     if #activeDisplays > 0 then
         -- Real content already owns the banner - just make sure it's at
         -- full opacity too (RenderPrimary already keeps it at 1; this is a
@@ -2333,6 +2348,7 @@ end
 -- invariant keeps the icon at full opacity for as long as a real banner is
 -- showing, and forcing alphaIdle back on top of that here would fight it.
 local function EndAnnouncerSizePreview()
+    if banner then banner:SetFrameStrata("MEDIUM") end
     if announcerSizePreviewForcedOpen then
         announcerSizePreviewActive = false
         announcerSizePreviewForcedOpen = false

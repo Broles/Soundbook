@@ -36,25 +36,33 @@ local function BuildButton()
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     button:RegisterForDrag("LeftButton")
 
-    -- Bugfix (round 3): two earlier rounds both tried to tame Blizzard's
-    -- own minimap-button art (first the zoom-button highlight texture,
-    -- then the MiniMap-TrackingBorder ring's icon-inset alignment) and the
-    -- book icon was STILL being visually replaced by a large dark/cyan
-    -- circle - live-tested confirmation that the problem was never really
-    -- the alignment, it's that texture's own native rendered appearance,
-    -- which this environment has no way to preview before shipping.
-    -- Dropped entirely. Every visual element here is now a plain flat
-    -- colour/backdrop this file fully controls itself (SB.CreateFrame
-    -- above already carries BackdropTemplate) - nothing pulled from an
-    -- unpredictable Blizzard sprite, so there is no art asset left that
-    -- could ever render as a large dark/blue/cyan overlay again.
-    button:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1.5 })
-    button:SetBackdropColor(0, 0, 0, 0) -- fully transparent fill - never covers the icon
-    button:SetBackdropBorderColor(0.92, 0.68, 0.28, 0.9) -- Theme.GOLD, thin ring around the button's own edge only
+    -- Round 4: round 3's flat self-controlled square backdrop DID fix the
+    -- dark/cyan overlay (no longer reported), but a plain square border is
+    -- not what a minimap button is supposed to look like - explicit
+    -- requirement: "look and behave like every other normal addon's
+    -- minimap icon". That look comes specifically from the ring sprite's
+    -- own opaque area visually cropping a square icon's corners into
+    -- reading as round - there's no way to get that round appearance
+    -- without SOME round graphic (a plain backdrop border is always a
+    -- rectangle), and SetMask isn't reliably available on every client
+    -- this addon targets (Classic Era included). Restored the exact,
+    -- extremely well-tested LibDBIcon-standard layering (used by
+    -- thousands of addons across every one of these same client
+    -- versions without issue) instead of this file's own earlier,
+    -- hand-rolled sizing/offsets/manual highlight texture - the previous
+    -- overlay bug is far more likely to have come from THIS file's own
+    -- custom highlight handling (manually resized/re-tinted/anchored off
+    -- an, at the time, still-misaligned icon) than from these sprites'
+    -- own native appearance.
+    local bg = button:CreateTexture(nil, "BACKGROUND")
+    bg:SetSize(20, 20)
+    bg:SetPoint("TOPLEFT", 7, -5)
+    bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+    bg:SetVertexColor(0, 0, 0, 0.3)
 
-    local icon = button:CreateTexture(nil, "ARTWORK")
+    local icon = button:CreateTexture(nil, "BACKGROUND")
     icon:SetSize(20, 20)
-    icon:SetPoint("CENTER", 0, 0)
+    icon:SetPoint("TOPLEFT", 7, -5)
     icon:SetTexture(SB.APP_ICON)
     -- Crops the dark padding WoW icon art bakes in around its edges (same
     -- technique Theme.lua's own icon slots use) so the book fills this
@@ -62,15 +70,24 @@ local function BuildButton()
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     button.icon = icon
 
-    -- Subtle hover glow ONLY - a soft, low-alpha, additive-blended flat
-    -- gold wash across the whole button, never a separate sprite that
-    -- could visually replace the icon underneath it.
-    local highlight = button:CreateTexture(nil, "HIGHLIGHT")
-    highlight:SetAllPoints(button)
-    highlight:SetTexture("Interface\\Buttons\\WHITE8X8")
-    highlight:SetVertexColor(0.92, 0.68, 0.28, 0.35)
-    highlight:SetBlendMode("ADD")
-    button.highlight = highlight
+    -- The ring - an OVERLAY-layer texture (drawn above the icon), so its
+    -- own opaque ring shape visually crops the icon's square corners into
+    -- the familiar round minimap-button look. Anchored at the button's own
+    -- TOPLEFT (0,0), same as the icon's TOPLEFT(7,-5) offset above - both
+    -- offsets are the exact values this sprite's own art was authored
+    -- against.
+    local border = button:CreateTexture(nil, "OVERLAY")
+    border:SetSize(53, 53)
+    border:SetPoint("TOPLEFT")
+    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+    button.border = border
+
+    -- Hover feedback via Blizzard's own SetHighlightTexture (Button's
+    -- built-in highlight mechanism - shown only on mouseover, sized to the
+    -- button automatically) instead of a manually created/resized/tinted
+    -- texture - removes any chance of this file's own math being the
+    -- source of an oversized or misaligned hover glow.
+    button.highlight = button:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight", "ADD")
 
     -- Explicit requirement: pressed state must never cover/replace the
     -- book artwork either - a plain alpha dim on the icon itself (not a
@@ -104,28 +121,35 @@ local function BuildButton()
         self:SetScript("OnUpdate", nil)
     end)
 
-    -- Picks whichever tooltip anchor sits FARTHEST from the Mini Soundbook
-    -- (Announcer) icon's own real on-screen position, so the two can never
-    -- overlap regardless of where either one currently sits - explicit
-    -- requirement, now that the minimap button's own fresh-install default
-    -- (top of the minimap) can land close to the Mini Soundbook's own
-    -- fresh-install default (top-centre of the screen). Falls back to the
-    -- previous fixed ANCHOR_LEFT whenever the Announcer icon doesn't exist
-    -- yet or isn't shown - nothing to avoid, so no change in that case.
+    -- Picks whichever tooltip anchor sits FARTHEST from the Mini Soundbook,
+    -- so the two can never overlap regardless of where either one
+    -- currently sits - explicit requirement, now that the minimap button's
+    -- own fresh-install default (top of the minimap) can land close to the
+    -- Mini Soundbook's own fresh-install default (top-centre of the
+    -- screen). "The Mini Soundbook" means whichever of its two possible
+    -- on-screen forms is actually showing right now: the EXPANDED
+    -- favourites popup (SoundbookFavMenu, Announcer.lua's favMenu - often
+    -- larger and positioned well away from the idle icon itself once
+    -- open) takes priority when it's open, since that's the bigger, more
+    -- likely thing to actually overlap; the idle icon (SoundbookAnnouncerIcon)
+    -- is the fallback otherwise. Falls back to the original fixed
+    -- ANCHOR_LEFT whenever neither exists/is shown - nothing to avoid, so
+    -- no change in that case.
     local function ResolveTooltipAnchor(self)
-        local announcerIcon = _G.SoundbookAnnouncerIcon
-        if not (announcerIcon and announcerIcon:IsShown()) then return "ANCHOR_LEFT" end
+        local avoid = _G.SoundbookFavMenu
+        if not (avoid and avoid:IsShown()) then avoid = _G.SoundbookAnnouncerIcon end
+        if not (avoid and avoid:IsShown()) then return "ANCHOR_LEFT" end
         local mx, my = self:GetCenter()
-        local ax, ay = announcerIcon:GetCenter()
+        local ax, ay = avoid:GetCenter()
         if not (mx and my and ax and ay) then return "ANCHOR_LEFT" end
         -- Both frames can carry their own independent effective scale
-        -- (the minimap button inherits the Minimap's; the Announcer icon
-        -- has its own Announcer Size) - GetCenter() is only ever in a
-        -- frame's own local unit space, so each needs converting into
-        -- UIParent's shared coordinate space before comparing, same
-        -- pattern SB.ResolvePopoutDirection already uses.
+        -- (the minimap button inherits the Minimap's; the Announcer icon/
+        -- favMenu carry Announcer Size/Mini Soundbook Size) - GetCenter()
+        -- is only ever in a frame's own local unit space, so each needs
+        -- converting into UIParent's shared coordinate space before
+        -- comparing, same pattern SB.ResolvePopoutDirection already uses.
         local selfScale = (self:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
-        local annScale = (announcerIcon:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
+        local annScale = (avoid:GetEffectiveScale() or 1) / (UIParent:GetEffectiveScale() or 1)
         mx, my = mx * selfScale, my * selfScale
         ax, ay = ax * annScale, ay * annScale
         local dx, dy = mx - ax, my - ay

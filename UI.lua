@@ -2368,7 +2368,11 @@ local function BuildMainFrame()
     audioBtn:SetScript("OnClick", function(self)
         if SB.ShowAnnouncerQuickOptions then SB.ShowAnnouncerQuickOptions(self) end
     end)
-    SB.Theme.AttachTooltip(audioBtn, "Quick Audio", "Mute incoming, lock the interface, or manage muted players.")
+    -- Explicit correction: this button opens the exact same "Quick
+    -- Options" menu the Announcer's own idle-icon Shift+Right-click does -
+    -- the tooltip title said "Quick Audio" instead, a naming mismatch
+    -- against every other reference to this same menu in the addon.
+    SB.Theme.AttachTooltip(audioBtn, "Quick Options", "Mute incoming, lock the interface, or manage muted players.")
     main.audioBtn = audioBtn
 
     ------------------------------------------------------------------
