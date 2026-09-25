@@ -331,24 +331,27 @@ local NEW_TAG_DAYS = 2 -- 48h
 -- already in SB.db.knownSoundIDs is never touched again) and decides,
 -- once and permanently, whether it's "New" (real addedAt timestamp) or
 -- "legacy" (no addedAt at all, never shows the New tag):
---   - The very first time this ever runs for this player (no
---     knownSoundIDs table yet), every sound already in the registry is
---     legacy - we have no real history for an existing library, so
---     marking it all "New" on upgrade would be wrong.
---   - On every run after that, any soundID never seen before is genuinely
---     new - stamped with time() right away.
+--   - On a genuine fresh install, every sound already in the registry is
+--     legacy - the bundled starting library shouldn't all show as "New".
+--   - On every run after that (including an existing user's very first run
+--     after this feature shipped), any soundID never seen before is
+--     genuinely new - stamped with time() right away.
+-- Uses SB.isFreshInstall (computed in Core.lua before SanitizeDatabase ever
+-- touches the db) rather than "knownSoundIDs is nil" - SanitizeDatabase
+-- unconditionally pre-creates knownSoundIDs as {} for every install, so a
+-- nil-check here would never see a first run at all.
 -- Must run before the grid ever renders (see Core.lua's PLAYER_LOGIN/
 -- ADDON_LOADED wiring) - GetSoundSaved's own lazy-create would otherwise
 -- create an addedAt-less entry for an unrelated reason before this ever
 -- gets a chance to classify it correctly.
 function SB:BackfillAddedAt()
     if not SB.db then return end
-    local isFirstRun = not SB.db.knownSoundIDs
+    local isFreshInstall = SB.isFreshInstall
     SB.db.knownSoundIDs = SB.db.knownSoundIDs or {}
     for soundID in pairs(SB.registry) do
         if not SB.db.knownSoundIDs[soundID] then
             SB.db.knownSoundIDs[soundID] = true
-            if not isFirstRun then
+            if not isFreshInstall then
                 local saved = SB:GetSoundSaved(soundID)
                 saved.addedAt = time()
             end

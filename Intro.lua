@@ -292,3 +292,23 @@ SB:On("PLAYER_LOGIN", function()
         end)
     end
 end)
+
+-- Self-heal, same pattern/root cause as Announcer.lua's own PLAYER_LOGIN /
+-- PLAYER_ENTERING_WORLD pair (see its comment: "the icon was invisible
+-- right after login... A frame first Show()n mid-transition can end up not
+-- actually painted even though it's logically shown"). The intro popup's
+-- own PLAYER_LOGIN trigger above is a one-shot C_Timer - if it fires while
+-- the client's loading-screen fade/UI transition hasn't genuinely finished
+-- yet (slower machines, heavier addon lists), it can end up in that same
+-- logically-shown-but-not-painted state with nothing left to force a
+-- redraw. PLAYER_ENTERING_WORLD fires once the world is truly ready and
+-- re-asserts here too - guarded so it only ever acts while the intro is
+-- still genuinely unseen and not already visibly open, so it never
+-- reshows/resets a popup the player is mid-reading or has closed.
+SB:On("PLAYER_ENTERING_WORLD", function()
+    if SB.db and SB.db.settings and not SB.db.settings.introSeen then
+        if not (popup and popup:IsShown()) then
+            SB:ShowIntro()
+        end
+    end
+end)

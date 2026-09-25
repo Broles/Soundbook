@@ -60,10 +60,10 @@ SB.VALID_CHANNELS   = { Master = true, SFX = true, Music = true, Ambience = true
 -- Send/Receive matrix, output dropdowns, SendMenu, chat notifications).
 -- RGB floats (SetTextColor) and matching "rrggbb" hex (|cffRRGGBB) are
 -- kept side by side so both stay in sync from one definition.
--- SELF is not a channel colour - it's the neutral shade used elsewhere
--- for unrelated "this isn't a real multiplayer channel" UI (e.g. the
--- Settings "General" tab colour). Output-TARGET labels (Self Only, All)
--- deliberately do NOT use it - see TARGET_WHITE below.
+-- SELF also doubles as the output-TARGET colour for "Self" (see
+-- CHANNEL_COLOR_BY_LABEL below) - a neutral, visually distinct grey, not
+-- a dimmed/disabled look, since Self is an active, selectable target like
+-- any other.
 SB.CHANNEL_COLOR = {
     DIRECT  = { r = 0.72, g = 0.55, b = 0.95, hex = "b88cf2" }, -- purple
     FRIENDS = { r = 0.55, g = 0.75, b = 0.98, hex = "8cbffa" }, -- pastel blue
@@ -76,18 +76,21 @@ SB.CHANNEL_COLOR = {
 -- its own key so a direct SB.CHANNEL_COLOR.PARTY lookup still resolves
 -- instead of falling through to nil/SELF grey.
 SB.CHANNEL_COLOR.PARTY = SB.CHANNEL_COLOR.RAID
--- Explicit requirement: "Self Only" and "All" are not real multiplayer
--- channels and must both read in the normal (white) text colour, never
--- SB.CHANNEL_COLOR.SELF's grey - matches Theme.TEXT/V3.TEXT_PRIMARY's own
--- off-white exactly (Core.lua loads before Theme.lua, so this is a
--- literal duplicate of that value rather than a reference to it).
+-- Explicit requirement: "All" is not a real multiplayer channel/target and
+-- is the only one that reads in the normal (bright white) text colour -
+-- matches Theme.TEXT/V3.TEXT_PRIMARY's own off-white exactly (Core.lua
+-- loads before Theme.lua, so this is a literal duplicate of that value
+-- rather than a reference to it). "Self", unlike "All", IS an active,
+-- selectable target - it reads in SB.CHANNEL_COLOR.SELF's neutral grey
+-- instead (see CHANNEL_COLOR_BY_LABEL below), never white and never a
+-- dimmed/disabled-looking shade.
 local TARGET_WHITE = { r = 0.91, g = 0.94, b = 1.00, hex = "e8f0ff" }
 -- Looks a colour up by the human-readable label string used throughout
 -- the addon for output-target/source display (the Announcer's "sender ->
 -- channel" line, History's source colour, etc). Singular "Friend"
 -- (WHISPER mapping) and plural "Friends" (dropdown/SendMenu header) both
--- resolve to FRIENDS. "Self"/"All" and anything unrecognized all read as
--- the normal white text colour, never SELF's grey.
+-- resolve to FRIENDS. "All" and anything unrecognized read as the normal
+-- white text colour; "Self" reads as its own neutral grey.
 local CHANNEL_COLOR_BY_LABEL = {
     Direct = SB.CHANNEL_COLOR.DIRECT,
     Friend = SB.CHANNEL_COLOR.FRIENDS,
@@ -95,7 +98,7 @@ local CHANNEL_COLOR_BY_LABEL = {
     Guild = SB.CHANNEL_COLOR.GUILD,
     Raid = SB.CHANNEL_COLOR.RAID,
     Party = SB.CHANNEL_COLOR.PARTY,
-    Self = TARGET_WHITE,
+    Self = SB.CHANNEL_COLOR.SELF,
     All = TARGET_WHITE,
 }
 function SB.GetChannelColor(label)
@@ -1281,6 +1284,42 @@ function SB:ApplyFreshInstallFavourites()
     end
 end
 
+-- One-time correction, same shape as the historical addedAt fixes above
+-- (privateLegacyFixApplied/companionAddedAtFixApplied/
+-- knownSoundsFix250Applied): an earlier build of BackfillAddedAt's own
+-- first-run check (SoundRegistry.lua) was defeated by SanitizeDatabase
+-- always pre-creating knownSoundIDs before it ever ran, so a fresh
+-- install's very first PLAYER_LOGIN under that build stamped its ENTIRE
+-- then-current library "New" in one shot - indistinguishable from data
+-- alone from a real library UNLESS most of it is currently New at once,
+-- which never happens organically (a real content update adds a small
+-- handful of sounds, never a majority of the whole registry). Runs only
+-- once (SB.db.massNewTagBugFixApplied): only if more than half of every
+-- currently-registered sound is presently within the New window does this
+-- clear addedAt back to legacy for exactly that set - a genuine handful of
+-- real recent additions is always far below that threshold and is left
+-- completely untouched, so this can never wrongly wipe legitimate
+-- New-state for an established user. Extracted as its own method (called
+-- from PLAYER_LOGIN below) so it can be exercised directly by tests
+-- without needing to fire native WoW events through the init frame.
+function SB:FixMassNewTagBugOnce()
+    if not (SB.db and not SB.db.massNewTagBugFixApplied) then return end
+    SB.db.massNewTagBugFixApplied = true
+    local total, currentlyNew = 0, {}
+    for soundID in pairs(SB.registry) do
+        total = total + 1
+        if SB.IsSoundNew and SB:IsSoundNew(soundID) then
+            table.insert(currentlyNew, soundID)
+        end
+    end
+    if total > 0 and (#currentlyNew / total) > 0.5 then
+        for _, soundID in ipairs(currentlyNew) do
+            local saved = SB.db.sounds and SB.db.sounds[soundID]
+            if saved then saved.addedAt = nil end
+        end
+    end
+end
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("ADDON_LOADED")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -1320,6 +1359,12 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
         SB.databaseStatus = databaseStatus
 
         if SB.isFreshInstall then
+            -- Never backfilled for an existing/upgrading install - only a
+            -- genuine fresh install gets this stamp. Used by UI.lua's Dusty
+            -- computation to grant addedAt-less (bundled) sounds a 7-day
+            -- grace period from install time instead of counting as
+            -- infinitely dusty from the first login.
+            SB.db.installedAt = time()
             -- introSeen's own default is true (see GetDefaultDB) so an
             -- upgrading install stays untouched - a genuinely fresh one
             -- needs it explicitly flipped back to false to actually show
@@ -1450,6 +1495,8 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
                 SB.db.knownSoundIDs[id] = true
             end
         end
+
+        if SB.FixMassNewTagBugOnce then SB:FixMassNewTagBugOnce() end
 
         SB:Fire("PLAYER_LOGIN")
     elseif event == "PLAYER_ENTERING_WORLD" then

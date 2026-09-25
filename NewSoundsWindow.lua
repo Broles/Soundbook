@@ -261,13 +261,20 @@ end
 -- there's actually at least one unseen New sound to show - an empty
 -- popup would just be annoying. A few seconds after Intro's own 2s delay
 -- so the two can never compete for attention even in the unusual case
--- both would apply.
+-- both would apply. SB.isFreshInstall is checked directly, not just
+-- introSeen, as a second, deterministic guard - explicit requirement:
+-- "Fresh install must win over any New Sounds detection during that
+-- login", so this can never fire on a fresh install even if some future
+-- change ever made introSeen true earlier than expected during that same
+-- session (introSeen alone was previously the only guard here).
 SB:On("PLAYER_LOGIN", function()
     if not (SB.db and SB.db.settings) then return end
+    if SB.isFreshInstall then return end
     if not SB.db.settings.introSeen then return end
     if SB.db.settings.newSoundsPopupOptOut then return end
     C_Timer.After(3, function()
         if not (SB.db and SB.db.settings) then return end
+        if SB.isFreshInstall then return end
         if SB.db.settings.newSoundsPopupOptOut then return end
         if #ComputeUnseenNew() == 0 then return end
         SB:ShowNewSoundsWindow()

@@ -48,10 +48,18 @@ local function BuildButton()
     border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
     button.border = border
 
+    -- Bugfix: Blizzard's stock zoom-button highlight art is a bright blue
+    -- glow sized to nearly the whole 31px button - at that size it visually
+    -- swallowed the much smaller 18px book icon on hover, reading as the
+    -- icon being replaced by a big blue ring. Sized just a touch past the
+    -- icon itself (not the button) and tinted Soundbook's own gold accent
+    -- (see Theme.GOLD), it now reads as a subtle glow behind the icon
+    -- instead of a second, icon-sized graphic on top of it.
     local highlight = button:CreateTexture(nil, "HIGHLIGHT")
-    highlight:SetSize(30, 30)
-    highlight:SetPoint("CENTER", 0, 1)
+    highlight:SetSize(22, 22)
+    highlight:SetPoint("CENTER", icon, "CENTER", 0, 0)
     highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+    highlight:SetVertexColor(0.92, 0.68, 0.28, 0.8)
     button.highlight = highlight
 
     button:SetScript("OnClick", function(_, mouseButton)
