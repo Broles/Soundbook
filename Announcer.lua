@@ -2217,20 +2217,79 @@ end
 
 local announcerSizePreviewForcedOpen = false
 
+-- Frozen-position state for quickMenu (regression fix): quickMenu is
+-- normally anchored LIVE to the icon's own edge (SB.PositionRelativeToIcon),
+-- and Announcer Size's SetScale on the icon moves that edge continuously
+-- as the icon grows/shrinks - so without this, the menu (and the slider
+-- inside it) visibly slides out from under the cursor on every value
+-- change. Frozen to the menu's OWN current on-screen rectangle (relative
+-- to UIParent, not the icon) for the duration of the drag, so it and every
+-- child inside it (the slider included) stay pixel-stable no matter how
+-- much the icon itself resizes underneath. quickMenu is a direct UIParent
+-- child with no SetScale of its own, so its GetLeft()/GetBottom() are
+-- already in UIParent's own coordinate space - no scale-ratio conversion
+-- needed (unlike SB.ResolvePopoutDirection's own icon-relative maths,
+-- which DOES need one since the icon carries its own independent scale).
+local quickMenuFrozen = false
+
+local function FreezeQuickMenuPosition()
+    if not (quickMenu and quickMenu:IsShown()) or quickMenuFrozen then return end
+    local left, bottom = quickMenu:GetLeft(), quickMenu:GetBottom()
+    if not (left and bottom) then return end
+    quickMenuFrozen = true
+    quickMenu:ClearAllPoints()
+    quickMenu:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", left, bottom)
+end
+
+-- Restores the normal, live icon-anchored positioning - never persisted,
+-- purely an in-session frame state change, so the very next open (or the
+-- next Popout Direction change) behaves exactly as it always did.
+local function UnfreezeQuickMenuPosition()
+    if not quickMenuFrozen then return end
+    quickMenuFrozen = false
+    if quickMenu and quickMenu.__anchor then
+        SB.PositionRelativeToIcon(quickMenu, quickMenu.__anchor, SB.ResolvePopoutDirection(quickMenu.__anchor))
+    end
+end
+
+-- Collision-aware banner placement while resizing: LayoutBanner's own
+-- normal behaviour anchors the banner to the icon using the SAME resolved
+-- direction quickMenu itself uses (SB.ResolvePopoutDirection(icon)), so
+-- during a resize interaction it would sit directly behind/under the very
+-- menu being used to change its size. Chains the banner off quickMenu's
+-- OWN outer edge instead, continuing in that same direction - adjacent to
+-- the menu, never underneath it - exactly the pattern StartMiniSizePreview
+-- above already uses for favMenu-vs-quickMenu adjacency. SetClampedToScreen
+-- (already set on the banner) keeps the whole thing on-screen even when
+-- that pushes it toward a screen edge.
+local function LayoutAnnouncerPreviewDuringResize()
+    if quickMenu and quickMenu:IsShown() then
+        SB.PositionRelativeToIcon(banner, quickMenu, SB.ResolvePopoutDirection(icon))
+    else
+        LayoutBanner()
+    end
+end
+
 local function StartAnnouncerSizePreview()
     icon:SetAlpha(1)
+    FreezeQuickMenuPosition()
     if #activeDisplays > 0 then
         -- Real content already owns the banner - just make sure it's at
         -- full opacity too (RenderPrimary already keeps it at 1; this is a
-        -- harmless belt-and-braces in case that ever changes) and let the
-        -- slider's own live SetScale calls resize it in place.
-        if banner then banner:SetAlpha(1) end
+        -- harmless belt-and-braces in case that ever changes), reposition
+        -- it beside the now-frozen menu so resizing never hides it behind
+        -- Quick Options, and let the slider's own live SetScale calls
+        -- resize it in place from there.
+        if banner then
+            banner:SetAlpha(1)
+            LayoutAnnouncerPreviewDuringResize()
+        end
         return
     end
     announcerSizePreviewActive = true
     announcerSizePreviewForcedOpen = true
     PopulatePreviewBanner()
-    LayoutBanner()
+    LayoutAnnouncerPreviewDuringResize()
     -- CollapseToIdle fades the banner to alpha 0 then Hides it once nothing
     -- real is left to show; without resetting alpha here, a bare Show()
     -- would leave that faded-out alpha in place and the preview would be
@@ -2252,8 +2311,17 @@ local function EndAnnouncerSizePreview()
     if announcerSizePreviewForcedOpen then
         announcerSizePreviewActive = false
         announcerSizePreviewForcedOpen = false
-        RestoreRealAnnouncerState()
+        RestoreRealAnnouncerState() -- repaints AND repositions (RenderPrimary/CollapseToIdle both call LayoutBanner or hide outright)
+    elseif banner and banner:IsShown() then
+        -- A real sound was already playing throughout (the early-return
+        -- branch in StartAnnouncerSizePreview above) - RestoreRealAnnouncerState
+        -- is never reached for this path, so the banner's own position
+        -- (chained off quickMenu during the resize) must be explicitly
+        -- restored back to its normal icon anchor now that quickMenu is
+        -- about to unfreeze.
+        LayoutBanner()
     end
+    UnfreezeQuickMenuPosition()
     if #activeDisplays == 0 then
         SB:RefreshAnnouncerAlpha()
     end
@@ -2743,11 +2811,23 @@ function SB:RefreshPopoutPositions()
     if favMenu and favMenu:IsShown() and favMenu.__anchor then
         SB.PositionRelativeToIcon(favMenu, favMenu.__anchor, SB.ResolvePopoutDirection(favMenu.__anchor))
     end
-    if quickMenu and quickMenu:IsShown() and quickMenu.__anchor then
+    -- Never re-anchored while quickMenuFrozen - an active Announcer Size
+    -- drag has deliberately pinned it in place (see FreezeQuickMenuPosition
+    -- above); this must not undo that mid-interaction.
+    if quickMenu and quickMenu:IsShown() and quickMenu.__anchor and not quickMenuFrozen then
         SB.PositionRelativeToIcon(quickMenu, quickMenu.__anchor, SB.ResolvePopoutDirection(quickMenu.__anchor))
     end
     if banner and banner:IsShown() then
-        LayoutBanner()
+        -- Same reasoning: while the Announcer Size interaction is active,
+        -- the banner is deliberately chained off quickMenu's own edge
+        -- (LayoutAnnouncerPreviewDuringResize) instead of the icon
+        -- directly - a plain LayoutBanner() here would silently undo that
+        -- collision avoidance mid-drag.
+        if quickMenuFrozen then
+            LayoutAnnouncerPreviewDuringResize()
+        else
+            LayoutBanner()
+        end
     end
 end
 
