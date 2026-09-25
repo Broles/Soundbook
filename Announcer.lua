@@ -397,7 +397,6 @@ end
 -- the banner's height and the track's position from the actual current
 -- font metrics whenever the font/scale changes.
 local BANNER_W = 232
-local ICON_SLOT_SIZE = 30
 local TRACK_H = 8
 
 local function BuildBanner()
@@ -420,28 +419,29 @@ local function BuildBanner()
     banner:SetBackdropColor(V3.DEEP_NAVY[1], V3.DEEP_NAVY[2], V3.DEEP_NAVY[3], 0.94)
     banner:SetBackdropBorderColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 0.55)
 
-    local slot = Theme.CreateIconSlot(banner, 30)
-    slot:SetPoint("LEFT", 5, 0)
+    -- Icon/text/duration/track are ALL fully positioned by
+    -- RelayoutBannerHeight below (called once here via
+    -- SB:RefreshAnnouncerFont, and again on every font/scale change) -
+    -- the icon's own size depends on the computed content height, so no
+    -- point here can be fixed independently of that layout pass. No
+    -- SetPoint calls in this constructor are load-bearing.
+    local slot = Theme.CreateIconSlot(banner)
     banner.slot = slot
 
     local nameText = banner:CreateFontString(nil, "OVERLAY")
     nameText:SetFontObject(SB.Fonts.HighlightSmall)
-    nameText:SetPoint("TOPLEFT", slot, "TOPRIGHT", 6, -1)
-    nameText:SetPoint("RIGHT", -8, 0)
     nameText:SetJustifyH("LEFT")
     nameText:SetWordWrap(false)
     banner.nameText = nameText
 
     local timeText = banner:CreateFontString(nil, "OVERLAY")
     timeText:SetFontObject(SB.Fonts.DisableSmall)
-    timeText:SetPoint("TOPRIGHT", -6, -3)
+    timeText:SetJustifyH("RIGHT")
     timeText:SetTextColor(unpack(V3.TEXT_SECONDARY))
     banner.timeText = timeText
 
     local subText = banner:CreateFontString(nil, "OVERLAY")
     subText:SetFontObject(SB.Fonts.DisableSmall)
-    subText:SetPoint("TOPLEFT", nameText, "BOTTOMLEFT", 0, -2)
-    subText:SetPoint("RIGHT", -8, 0)
     subText:SetJustifyH("LEFT")
     subText:SetWordWrap(false)
     banner.subText = subText
@@ -2431,21 +2431,63 @@ end
 -- back the MAIN Soundbook window, and mutating them would also resize
 -- Settings/Edit Sound/everything else that shares them.
 --
--- RelayoutBannerHeight recomputes the banner's total height and the
--- track's position from the same font metrics just applied, so a larger
--- font never overlaps the progress bar below it. Uses known base-size/
--- line-height math rather than querying rendered GetHeight() (which needs
--- an extra frame to settle after SetFont) - correct the instant this runs.
+-- Compact layout (explicit redesign request, second-mockup composition):
+-- the icon fills nearly the full banner height, inset equally tight from
+-- the top/bottom/left edges; the duration reads right-aligned on the
+-- SAME row as the sender/channel line, directly above the progress bar,
+-- instead of floating isolated in the top-right corner; the progress bar
+-- spans the full remaining width beside the icon. PADDING doubles as
+-- both the icon's own top/bottom/left inset AND the banner's own top/
+-- bottom padding, so the icon exactly fills the vertical span between
+-- them - no separate "icon size" constant to keep in sync by hand.
+local BANNER_PADDING    = 5 -- icon inset (top/bottom/left) = banner's own top/bottom padding
+local ICON_TEXT_GAP     = 6 -- icon -> text horizontal gap
+local BANNER_RIGHT_PAD  = 6 -- text/duration/track inset from the banner's right edge
+local NAME_ROW_GAP      = 2 -- name row -> sender/duration row gap
+local BAR_GAP           = 2 -- sender/duration row -> progress bar gap ("directly above")
+local SUB_TIME_GAP      = 6 -- sender text -> duration text gap (they share one row)
+
+-- RelayoutBannerHeight recomputes the banner's total height and every
+-- element's position from the same font metrics just applied, so a
+-- larger font never overlaps the progress bar below it, and the icon
+-- always fills exactly the resulting content height. Uses known base-
+-- size/line-height math rather than querying rendered GetHeight() (which
+-- needs an extra frame to settle after SetFont) - correct the instant
+-- this runs.
 local function RelayoutBannerHeight()
     local scale = SB.db.settings.miniFontScale or 1
     local nameH = math.ceil((SB.Fonts.HighlightSmall.baseSize or 12) * scale * 1.4)
     local subH = math.ceil((SB.Fonts.DisableSmall.baseSize or 10) * scale * 1.4)
-    local textBottom = 1 + nameH + 2 + subH -- top inset + name + gap + sub
-    local contentH = math.max(ICON_SLOT_SIZE, textBottom)
-    banner:SetHeight(math.max(40, contentH + 6 + TRACK_H + 5))
+    local contentH = nameH + NAME_ROW_GAP + subH + BAR_GAP + TRACK_H
+    banner:SetHeight(BANNER_PADDING * 2 + contentH)
+
+    -- The icon fills the full content column height exactly - same top
+    -- inset as the banner's own top padding, same left inset as PADDING.
+    local iconSize = contentH
+    banner.slot:SetSize(iconSize, iconSize)
+    banner.slot:ClearAllPoints()
+    banner.slot:SetPoint("TOPLEFT", banner, "TOPLEFT", BANNER_PADDING, -BANNER_PADDING)
+
+    local textLeft = BANNER_PADDING + iconSize + ICON_TEXT_GAP
+    local subRowY = BANNER_PADDING + nameH + NAME_ROW_GAP
+
+    banner.nameText:ClearAllPoints()
+    banner.nameText:SetPoint("TOPLEFT", banner, "TOPLEFT", textLeft, -BANNER_PADDING)
+    banner.nameText:SetPoint("RIGHT", banner, "RIGHT", -BANNER_RIGHT_PAD, 0)
+
+    -- Duration shares the sender/channel line - right-aligned, directly
+    -- above the progress bar (explicit requirement) - rather than
+    -- floating alone in the top-right corner.
+    banner.timeText:ClearAllPoints()
+    banner.timeText:SetPoint("TOPRIGHT", banner, "TOPRIGHT", -BANNER_RIGHT_PAD, -subRowY)
+
+    banner.subText:ClearAllPoints()
+    banner.subText:SetPoint("TOPLEFT", banner, "TOPLEFT", textLeft, -subRowY)
+    banner.subText:SetPoint("RIGHT", banner.timeText, "LEFT", -SUB_TIME_GAP, 0)
+
     banner.track:ClearAllPoints()
-    banner.track:SetPoint("TOPLEFT", banner, "TOPLEFT", 41, -(contentH + 6))
-    banner.track:SetPoint("RIGHT", banner, "RIGHT", -8, 0)
+    banner.track:SetPoint("TOPLEFT", banner, "TOPLEFT", textLeft, -(subRowY + subH + BAR_GAP))
+    banner.track:SetPoint("RIGHT", banner, "RIGHT", -BANNER_RIGHT_PAD, 0)
 end
 
 function SB:RefreshAnnouncerFont()

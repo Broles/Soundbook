@@ -2396,19 +2396,20 @@ local function BuildMainFrame()
     end
 
     -- Explicit requirement: the closed "Send to:" chip always renders in
-    -- the selected channel's own colour (Guild/Raid/Friends/Self) -
+    -- the selected channel's own colour (Guild/Raid/Friends) -
     -- unconditionally, regardless of whether anyone is currently
-    -- reachable on it. "All" has no single channel colour of its own and
-    -- stays the normal text colour, same as before.
+    -- reachable on it. "All" and "Self Only" are not real multiplayer
+    -- channels and both render in the normal (white) text colour, never
+    -- SB.CHANNEL_COLOR.SELF's grey - that grey is still used elsewhere
+    -- for unrelated purposes (e.g. the Settings "General" tab colour),
+    -- just never for this "what will a click send to" label.
     local function RefreshSendToLabel()
         local target = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
-        local text, color = nil, SB.Theme.TEXT -- "All" (and any unrecognised target) falls back to the normal text colour
+        local text, color = nil, SB.Theme.TEXT -- "All"/"Self" (and any unrecognised target) use the normal text colour
         if target == "ALL" then
             text = "Send to: All"
         elseif target == "SELF" then
             text = "Send to: Self"
-            local c = SB.CHANNEL_COLOR.SELF
-            color = { c.r, c.g, c.b }
         else
             text = "Send to: " .. BucketLabel(target) .. ChannelCountSuffix(target)
             local c = SB.CHANNEL_COLOR[target]

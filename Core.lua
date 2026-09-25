@@ -60,15 +60,15 @@ SB.VALID_CHANNELS   = { Master = true, SFX = true, Music = true, Ambience = true
 -- Send/Receive matrix, output dropdowns, SendMenu, chat notifications).
 -- RGB floats (SetTextColor) and matching "rrggbb" hex (|cffRRGGBB) are
 -- kept side by side so both stay in sync from one definition.
--- SELF is not a channel colour - it's the neutral shade for a
--- locally-triggered ("(Self)") sound.
+-- SELF is not a channel colour - it's the neutral shade used elsewhere
+-- for unrelated "this isn't a real multiplayer channel" UI (e.g. the
+-- Settings "General" tab colour). Output-TARGET labels (Self Only, All)
+-- deliberately do NOT use it - see TARGET_WHITE below.
 SB.CHANNEL_COLOR = {
     DIRECT  = { r = 0.72, g = 0.55, b = 0.95, hex = "b88cf2" }, -- purple
     FRIENDS = { r = 0.55, g = 0.75, b = 0.98, hex = "8cbffa" }, -- pastel blue
     GUILD   = { r = 0.55, g = 0.88, b = 0.62, hex = "8ce09e" }, -- pastel green
     RAID    = { r = 0.98, g = 0.72, b = 0.48, hex = "fab87a" }, -- pastel orange
-    -- Darkened from a lighter grey that was too close to Theme.TEXT
-    -- (near-white) to tell apart from "ALL" (normal text colour).
     SELF    = { r = 0.48, g = 0.48, b = 0.50, hex = "7a7a80" }, -- neutral grey, darker
 }
 -- Party is always the SAME colour as Raid - the two are one merged target
@@ -76,10 +76,18 @@ SB.CHANNEL_COLOR = {
 -- its own key so a direct SB.CHANNEL_COLOR.PARTY lookup still resolves
 -- instead of falling through to nil/SELF grey.
 SB.CHANNEL_COLOR.PARTY = SB.CHANNEL_COLOR.RAID
+-- Explicit requirement: "Self Only" and "All" are not real multiplayer
+-- channels and must both read in the normal (white) text colour, never
+-- SB.CHANNEL_COLOR.SELF's grey - matches Theme.TEXT/V3.TEXT_PRIMARY's own
+-- off-white exactly (Core.lua loads before Theme.lua, so this is a
+-- literal duplicate of that value rather than a reference to it).
+local TARGET_WHITE = { r = 0.91, g = 0.94, b = 1.00, hex = "e8f0ff" }
 -- Looks a colour up by the human-readable label string used throughout
--- the addon. Singular "Friend" (WHISPER mapping) and plural "Friends"
--- (dropdown/SendMenu header) both resolve to FRIENDS. Falls back to
--- SELF's neutral grey for anything unrecognized.
+-- the addon for output-target/source display (the Announcer's "sender ->
+-- channel" line, History's source colour, etc). Singular "Friend"
+-- (WHISPER mapping) and plural "Friends" (dropdown/SendMenu header) both
+-- resolve to FRIENDS. "Self"/"All" and anything unrecognized all read as
+-- the normal white text colour, never SELF's grey.
 local CHANNEL_COLOR_BY_LABEL = {
     Direct = SB.CHANNEL_COLOR.DIRECT,
     Friend = SB.CHANNEL_COLOR.FRIENDS,
@@ -87,10 +95,11 @@ local CHANNEL_COLOR_BY_LABEL = {
     Guild = SB.CHANNEL_COLOR.GUILD,
     Raid = SB.CHANNEL_COLOR.RAID,
     Party = SB.CHANNEL_COLOR.PARTY,
-    Self = SB.CHANNEL_COLOR.SELF,
+    Self = TARGET_WHITE,
+    All = TARGET_WHITE,
 }
 function SB.GetChannelColor(label)
-    return CHANNEL_COLOR_BY_LABEL[label] or SB.CHANNEL_COLOR.SELF
+    return CHANNEL_COLOR_BY_LABEL[label] or TARGET_WHITE
 end
 
 -- Sound files may be .ogg, .mp3, or .wav - WoW's PlaySoundFile supports all
