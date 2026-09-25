@@ -1284,6 +1284,7 @@ end
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("ADDON_LOADED")
 initFrame:RegisterEvent("PLAYER_LOGIN")
+initFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
 initFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 initFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
 -- Boss encounter start/end (distinct from general combat - see Settings ->
@@ -1451,6 +1452,13 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
         end
 
         SB:Fire("PLAYER_LOGIN")
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        -- Relayed as its own SB event (not folded into PLAYER_LOGIN above)
+        -- because it fires on every zone/instance load, not just once at
+        -- login - listeners that need a "the world is genuinely ready,
+        -- re-assert my state" hook (see Announcer.lua's icon-visibility
+        -- fix) want every firing, not just the first.
+        SB:Fire("PLAYER_ENTERING_WORLD")
     elseif event == "PLAYER_REGEN_DISABLED" then
         SB.inCombat = true
         SB:Fire("COMBAT_START")

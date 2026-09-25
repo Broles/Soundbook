@@ -2769,3 +2769,22 @@ SB:On("PLAYER_LOGIN", function()
         BuildIcon()
     end
 end)
+
+-- Live report: the icon was invisible right after login until manually
+-- toggling Settings' "Show Mini Soundbook" off and on - the exact same
+-- SB:ShowAnnouncer() call PLAYER_LOGIN above already makes, just at a
+-- much later point once the client's own loading-screen fade/UI
+-- transition has genuinely finished. A frame first Show()n mid-transition
+-- can end up not actually painted even though it's logically shown, with
+-- nothing afterward ever forcing a fresh redraw. PLAYER_ENTERING_WORLD
+-- (native event relayed via SB:Fire by Core.lua's own initFrame, same as
+-- PLAYER_LOGIN above) fires once the world is truly ready and is the
+-- standard point to re-assert frame state for exactly this reason; it
+-- also fires on every zone/instance transition, not just login, so this
+-- doubles as a cheap, idempotent self-heal rather than a one-shot login
+-- fixup.
+SB:On("PLAYER_ENTERING_WORLD", function()
+    if SB.db.ui.announcer.shown then
+        SB:ShowAnnouncer()
+    end
+end)

@@ -67,7 +67,7 @@ Do not delete `Soundbook.lua` from SavedVariables when upgrading. Soundbook migr
 
 The Announcer is the always-on HUD that replaces the old Mini Soundbook window - a small icon rather than a second full window:
 
-- idle: just the app icon, movable, with small indicators for an active incoming-mute or raid-admin restriction;
+- idle: just the app icon, movable, with small indicators for an active incoming-mute or raid-admin restriction - re-asserted on every zone/instance load (`PLAYER_ENTERING_WORLD`), not just once at login, so it self-heals if it was ever shown before the client's own loading-screen transition had genuinely finished;
 - active: expands into a compact banner for as long as a Soundbook sound is playing, local or received - a large icon fills nearly the full banner height on the left, the sound name and sender/channel line sit beside it, and the duration reads right-aligned directly above the real progress bar spanning the remaining width;
 - right-click the active banner to mute just that one sound;
 - right-click the idle icon for Quick Options (mute incoming, lock, muted players, open Soundbook);
