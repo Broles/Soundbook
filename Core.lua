@@ -685,14 +685,32 @@ local function GetDefaultDB()
             -- active, searching every category regardless of currentTab,
             -- same as a text search. Empty = no filter, normal browsing.
             tagFilters = {},
-            minimap = { hide = false, angle = 215 },
+            -- 90 = the minimap's own 12 o'clock (see MinimapButton.lua's
+            -- UpdatePosition: angle 90 -> cos=0/sin=1 -> straight up from
+            -- the minimap's centre) - explicit fresh-install placement
+            -- request. Database.lua's SanitizeDatabase only ever falls
+            -- back to this default when ui.minimap.angle isn't already a
+            -- real saved number (ClampNumber), so an existing install's
+            -- own dragged-to (or simply already-persisted-at-the-old-
+            -- default) angle is never moved by changing this value.
+            minimap = { hide = false, angle = 90 },
             -- Soundbook 3.0 - the Announcer HUD (Announcer.lua) that
             -- replaces the old Mini Soundbook/Favourites window. A separate
             -- table from the legacy favPos/favShown/... fields above (never
             -- deleted - see MigrateDB's v26->v27 block, which seeds these
             -- FROM the old fields once, for anyone upgrading).
             announcer = {
-                pos = { point = "TOPRIGHT", relPoint = "TOPRIGHT", x = -60, y = -80 },
+                -- Explicit fresh-install discoverability requirement: sits
+                -- centred near the top of the SCREEN (UIParent's own TOP
+                -- edge, not the minimap) - easy to notice on first login,
+                -- and clear of the minimap/minimap button's own default
+                -- corner (see ui.minimap.angle above) so the two never
+                -- start out stacked on top of each other. Same
+                -- SanitizePosition/ClampNumber preservation as ui.minimap's
+                -- angle above - an existing install's own already-saved
+                -- (or already-dragged) position is never moved by changing
+                -- this default.
+                pos = { point = "TOP", relPoint = "TOP", x = 0, y = -80 },
                 shown = true,
                 alphaIdle = 100,
                 alphaHover = 100,
