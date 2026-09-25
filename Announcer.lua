@@ -1774,6 +1774,8 @@ local function PopulateFavMenu()
                 row.progressFill:Hide()
                 row.progressFill:SetWidth(0.01)
                 row.isHovered = false
+                row.playStartedAt = nil
+                row.playDuration = nil
                 UpdateRowBorder(row)
             end
             row.soundID = soundID
@@ -1829,6 +1831,67 @@ local function FindFavMenuRowForSound(soundID)
     return nil
 end
 
+------------------------------------------------------------------------
+-- Row progress: smooth visual interpolation, decoupled from the poll.
+-- SoundPlayer.lua's own PLAYBACK_PROGRESS_UPDATE is driven by its
+-- deliberately-paced polling ticker (POLL_INTERVAL, ~0.08s - a real
+-- C_Sound/tracking cost, not something to run faster just for smoother
+-- visuals). At that cadence a short sound's row fill visibly steps
+-- instead of gliding. row.playStartedAt/row.playDuration below are set
+-- from the SAME state.startedAt/state.duration the poll already
+-- provides (never a separate/invented timing source - still the single
+-- source of truth for duration and playback tracking); a small,
+-- independent ~60fps ticker then repaints purely from
+-- (now - playStartedAt) / playDuration, linearly, with no easing -
+-- exactly the same maths PLAYBACK_PROGRESS_UPDATE itself uses, just
+-- sampled far more often. It only exists, and only iterates, while the
+-- Mini Soundbook is open AND at least one row actually has an active
+-- duration - never an always-on ticker, and it never calls into
+-- SoundPlayer.lua/C_Sound itself, so playback-status polling frequency
+-- is completely unaffected.
+------------------------------------------------------------------------
+
+local ROW_PROGRESS_TICK = 1 / 60
+local rowProgressTicker
+
+local function StopRowProgressTicker()
+    if rowProgressTicker then
+        rowProgressTicker:Cancel()
+        rowProgressTicker = nil
+    end
+end
+
+local function AnyRowProgressActive()
+    if not (favMenu and favMenu.rows) then return false end
+    for _, row in pairs(favMenu.rows) do
+        if row:IsShown() and row.playStartedAt and row.playDuration then return true end
+    end
+    return false
+end
+
+local function TickRowProgress()
+    if not (favMenu and favMenu:IsShown()) then
+        StopRowProgressTicker()
+        return
+    end
+    local now = GetTime()
+    local anyActive = false
+    for _, row in pairs(favMenu.rows) do
+        if row:IsShown() and row.playStartedAt and row.playDuration then
+            anyActive = true
+            local pct = math.max(0, math.min(1, (now - row.playStartedAt) / row.playDuration))
+            row.progressFill:SetWidth(math.max(0.01, (row:GetWidth() or 1) * pct))
+        end
+    end
+    if not anyActive then StopRowProgressTicker() end
+end
+
+local function StartRowProgressTickerIfNeeded()
+    if rowProgressTicker then return end
+    if not AnyRowProgressActive() then return end
+    rowProgressTicker = C_Timer.NewTicker(ROW_PROGRESS_TICK, TickRowProgress)
+end
+
 SB:On("PLAYBACK_PROGRESS_UPDATE", function(state)
     if not (favMenu and favMenu:IsShown()) then return end
     if not state or not state.soundID then return end
@@ -1838,13 +1901,20 @@ SB:On("PLAYBACK_PROGRESS_UPDATE", function(state)
         -- Never fake a percentage for an unknown duration, same rule the
         -- Announcer banner itself already follows.
         row.progressFill:Hide()
+        row.playStartedAt = nil
+        row.playDuration = nil
         UpdateRowBorder(row)
         return
     end
     local pct = state.progress or 0
     row.progressFill:SetWidth(math.max(0.01, (row:GetWidth() or 1) * pct))
     row.progressFill:Show()
+    -- Source of truth for the fast ticker's own maths, taken directly
+    -- from this poll tick's state - never recomputed or guessed.
+    row.playStartedAt = state.startedAt
+    row.playDuration = state.duration
     UpdateRowBorder(row)
+    StartRowProgressTickerIfNeeded()
 end)
 
 SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
@@ -1853,7 +1923,10 @@ SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
     if not row then return end
     row.progressFill:Hide()
     row.progressFill:SetWidth(0.01)
+    row.playStartedAt = nil
+    row.playDuration = nil
     UpdateRowBorder(row)
+    if not AnyRowProgressActive() then StopRowProgressTicker() end
 end)
 
 ------------------------------------------------------------------------
