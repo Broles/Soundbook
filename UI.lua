@@ -1514,8 +1514,9 @@ local function RefreshLibraryImpl()
     -- floor below, HOTKEY_WIDTH_MIN, plus its gap) or a tag pill (its caps
     -- + internal padding + "Legendary", the longest tag label, plus its
     -- gap) - only one of the two, or neither, ever shows on a given row.
-    -- minNameW: the smallest name-text width a column still reads cleanly
-    -- at - the actual floor this breakpoint protects.
+    -- minNameW: enough space for an ordinary sound name beside a tag;
+    -- 52px let three columns activate at minimum window width and clipped
+    -- common names even when two wider columns were available.
     -- All three grow with fontScale exactly like ROW_H above (a larger
     -- Soundbook Text Size needs more per-column width, never less).
     local leftReserve = GRID_LEFT_PAD + iconExtent + 8
@@ -1523,7 +1524,7 @@ local function RefreshLibraryImpl()
         GRID_LEFT_PAD + HOTKEY_WIDTH_MIN + 8,
         GRID_LEFT_PAD + (TAG_CAP_W * 2 + 8) + 46 + 6
     )
-    local minNameW = 52
+    local minNameW = 96
     THREE_COLUMN_WIDTH = math.floor(3 * (leftReserve + minNameW + rightReserve) * fontScale + GRID_LEFT_PAD + 0.5)
     local columns = contentWidth >= THREE_COLUMN_WIDTH and 3 or 2
     -- Explicit report: the first (leftmost) column's icons were visibly
