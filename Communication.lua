@@ -514,6 +514,19 @@ function SB.IsChannelSubsetActive(bucket)
     return GetSubset(bucket) ~= nil
 end
 
+--- True only while `bucket` currently holds a concrete, explicitly-
+--- narrowed list (possibly empty) - false for both `nil` (never
+--- activated) and the dynamic "ALL" state. The one place the UI asks
+--- "has the player actually changed who's selected", so it can show a
+--- plain count for the default all-selected state and only switch to a
+--- "selected/available" count once a real narrowing exists (explicit
+--- requirement - never show e.g. "Guild (3/3)" for the untouched
+--- default).
+function SB.IsChannelSubsetExplicit(bucket)
+    local current = GetSubset(bucket)
+    return current ~= nil and current ~= "ALL"
+end
+
 --- Activates `bucket`'s subset if it isn't already active, as the
 --- implicit "ALL" state (explicit requirement: "on first selecting a
 --- channel, all listed members are selected by default", and stays live

@@ -2379,6 +2379,22 @@ local function BuildMainFrame()
     -- per-row text (which needs the live "sel/avail" suffix regardless of
     -- whether the list is even open) - dd:SetLabelText bypasses the normal
     -- value->text lookup so this can update on every toggle.
+    -- Explicit requirement: never show "(0/0)" or a "(N/N)" count for the
+    -- untouched default all-selected state - a bare count once anyone is
+    -- reachable, no parens at all once nobody is, and "selected/available"
+    -- only once the player has actually narrowed the selection (a real
+    -- explicit subset, per SB.IsChannelSubsetExplicit - never derived from
+    -- selected==available, since a manually-reselected "everyone" would
+    -- otherwise look identical to the untouched default).
+    local function ChannelCountSuffix(bucket)
+        local selected, avail = SB.GetChannelSubsetCount(bucket)
+        if avail == 0 then return "" end
+        if SB.IsChannelSubsetExplicit(bucket) then
+            return string.format(" (%d/%d)", selected, avail)
+        end
+        return string.format(" (%d)", avail)
+    end
+
     local function RefreshSendToLabel()
         local target = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
         local text
@@ -2387,8 +2403,7 @@ local function BuildMainFrame()
         elseif target == "SELF" then
             text = "Send to: Self"
         else
-            local selected, avail = SB.GetChannelSubsetCount(target)
-            text = string.format("Send to: %s (%d/%d)", BucketLabel(target), selected, avail)
+            text = "Send to: " .. BucketLabel(target) .. ChannelCountSuffix(target)
         end
         defaultOutputDD:SetLabelText(text)
     end
@@ -2419,9 +2434,20 @@ local function BuildMainFrame()
         for _, bucket in ipairs(BUCKET_ORDER) do
             local active = (ActiveBucket() == bucket)
             local selected, avail = SB.GetChannelSubsetCount(bucket)
+            -- No reachable users at all -> no suffix column (never "0/0");
+            -- the untouched default all-selected state -> a bare count;
+            -- an actual explicit narrowing -> "selected/available". See
+            -- ChannelCountSuffix above for the same rule on the closed
+            -- chip's own label.
+            local rowSuffix
+            if avail > 0 then
+                rowSuffix = SB.IsChannelSubsetExplicit(bucket)
+                    and string.format("%d/%d", selected, avail)
+                    or tostring(avail)
+            end
             table.insert(opts, {
                 text = BucketLabel(bucket), value = bucket,
-                suffix = selected .. "/" .. avail,
+                suffix = rowSuffix,
                 isActiveChannel = active,
                 onRowClick = function()
                     if active then
@@ -2441,12 +2467,11 @@ local function BuildMainFrame()
 
             if active then
                 local memberRows = SB.GetChannelMemberRows(bucket)
-                if #memberRows == 0 then
-                    table.insert(opts, {
-                        text = "No reachable Soundbook users right now.",
-                        value = "EMPTY:" .. bucket, indent = MEMBER_INDENT, disabled = true,
-                    })
-                else
+                -- Explicit requirement: no low-value empty-state line here
+                -- (and no other offline/unavailable hint in its place) -
+                -- zero reachable members just means the expanded list has
+                -- nothing to show beneath the channel row itself.
+                if #memberRows > 0 then
                     for _, row in ipairs(memberRows) do
                         local name = row.name
                         table.insert(opts, {

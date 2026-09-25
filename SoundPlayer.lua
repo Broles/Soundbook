@@ -28,7 +28,22 @@ local resolvedExtension = {}
 -- and alternate are different physical files that can have different
 -- extensions, so they must never share a cache slot.
 local resolvedAltExtension = {}
-local missingFileBases = {}
+-- A fileBase is only trusted as CONFIRMED missing after two consecutive
+-- failed probe attempts (every extension tried, none played) - a
+-- genuinely missing file fails identically every time, so it still
+-- confirms within the first click or two, but a single spurious
+-- PlaySoundFile failure (the WoW client can occasionally return
+-- willPlay=false for a real, valid file for reasons that have nothing to
+-- do with the file's existence) no longer permanently silences a valid
+-- sound for the rest of the session - see SB:PlaySound below. A confirmed
+-- entry also expires after MISSING_CACHE_TTL so even a genuinely
+-- confirmed miss re-probes occasionally rather than staying poisoned
+-- forever past a since-fixed cause (a file added without a full restart,
+-- a transient disk/addon-loading hiccup).
+local MISSING_STRIKES_TO_CONFIRM = 2
+local MISSING_CACHE_TTL = 10 -- seconds
+local missingFileStrikes = {}   -- fileBase -> consecutive failed-probe count
+local missingFileBases = {}     -- fileBase -> GetTime() it was confirmed missing
 local missingNoticeShown = {}
 
 local function NotifyMissingLocalFile(fileBase, info, source)
@@ -421,7 +436,8 @@ function SB:PlaySound(soundID, source)
     local durationSeconds = (altEntry and altEntry.durationSeconds) or info.durationSeconds
     local extCache = altEntry and resolvedAltExtension or resolvedExtension
 
-    if missingFileBases[fileBase] then
+    local missingAt = missingFileBases[fileBase]
+    if missingAt and (GetTime() - missingAt) < MISSING_CACHE_TTL then
         SB:Debug("PlaySound: cached missing file '%s' (source=%s)", fileBase, source)
         NotifyMissingLocalFile(fileBase, info, source)
         return false
@@ -438,12 +454,34 @@ function SB:PlaySound(soundID, source)
     end
 
     if not willPlay then
-        missingFileBases[fileBase] = true
-        SB:Debug("No playable file found for '%s' (tried: %s) - is the file missing? source=%s",
-            fileBase, table.concat(SB.SOUND_EXTENSIONS, ", "), source)
-        NotifyMissingLocalFile(fileBase, info, source)
+        -- Require MISSING_STRIKES_TO_CONFIRM independent failures before
+        -- trusting this negative result - a single willPlay=false can be a
+        -- one-off engine hiccup unrelated to the file actually existing,
+        -- and treating it as gospel used to permanently silence a valid
+        -- sound for the rest of the session. A genuinely missing file
+        -- fails the exact same way every time, so it still confirms
+        -- almost immediately; nothing here weakens real missing-file
+        -- detection.
+        local strikes = (missingFileStrikes[fileBase] or 0) + 1
+        missingFileStrikes[fileBase] = strikes
+        if strikes >= MISSING_STRIKES_TO_CONFIRM then
+            missingFileBases[fileBase] = GetTime()
+            SB:Debug("No playable file found for '%s' (tried: %s) - is the file missing? source=%s",
+                fileBase, table.concat(SB.SOUND_EXTENSIONS, ", "), source)
+            NotifyMissingLocalFile(fileBase, info, source)
+        else
+            SB:Debug("PlaySoundFile attempt failed for '%s' (strike %d/%d, not yet confirmed missing) source=%s",
+                fileBase, strikes, MISSING_STRIKES_TO_CONFIRM, source)
+        end
         return false
     end
+
+    -- A real success clears any prior strikes/confirmed-missing state and
+    -- the one-time notice guard - this fileBase is proven playable now,
+    -- so nothing about its past failures should linger.
+    missingFileStrikes[fileBase] = nil
+    missingFileBases[fileBase] = nil
+    missingNoticeShown[fileBase] = nil
 
     -- Probe first: a typo or missing file must never cut off a valid sound
     -- that is already playing. The new handle is not tracked yet, so this
