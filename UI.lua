@@ -2395,17 +2395,30 @@ local function BuildMainFrame()
         return string.format(" (%d)", avail)
     end
 
+    -- Explicit requirement: the closed "Send to:" chip always renders in
+    -- the selected channel's own colour (Guild/Raid/Friends/Self) -
+    -- unconditionally, regardless of whether anyone is currently
+    -- reachable on it. "All" has no single channel colour of its own and
+    -- stays the normal text colour, same as before.
     local function RefreshSendToLabel()
         local target = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
-        local text
+        local text, color = nil, SB.Theme.TEXT -- "All" (and any unrecognised target) falls back to the normal text colour
         if target == "ALL" then
             text = "Send to: All"
         elseif target == "SELF" then
             text = "Send to: Self"
+            local c = SB.CHANNEL_COLOR.SELF
+            color = { c.r, c.g, c.b }
         else
             text = "Send to: " .. BucketLabel(target) .. ChannelCountSuffix(target)
+            local c = SB.CHANNEL_COLOR[target]
+            if c then color = { c.r, c.g, c.b } end
         end
-        defaultOutputDD:SetLabelText(text)
+        -- Always passed explicitly (never nil) - SetLabelText only ever
+        -- CHANGES the colour when given one, so switching away from a
+        -- coloured channel back to "All" must still reset it, not leave
+        -- the previous channel's colour behind.
+        defaultOutputDD:SetLabelText(text, color)
     end
 
     local function BuildSendToOptions()
