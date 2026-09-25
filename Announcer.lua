@@ -1261,10 +1261,10 @@ end
 
 ------------------------------------------------------------------------
 -- Favourites quick-play menu: left-click the icon opens up to 20
--- Favourites as an icon grid (2 or 3 columns, same icon+name row style
--- as the Library's entries - see UI.lua's LayoutEntries), titled with
--- exactly where a click will actually send them. Column count follows
--- the Mini Soundbook Size setting (see GetFavMenuColumns below). Picking
+-- Favourites as a responsive icon grid (same icon+name row style as the
+-- Library's entries - see UI.lua's LayoutEntries), titled with exactly
+-- where a click will actually send them. Column/card layout is fully
+-- content- and size-driven (see GetFavMenuLayout below). Picking
 -- a sound plays it through SB:TriggerSound with no override, identical
 -- to a normal Library click.
 ------------------------------------------------------------------------
@@ -1480,12 +1480,6 @@ local function GetFavMenuHeaderText(availableWidth)
     return Wrap(phrase), secondary
 end
 
--- Row height for the Favourites grid. Declared here (above every
--- function that closes over it) so those functions capture it as an
--- upvalue - a local declared below the function that references it
--- would resolve to a global instead.
-local FAV_MENU_ROW_H = 24
-
 -- favMenu.title's own left/right anchor insets (see BuildFavMenu below,
 -- "TOPLEFT 10,-8" / "RIGHT -10,0") - shared with PopulateFavMenu's own
 -- title-fit-check width computation via this one constant, so the two
@@ -1493,23 +1487,57 @@ local FAV_MENU_ROW_H = 24
 -- (e.g. to make room for a future header control).
 local FAV_TITLE_SIDE_INSET = 10
 
--- Base per-column card width (unscaled "1x" reference) - the WHOLE favMenu
--- frame is separately SetScale'd by the independent Mini Soundbook Size
--- slider (SB.db.ui.announcer.favScale, not the Announcer Size slider -
--- favScale exclusively owns the favourite-area UI; see
--- SB:RefreshMiniSoundbookScale below) for its continuous 50%-200% range,
--- so these widths multiply uniformly from here rather than being
--- recomputed per scale. Chosen so usable text width (colW - 33: 4px icon
--- inset + 20px icon + 5px icon->text gap + 4px text->edge gap, see
--- GetOrCreateFavMenuRow) shrinks gracefully as more columns are needed
--- for a larger list - long names simply truncate (SetWordWrap(false) +
--- ellipsis) rather than overlap.
-local FAV_COL_W = { [1] = 205, [2] = 205, [3] = 160, [4] = 140, [5] = 125 }
+------------------------------------------------------------------------
+-- Responsive favourite grid (explicit redesign - the old count-only
+-- column table could still collapse 20 favourites into one giant
+-- vertical column at large Mini Soundbook Size). Column count, card
+-- width AND card height are now all derived together, in "1x" reference
+-- units (the whole favMenu frame carries its own separate SetScale from
+-- the Mini Soundbook Size slider - SB.db.ui.announcer.favScale - so
+-- these multiply out uniformly at render time, same as before).
+------------------------------------------------------------------------
 local MAX_FAV_COLUMNS = 5
+-- Row height adapts to how many rows are actually needed (fewer rows ->
+-- taller, more readable cards; many rows -> shrinks back down), bounded
+-- so a short list never gets comically tall cards and a long one never
+-- shrinks past legibility.
+local ROW_H_MIN, ROW_H_MAX = 22, 36
+-- Soft TOTAL content-height budget (1x units) row height is solved
+-- against - not a hard cap (ROW_H_MIN already floors individual rows
+-- below it when there are enough of them), just what "use the extra
+-- space, don't leave a huge empty row" is measured relative to.
+local GRID_SOFT_H = 300
+-- Card width per candidate column count (1x units), not derived from a
+-- strict height*aspect formula - deriving width strictly from row height
+-- leaves no usable headroom against MIN_REAL_COL_W across the full 0.5-2.0
+-- Mini Soundbook Size range (ROW_H_MAX*aspect ends up BELOW the width a
+-- card needs just to hold an icon + a few characters). These values are
+-- hand-verified to land each column count's REAL (post-favScale) width
+-- above MIN_REAL_COL_W across smoothly graduated, non-cliff favScale
+-- thresholds (col=5 needs scale>=0.95, col=4>=0.864, col=3>=0.76,
+-- col=2>=0.633, col=1>=0.5 - the slider's own minimum), and each one sits
+-- within the requested ~2.0-3.0:1 width:height "sound card" shape against
+-- ROW_H_MIN/ROW_H_MAX.
+local FAV_COL_W = { [1] = 190, [2] = 150, [3] = 125, [4] = 110, [5] = 100 }
+-- More than this many rows in a column reads as "one giant vertical
+-- list" (the exact regression report) - escalate to more columns
+-- instead, provided the real legibility floor below still allows it.
+local ROWS_SOFT_MAX = 6
+-- Below this REAL (post-favScale) card width, a column can no longer
+-- comfortably fit its icon plus a few readable characters of name - the
+-- one thing that can still reduce (never escalate into) columns, mostly
+-- biting at a small Mini Soundbook Size with a high favourite count.
+local MIN_REAL_COL_W = 95
+-- Icon grows/shrinks with the chosen row height, within its own sensible
+-- bounds - explicit requirement, never so small it's unreadable, never
+-- so large a tall card looks like an oversized button.
+local ICON_MIN, ICON_MAX = 16, 30
 
 -- Content-driven preferred column count, purely from how many Favourites
 -- currently exist - a short list reads better as a vertical stack than
--- stretched thin across a wide, mostly-empty row.
+-- stretched thin across a wide, mostly-empty row. The starting point for
+-- GetFavMenuLayout below, which then adapts it for real available
+-- height/width - not the final answer on its own anymore.
 local function PreferredColumnsForCount(count)
     if count <= 3 then return 1
     elseif count <= 6 then return 2
@@ -1518,34 +1546,48 @@ local function PreferredColumnsForCount(count)
     else return MAX_FAV_COLUMNS end
 end
 
--- Below this REAL (post-favScale) card width, a column can no longer
--- comfortably fit its icon plus a few readable characters of name - adapt
--- DOWNWARD (fewer, wider columns) instead of squeezing further. Mostly
--- bites at a small Mini Soundbook Size with a high Favourite count, where
--- the preferred table's narrower per-column widths would otherwise shrink
--- past usefulness once scaled down.
-local MIN_REAL_COL_W = 95
+-- Card width/height (1x units) and resulting row count for a candidate
+-- column count against the current favourite count - row height solved
+-- from the soft height budget (fewer rows -> taller cards, many rows ->
+-- shrinks back down), card width taken from the per-column-count table.
+local function ComputeCardMetrics(columns, count)
+    local rows = math.ceil(count / columns)
+    local rowH = math.min(ROW_H_MAX, GRID_SOFT_H / rows)
+    rowH = math.max(ROW_H_MIN, rowH)
+    local colW = FAV_COL_W[columns] or FAV_COL_W[MAX_FAV_COLUMNS]
+    return colW, rowH, rows
+end
 
--- Above this REAL total grid width, keep shrinking columns too - the whole
--- grid scales together with favScale, so a large Mini Soundbook Size times
--- a high preferred column count would otherwise balloon the popup far
--- wider than a "mini" panel should ever be. This is what makes a larger
--- scale naturally favour fewer columns, the opposite direction from the
--- floor above (which mostly bites at small scale).
-local MAX_REAL_GRID_W = 650
-
-local function GetFavMenuColumns(count)
+-- Full layout decision: columns, card width/height (1x units), and the
+-- resulting row count. Starts from the content-driven preferred column
+-- count, escalates toward more (narrower) columns when that would
+-- otherwise produce a tall pile of rows (bounded by MAX_FAV_COLUMNS and
+-- the real legibility floor), then reduces back down whenever the
+-- REAL (post-favScale) result has gone unusably narrow. Escalation is
+-- checked and applied one step at a time and reduction is a hard, always-
+-- final constraint, so the two passes can never fight each other into an
+-- oscillation - the same (count, favScale) input always resolves to the
+-- same columns.
+local function GetFavMenuLayout(count)
     count = count or 0
-    if count <= 0 then return 1 end
+    if count <= 0 then return 1, FAV_COL_W[1], ROW_H_MIN, 0 end
     local scale = (SB.db.ui.announcer and SB.db.ui.announcer.favScale) or 1
     local columns = PreferredColumnsForCount(count)
-    while columns > 1 and (FAV_COL_W[columns] * scale) < MIN_REAL_COL_W do
-        columns = columns - 1
+    local colW, rowH, rows = ComputeCardMetrics(columns, count)
+
+    while rows > ROWS_SOFT_MAX and columns < MAX_FAV_COLUMNS do
+        local nextColW = ComputeCardMetrics(columns + 1, count)
+        if (nextColW * scale) < MIN_REAL_COL_W then break end
+        columns = columns + 1
+        colW, rowH, rows = ComputeCardMetrics(columns, count)
     end
-    while columns > 1 and (FAV_COL_W[columns] * columns * scale) > MAX_REAL_GRID_W do
+
+    while columns > 1 and (colW * scale) < MIN_REAL_COL_W do
         columns = columns - 1
+        colW, rowH, rows = ComputeCardMetrics(columns, count)
     end
-    return columns
+
+    return columns, colW, rowH, rows
 end
 
 -- Icon+name row, same visual language as UI.lua's CreateEntryButton (icon
@@ -1576,7 +1618,7 @@ end
 local function GetOrCreateFavMenuRow(index)
     if favMenu.rows[index] then return favMenu.rows[index] end
     local row = SB.CreateFrame("Button", nil, favMenu.content)
-    row:SetHeight(FAV_MENU_ROW_H)
+    row:SetHeight(ROW_H_MIN) -- placeholder only, PopulateFavMenu always resizes this to the current layout's row height
     -- Row border insets deliberately at 0 (SetBackdrop with edgeFile/
     -- edgeSize alone, no bgFile - the exact same "border-only" pattern
     -- already used for UI.lua's favouriteHover) so it sits right at the
@@ -1664,9 +1706,8 @@ end
 local function BuildFavMenu()
     if favMenu then return favMenu end
     favMenu = SB.CreateFrame("Frame", "SoundbookFavMenu", UIParent)
-    -- Real width is set every PopulateFavMenu call once the column count
-    -- (2 or 3) is known; this is just a sane initial value before the
-    -- first populate.
+    -- Real width is set every PopulateFavMenu call once the layout is
+    -- known; this is just a sane initial value before the first populate.
     favMenu:SetWidth(FAV_COL_W[2] * 2 + 8)
     favMenu:SetFrameStrata("DIALOG")
     Theme.CleanPanel(favMenu)
@@ -1756,13 +1797,14 @@ local function PopulateFavMenu()
         if favourites[slot] then favCount = favCount + 1 end
     end
 
-    -- Grid width/columns computed FIRST, before the header text - the
-    -- title bar's own fit-check (GetFavMenuHeaderText's names-vs-count
-    -- decision) needs the ACTUAL width this render is about to use, not
-    -- whatever favMenu:GetWidth() still holds from the previous one.
-    local columns = GetFavMenuColumns(favCount)
-    local colW = FAV_COL_W[columns]
+    -- Grid width/columns/row-height computed FIRST, before the header
+    -- text - the title bar's own fit-check (GetFavMenuHeaderText's
+    -- names-vs-count decision) needs the ACTUAL width this render is
+    -- about to use, not whatever favMenu:GetWidth() still holds from the
+    -- previous one.
+    local columns, colW, rowH = GetFavMenuLayout(favCount)
     local gridW = columns * colW
+    local iconSize = math.max(ICON_MIN, math.min(ICON_MAX, rowH - 6))
     -- FAV_TITLE_SIDE_INSET matches favMenu.title's own two-point anchor
     -- insets exactly (one constant, shared with BuildFavMenu's anchors -
     -- see its declaration above), so the measurement always lines up
@@ -1794,8 +1836,13 @@ local function PopulateFavMenu()
             local col = (shown - 1) % columns
             local gridRow = math.floor((shown - 1) / columns)
             row:ClearAllPoints()
-            row:SetSize(colW, FAV_MENU_ROW_H)
-            row:SetPoint("TOPLEFT", col * colW, -(gridRow * FAV_MENU_ROW_H))
+            row:SetSize(colW, rowH)
+            row:SetPoint("TOPLEFT", col * colW, -(gridRow * rowH))
+            -- Icon grows/shrinks with the row height this layout chose
+            -- (see GetFavMenuLayout/ICON_MIN/ICON_MAX) - text stays
+            -- anchored off the icon's own RIGHT edge (GetOrCreateFavMenuRow),
+            -- so it re-flows automatically without any separate update.
+            row.icon:SetSize(iconSize, iconSize)
             -- A pooled row being reassigned to a DIFFERENT sound (a real
             -- favourites reorder/replace, not just a repopulate for an
             -- unrelated reason like a font/selection change while this
@@ -1831,10 +1878,11 @@ local function PopulateFavMenu()
     favMenu.emptyText:SetShown(shown == 0)
 
     -- Every row is laid out and shown above, so `content` and the popup
-    -- both grow to fit all of them (max 20 Favourites is 10 rows at 2
-    -- columns, or 7 at 3 - comfortably on-screen without needing to scroll).
+    -- both grow to fit all of them - GetFavMenuLayout already keeps the
+    -- resulting row count bounded (ROWS_SOFT_MAX, escalating to more
+    -- columns instead) so this never needs to scroll.
     local totalRows = math.ceil(shown / columns)
-    local contentH = totalRows * FAV_MENU_ROW_H
+    local contentH = totalRows * rowH
     favMenu.content:SetHeight(math.max(1, contentH))
 
     local titleH = (shown == 0) and 46 or 24
