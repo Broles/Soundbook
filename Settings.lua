@@ -1,0 +1,1418 @@
+-- Settings.lua
+-- The Settings page lives inside the Soundbook window itself (no separate
+-- foreign-looking window). UI.lua shows/hides this panel when the Settings
+-- tab (grouped in the compact right-side dock below the category tabs) is
+-- clicked.
+--
+-- Settings restructure (explicit requirement): replaced the old single
+-- continuous scroll with five navigable sections - Sound & Playback,
+-- Sharing & Receiving, Mini Soundbook, Library & Appearance, Advanced -
+-- shown one at a time via a compact tab strip, each independently
+-- scrollable, plus a persistent Help & Information footer that's visible
+-- regardless of which section is active. This is a presentation/navigation
+-- reorganization only - every underlying setting/SavedVariable this file
+-- touches keeps its existing key and behaviour.
+--
+-- Three things that used to live here were relocated, not deleted:
+--   - Favourite Keybindings -> the Main Soundbook's own Favourites view
+--     (its "Keybinds" shortcut now enters Keybinding Mode directly - see
+--     Keybindings.lua's SB.BuildKeybindModePanel and UI.lua's
+--     SB:ToggleKeybindMode). Keybindings are attached to Favourite slots,
+--     not general configuration.
+--   - Sound History -> the launcher icons' own context/quick menu
+--     (Announcer.lua's Quick Options, shared by the Announcer icon and the
+--     Main toolbar's Quick Audio button), directly above Open Settings.
+--     History is content/navigation, not configuration.
+--   - The three timed/global receive-mute action buttons -> the same
+--     Quick Options menu, alongside the indefinite Mute Incoming toggle
+--     that already lived there. Timed muting is a runtime action, not
+--     persistent configuration; Settings now only shows a compact
+--     informational state with a Resume Receiving action while a mute is
+--     actually active.
+--
+-- Two things were removed entirely, not relocated - explicit requirement:
+-- analytics collection stays always-on and invisible to normal users, so
+-- neither its enable/disable checkbox nor the Community Analytics window
+-- button belong in Settings at all (the window is still reachable via
+-- /sb analytics, just not surfaced here).
+
+local ADDON_NAME, SB = ...
+
+-- The right-hand content pane's actual usable width - controls below are
+-- sized against this instead of arbitrary small pixel widths, so they
+-- actually fill the column instead of leaving a big empty strip on the
+-- right. Settings redesign (explicit requirement): a fixed-width LEFT nav
+-- column now shares the panel with this content pane (see NAV_W/
+-- BuildSectionNav/BuildSettingsPanel below), so the pane has meaningfully
+-- less width to work with than the old single full-width scroll did.
+-- Recomputed to stay safely inside the real available width even at the
+-- Main window's minimum resizable size (560): at that size the content
+-- pane is ~379px wide (panelW(530) - nav's own left inset(6) - NAV_W(128)
+-- - NAV_CONTENT_GAP(15) - the scroll region's own right inset(2), then
+-- FitSettingsPanelHeight's -10 scrollbar/margin reservation on top) - 340
+-- leaves a real margin below that ceiling (~16px inset each side once
+-- centered) rather than exactly meeting it. Still a fixed column (not a
+-- full-bleed responsive width) so paragraph-length hint text stays
+-- readable at any window size.
+local CONTENT_W = 340
+
+-- Left-hand section nav (redesign) - fixed width (~120-130px per
+-- requirement) and the gap between it and the content pane
+-- (~14-16px per requirement). Both referenced by BuildSectionNav and
+-- BuildSettingsPanel/FitSettingsPanelHeight below, so the two can never
+-- drift out of sync with each other.
+local NAV_W = 128
+local NAV_CONTENT_GAP = 15
+
+local panel
+local categoryNameBoxes = {}
+local categoryIconTextures = {}
+local matrixReceiveTiles = {}
+local receiveMuteInfoText, receiveMuteResumeBtn
+local countdownTicker
+
+-- One content frame per section, all built once and swapped via Show/Hide
+-- (same pattern UI.lua already uses for Settings/Admin/Keybind-Mode
+-- swapping over the Library) - never rebuilt on tab switch, so nothing
+-- inside a section ever needs re-wiring after the first BuildSettingsPanel
+-- call.
+local sectionContents = {}
+local sectionBottomAnchor = {}
+local sectionTabButtons = {}
+local currentSectionKey
+
+-- Settings redesign (explicit requirement): seven sections instead of
+-- five, navigated from a vertical left-hand nav instead of a horizontal
+-- tab strip - see BuildSectionNav/BuildSettingsPanel below. This is still
+-- a presentation/navigation reorganization only, existing controls just
+-- moved to whichever new section fits them best (see each Build*Section
+-- function's own header comment for exactly what moved where) - no
+-- underlying setting/SavedVariable key or behaviour changed. `color` is
+-- each section's own active-state accent - existing palette tokens only,
+-- one full set (Self grey, Arcane Cyan, Guild green, Direct purple,
+-- Friends blue, Raid/Party orange) - Gold (previously Favourites' own
+-- colour) is no longer assigned to a section since Favourites' content
+-- merged into General (explicit request), leaving six sections.
+local SECTION_ORDER = {
+    { key = "general",      label = "General",      color = { SB.CHANNEL_COLOR.SELF.r, SB.CHANNEL_COLOR.SELF.g, SB.CHANNEL_COLOR.SELF.b } },
+    { key = "playback",     label = "Playback",     color = SB.Theme.V3.ARCANE_CYAN },
+    { key = "multiplayer",  label = "Multiplayer",  color = { SB.CHANNEL_COLOR.GUILD.r, SB.CHANNEL_COLOR.GUILD.g, SB.CHANNEL_COLOR.GUILD.b } },
+    { key = "appearance",   label = "Appearance",   color = { SB.CHANNEL_COLOR.DIRECT.r, SB.CHANNEL_COLOR.DIRECT.g, SB.CHANNEL_COLOR.DIRECT.b } },
+    { key = "categories",   label = "Categories",   color = { SB.CHANNEL_COLOR.FRIENDS.r, SB.CHANNEL_COLOR.FRIENDS.g, SB.CHANNEL_COLOR.FRIENDS.b } },
+    { key = "advanced",     label = "Advanced",     color = { SB.CHANNEL_COLOR.RAID.r, SB.CHANNEL_COLOR.RAID.g, SB.CHANNEL_COLOR.RAID.b } },
+}
+
+local CHECKBOX_HELP = {
+    ["Show Minimap Button"] = "Show or hide the Soundbook shortcut at the minimap.",
+    ["Allow overlapping sounds"] = "Allow a new sound to start before the previous one ends.",
+    ["Allow sounds in combat"] = "Permit Soundbook playback while your character is in combat.",
+    ["Allow sounds during boss encounters"] = "Permit Soundbook playback during active boss encounters.",
+    ["Queue rate-limited remote sounds"] = "Keep valid incoming sounds briefly when they arrive too quickly, instead of dropping them.",
+    ["Show received sound details"] = "Print sender, source and sound information for received playback.",
+    ["Show blocked/muted sound attempts"] = "Report attempts to play a sound that you muted locally.",
+    ["Show delivery confirmations"] = "Show delivery confirmations returned by friends.",
+    ["Show Mini Soundbook"] = "Show or hide the Mini Soundbook.",
+    ["Open Mini Soundbook on Hover"] = "Open the Mini Soundbook by hovering its icon, no click needed. Off by default - the icon only opens it on left-click.",
+    ["Lock position and size"] = "Prevent moving and resizing the Main Soundbook and the Mini Soundbook.",
+    ["Debug Mode"] = "Print additional diagnostic information to chat.",
+}
+
+local function Help(frame, title, body)
+    SB.Theme.AttachTooltip(frame, title, body)
+end
+
+local function Section(parent, text, anchorTo, yOffset)
+    local section = SB.Theme.CreateSectionHeader(parent, text)
+    section:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOffset or -16)
+    section:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+    return section
+end
+
+-- Same idea as Section above, deliberately quieter (explicit requirement,
+-- "Advanced Playback" - de-emphasized compared with normal playback
+-- controls): dim small text, no gold divider line, so it reads as a
+-- secondary sub-group rather than a peer of Playback/During Gameplay.
+local function DimSection(parent, text, anchorTo, yOffset)
+    local section = CreateFrame("Frame", nil, parent)
+    section:SetHeight(16)
+    section:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOffset or -16)
+    section:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+    local label = section:CreateFontString(nil, "OVERLAY")
+    label:SetFontObject(SB.Fonts.DisableSmall)
+    label:SetPoint("LEFT", 0, 0)
+    label:SetText(text)
+    label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    return section
+end
+
+local function Checkbox(parent, label, anchorTo, xOff, yOff, onClick)
+    local check = SB.Theme.CreateCheckbox(parent, label, onClick)
+    check:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", xOff or 0, yOff or -6)
+    Help(check, label, CHECKBOX_HELP[label] or "Toggle this setting.")
+    return check
+end
+
+-- A real (flat, scrollable) dropdown listing every available font -
+-- SB.AVAILABLE_FONTS plus, if anything on the system provides them, fonts
+-- from LibSharedMedia (see SB.GetAvailableFonts in Core.lua) - each
+-- previewed in its own typeface, both in the open list and on the button
+-- itself once picked. Re-queried every time the list opens, so a font
+-- registered later in the session still shows up. `getPath`/`setPath`
+-- read/write wherever the caller's font setting actually lives.
+local function BuildFontDropdown(parent, label, anchorTo, yOff, getPath, setPath)
+    local lbl = parent:CreateFontString(nil, "OVERLAY")
+    lbl:SetFontObject(SB.Fonts.HighlightSmall)
+    lbl:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOff or -14)
+    lbl:SetText(label)
+
+    local dd = SB.Theme.CreateDropdown(parent, CONTENT_W - 20, 22, 6)
+    dd.button:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -6)
+
+    local function ComputeOptions()
+        local opts = {}
+        for _, f in ipairs(SB.GetAvailableFonts()) do
+            table.insert(opts, { text = f.name, value = f.path })
+        end
+        return opts
+    end
+
+    dd:SetOptions(ComputeOptions())
+    dd:SetOptionsProvider(ComputeOptions)
+
+    dd:SetRowFont(function(fontString, opt)
+        local _, size, flags = fontString:GetFont()
+        fontString:SetFont(opt.value, size or 12, flags or "")
+    end)
+
+    dd:SetValue(getPath())
+    dd:SetOnChange(function(path)
+        setPath(path)
+    end)
+    Help(dd.button, label, "Choose the font used by this part of Soundbook.")
+
+    return dd.button
+end
+
+-- A "smaller <-> bigger" text-size slider (SB.FONT_SCALE_STEPS) - a vague
+-- relative scale rather than a literal point size, since this multiplies
+-- very different base sizes across several font objects/contexts.
+local function BuildFontScaleSlider(parent, label, anchorTo, yOff, getMult, setMult)
+    local lbl = parent:CreateFontString(nil, "OVERLAY")
+    lbl:SetFontObject(SB.Fonts.HighlightSmall)
+    lbl:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOff or -14)
+    lbl:SetText(label)
+
+    local slider = SB.Theme.CreateSlider(parent, 1, #SB.FONT_SCALE_STEPS, 1, CONTENT_W - 120, function(value)
+        setMult(SB.FONT_SCALE_STEPS[value].mult)
+    end, function(value)
+        return SB.FONT_SCALE_STEPS[value].label
+    end)
+    slider:SetPoint("TOPLEFT", lbl, "BOTTOMLEFT", 0, -10)
+    slider:SetValue(SB.FontScaleStepIndex(getMult()))
+    slider:Refresh()
+    Help(slider, label, "Adjust this text size; changes are applied immediately.")
+
+    return slider
+end
+
+------------------------------------------------------------------------
+-- Sharing & Receiving - Channel Matrix
+------------------------------------------------------------------------
+
+-- Raid and Party are ONE row everywhere in this table (a single "RAID" key
+-- covers both Send and Receive, labelled "Raid/Party" since it's a static
+-- settings label - see SB.ResolveGroupChannel, Communication.lua, for the
+-- live per-message resolution).
+local MODE_LABELS = { FRIENDS = "Friends", RAID = "Raid/Party", GUILD = "Guild", DIRECT = "Direct" }
+local RECEIVE_KEY = { FRIENDS = "receiveFriends", RAID = "receiveRaid", GUILD = "receiveGuild", DIRECT = "receiveDirect" }
+
+-- Display order for the Send/Receive matrix below. Direct is special: it
+-- has no Send column at all - there's no "broadcast as Direct" concept,
+-- Direct-ness comes from HOW a sound is sent (SendMenu's "to one specific
+-- person"), not a channel you opt into broadcasting on. It only ever needs
+-- its own RECEIVE toggle, to separate "a Direct-targeted send from anyone"
+-- from a plain Friends broadcast - both travel as a WHISPER on the wire
+-- (see Communication.lua's ReceiveAllowedForChannel).
+local MATRIX_ROWS = { "FRIENDS", "GUILD", "RAID", "DIRECT" }
+local NO_SEND_ROW = { DIRECT = true }
+local MATRIX_ROW_LABEL_W = 90
+local MATRIX_HEADER_H, MATRIX_ROW_H, MATRIX_TILE_SIZE = 20, 26, 18
+
+-- rows = Friends/Guild/Raid/Party/Direct, columns = Send/Receive, each
+-- cell its own independently clickable Theme.CreateToggleTile - click
+-- directly in the grid to opt a group in/out of sending or receiving.
+-- Explicit requirement (Settings restructure): the Send column is what
+-- Default Output = "All" actually includes - it does NOT replace the
+-- Main-window Default Output selector, which stays a separate, frequently
+-- -changed runtime choice living outside Settings entirely.
+local function BuildChannelMatrix(parent, anchorTo)
+    -- Targeted correction round (explicit requirement): "Channels" now
+    -- uses the SAME section-heading component/hierarchy as "Notifications"
+    -- below it (Theme.CreateSectionHeader - Normal font, gold text, gold
+    -- divider line) instead of a plain small HighlightSmall label that
+    -- read as weak/secondary next to it.
+    local header = SB.Theme.CreateSectionHeader(parent, "Channels")
+    header:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -16)
+    header:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+
+    local subHint = parent:CreateFontString(nil, "OVERLAY")
+    subHint:SetFontObject(SB.Fonts.DisableSmall)
+    subHint:SetPoint("TOPLEFT", header, "BOTTOMLEFT", 0, -2)
+    subHint:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+    subHint:SetJustifyH("LEFT")
+    subHint:SetWordWrap(true)
+    subHint:SetText("Send defines which channels are included when the Main window's Default Output is set to All. Receive controls which incoming channels you accept.")
+    subHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    local tableW = CONTENT_W - 20
+    local cellW = (tableW - MATRIX_ROW_LABEL_W) / 2
+
+    local grid = CreateFrame("Frame", nil, parent)
+    grid:SetPoint("TOPLEFT", subHint, "BOTTOMLEFT", 0, -10)
+    grid:SetSize(tableW, MATRIX_HEADER_H + MATRIX_ROW_H * #MATRIX_ROWS)
+
+    local sendHeader = grid:CreateFontString(nil, "OVERLAY")
+    sendHeader:SetFontObject(SB.Fonts.HighlightSmall)
+    sendHeader:SetPoint("TOP", grid, "TOPLEFT", MATRIX_ROW_LABEL_W + cellW / 2, 0)
+    sendHeader:SetText("Send")
+    sendHeader:SetTextColor(unpack(SB.Theme.ACCENT))
+
+    local receiveHeader = grid:CreateFontString(nil, "OVERLAY")
+    receiveHeader:SetFontObject(SB.Fonts.HighlightSmall)
+    receiveHeader:SetPoint("TOP", grid, "TOPLEFT", MATRIX_ROW_LABEL_W + cellW + cellW / 2, 0)
+    receiveHeader:SetText("Receive")
+    receiveHeader:SetTextColor(unpack(SB.Theme.ACCENT))
+
+    for i, mode in ipairs(MATRIX_ROWS) do
+        local rowY = -(MATRIX_HEADER_H + (i - 1) * MATRIX_ROW_H)
+        local rowCenterY = rowY - MATRIX_ROW_H / 2
+
+        if i % 2 == 0 then
+            local rowBg = grid:CreateTexture(nil, "BACKGROUND")
+            rowBg:SetPoint("TOPLEFT", grid, "TOPLEFT", 0, rowY)
+            rowBg:SetSize(tableW, MATRIX_ROW_H)
+            rowBg:SetColorTexture(1, 1, 1, 0.03)
+        end
+
+        local rowLabel = grid:CreateFontString(nil, "OVERLAY")
+        rowLabel:SetFontObject(SB.Fonts.HighlightSmall)
+        rowLabel:SetPoint("LEFT", grid, "TOPLEFT", 0, rowCenterY)
+        rowLabel:SetText(MODE_LABELS[mode])
+        local rowColor = SB.CHANNEL_COLOR[mode]
+        if rowColor then
+            rowLabel:SetTextColor(rowColor.r, rowColor.g, rowColor.b)
+        end
+
+        if not NO_SEND_ROW[mode] then
+            local sendTile = SB.Theme.CreateToggleTile(grid, MATRIX_TILE_SIZE, function(checked)
+                SB.db.settings.broadcastModes[mode] = checked
+                -- This channel's Send state is what Default Output = All
+                -- actually includes (SB:BroadcastSound) - the Main
+                -- window's own "Send to:" selector doesn't need a repaint
+                -- here (it only ever shows the target's own name, e.g.
+                -- "Raid", never a live per-channel Send state), but the
+                -- Mini Soundbook's live title/Favourites popup summary do
+                -- read live reach when the target is All, so still notify
+                -- them of the change.
+                if SB.RefreshDefaultOutputDisplay then SB.RefreshDefaultOutputDisplay() end
+            end)
+            sendTile:SetPoint("CENTER", grid, "TOPLEFT", MATRIX_ROW_LABEL_W + cellW / 2, rowCenterY)
+            sendTile:SetChecked(SB.db.settings.broadcastModes[mode] and true or false)
+            Help(sendTile, "Send to " .. MODE_LABELS[mode],
+                "Include this channel when Soundbook's Default Output is set to All.")
+        else
+            local dash = grid:CreateFontString(nil, "OVERLAY")
+            dash:SetFontObject(SB.Fonts.HighlightSmall)
+            dash:SetPoint("CENTER", grid, "TOPLEFT", MATRIX_ROW_LABEL_W + cellW / 2, rowCenterY)
+            dash:SetText("-")
+            dash:SetTextColor(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3])
+        end
+
+        local receiveTile = SB.Theme.CreateToggleTile(grid, MATRIX_TILE_SIZE, function(checked)
+            SB.db.settings[RECEIVE_KEY[mode]] = checked
+            if not checked and SB.ClearPendingQueueForMode then
+                SB:ClearPendingQueueForMode(mode)
+            end
+        end)
+        receiveTile:SetPoint("CENTER", grid, "TOPLEFT", MATRIX_ROW_LABEL_W + cellW + cellW / 2, rowCenterY)
+        receiveTile:SetChecked(SB.db.settings[RECEIVE_KEY[mode]] and true or false)
+        if mode == "DIRECT" then
+            Help(receiveTile, "Receive Direct sounds",
+                "Allow sounds sent straight to just you specifically (SendMenu's " ..
+                "\"send to one person\") - from a Friend, a Guild member, anyone with " ..
+                "Soundbook. Separate from the Friends row above, which only covers a " ..
+                "broadcast to everyone on your Friends list at once.")
+        else
+            Help(receiveTile, "Receive from " .. MODE_LABELS[mode],
+                "Allow Soundbook sounds arriving through this channel.")
+        end
+        matrixReceiveTiles[mode] = receiveTile
+    end
+
+    local divider = grid:CreateTexture(nil, "ARTWORK")
+    divider:SetHeight(1)
+    divider:SetPoint("BOTTOMLEFT", 0, 0)
+    divider:SetPoint("BOTTOMRIGHT", 0, 0)
+    divider:SetColorTexture(SB.Theme.BORDER_DIM[1], SB.Theme.BORDER_DIM[2], SB.Theme.BORDER_DIM[3], 0.5)
+
+    return grid
+end
+
+local function FormatCountdown(seconds)
+    seconds = math.max(0, math.floor((seconds or 0) + 0.5))
+    return string.format("%d:%02d", math.floor(seconds / 60), seconds % 60)
+end
+
+-- Runs only while the panel is actually visible - self-cancels the moment
+-- it isn't. Only needed at all while a TIMED mute (30/60) is actually
+-- counting down; harmless and cheap to just let it run continuously
+-- whenever the panel's open rather than tracking that more precisely.
+local function EnsureCountdownTicker()
+    if countdownTicker then return end
+    countdownTicker = C_Timer.NewTicker(1, function()
+        if not panel or not panel:IsShown() then
+            countdownTicker:Cancel()
+            countdownTicker = nil
+            return
+        end
+        SB:RefreshChannelMatrix()
+    end)
+end
+
+-- Global Receive Mute - explicit requirement: no permanent/30/60-minute
+-- action buttons in Settings any more (that's a runtime action now
+-- reached from the Mini Soundbook's own Quick Options menu, alongside its
+-- existing indefinite Mute Incoming toggle - see Announcer.lua). This is
+-- a READ-ONLY compact status - shown only while a mute is actually
+-- active, with a single Resume Receiving action to end it early.
+--
+-- UI/UX polish pass (explicit requirement: "do not reserve blank space
+-- for content that does not exist") - height is no longer a fixed 54px
+-- reserved regardless of whether a mute is active; RefreshChannelMatrix
+-- below now collapses it to ~0 when nothing is shown, and Notifications
+-- (anchored to this container's BOTTOM) reflows immediately below it via
+-- WoW's own live anchor resolution the instant the height changes -
+-- nothing here needs its own reflow logic beyond setting the height.
+local receiveMuteContainer
+
+local function BuildReceiveMuteInfo(parent, anchorTo)
+    local container = CreateFrame("Frame", nil, parent)
+    container:SetHeight(1)
+    container:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, 0)
+    container:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
+
+    local info = container:CreateFontString(nil, "OVERLAY")
+    info:SetFontObject(SB.Fonts.HighlightSmall)
+    info:SetPoint("TOPLEFT", 0, -8)
+    info:SetPoint("RIGHT", 0, 0)
+    info:SetJustifyH("LEFT")
+    info:SetTextColor(1, 0.55, 0.35)
+    info:Hide()
+
+    local resumeBtn = SB.Theme.CreateSecondaryButton(container, "Resume Receiving", 160, 22)
+    resumeBtn:SetPoint("TOPLEFT", info, "BOTTOMLEFT", 0, -6)
+    resumeBtn:SetScript("OnClick", function() SB:StopReceiveMute() end)
+    resumeBtn:Hide()
+
+    receiveMuteInfoText, receiveMuteResumeBtn = info, resumeBtn
+    receiveMuteContainer = container
+    return container
+end
+
+-- Re-syncs the 4 Receive tiles and the compact mute info with whatever
+-- SB.db.settings.receiveMute/receiveX currently say - called on
+-- RECEIVE_MUTE_CHANGED (a click from Quick Options, a timer firing, or the
+-- resolve-on-load check, see Communication.lua) and every time the
+-- Settings tab is shown (UI.lua's RefreshMainWindow), since this panel is
+-- otherwise only ever built/populated once and never re-synced on its own.
+function SB:RefreshChannelMatrix()
+    if not panel then return end
+
+    for mode, tile in pairs(matrixReceiveTiles) do
+        tile:SetChecked(SB.db.settings[RECEIVE_KEY[mode]] and true or false)
+    end
+
+    if not receiveMuteInfoText then return end
+    local muted = SB:IsReceiveMuted()
+    receiveMuteInfoText:SetShown(muted)
+    receiveMuteResumeBtn:SetShown(muted)
+    -- Collapses to ~0 when nothing is shown (see BuildReceiveMuteInfo's
+    -- own comment) instead of always reserving room for it; Notifications
+    -- reflows immediately below via the live anchor chain, and
+    -- FitSettingsPanelHeight is re-run so the Sharing tab's own
+    -- scrollable height (and scrollbar) catch up to the new content
+    -- height right away, not just on the next tab switch.
+    if receiveMuteContainer then
+        receiveMuteContainer:SetHeight(muted and 54 or 1)
+    end
+    if muted then
+        local remaining = SB:GetReceiveMuteRemaining()
+        if remaining then
+            receiveMuteInfoText:SetText(string.format("Incoming sounds muted - %s remaining", FormatCountdown(remaining)))
+            EnsureCountdownTicker()
+        else
+            receiveMuteInfoText:SetText("Incoming sounds muted indefinitely")
+        end
+    end
+    if SB.FitSettingsPanelHeight and panel:IsShown() then SB:FitSettingsPanelHeight() end
+end
+
+SB:On("RECEIVE_MUTE_CHANGED", function()
+    SB:RefreshChannelMatrix()
+end)
+
+------------------------------------------------------------------------
+-- Library & Appearance - Categories
+------------------------------------------------------------------------
+
+local function CategoryLabel(category, suffix)
+    return "Category " .. category .. " " .. suffix
+end
+
+local ICON_SLOT_SIZE = 28
+local ICON_GAP = 8
+
+-- One coherent row/group per category (explicit requirement) - icon and
+-- name field side by side under a single label, not disconnected controls.
+local function BuildCategoryRow(parent, anchorTo, category)
+    local label = parent:CreateFontString(nil, "OVERLAY")
+    label:SetFontObject(SB.Fonts.Normal)
+    label:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, -14)
+    -- The numeric slots (1, 2) are the MySounds-backed custom categories;
+    -- the asterisk ties them to the shared hint below the last row
+    -- explaining that requirement, without repeating it on every row.
+    local labelText = CategoryLabel(category, "Name")
+    if type(category) == "number" then
+        labelText = labelText .. " *"
+    end
+    label:SetText(labelText)
+
+    local iconBtn = SB.Theme.CreateIconSlot(parent, ICON_SLOT_SIZE, nil, "Button")
+    iconBtn:SetPoint("TOPLEFT", label, "BOTTOMLEFT", 0, -6)
+    local tex = iconBtn.texture
+    tex:SetTexture(SB.db.categories[category].icon)
+    categoryIconTextures[category] = tex
+    iconBtn:SetScript("OnClick", function()
+        SB.OpenIconPicker(function(path)
+            SB.db.categories[category].icon = path
+            tex:SetTexture(path)
+            SB:Fire("CATEGORY_CHANGED", category)
+        end, SB.db.categories[category].icon)
+    end)
+    Help(iconBtn, CategoryLabel(category, "Icon"), "Choose the icon shown on this category tab.")
+
+    local editBox = SB.Theme.CreateInputBox(parent, CONTENT_W - 20 - ICON_SLOT_SIZE - ICON_GAP, 22)
+    editBox:SetPoint("LEFT", iconBtn, "RIGHT", ICON_GAP, 0)
+    editBox:SetMaxLetters(30)
+    editBox:SetText(SB.db.categories[category].name)
+    editBox:SetScript("OnEnterPressed", function(self)
+        self:ClearFocus()
+    end)
+    editBox:SetScript("OnEditFocusLost", function(self)
+        local text = self:GetText()
+        if text == "" then
+            text = (type(category) == "string") and category or ("Category " .. category)
+        end
+        SB.db.categories[category].name = text
+        SB:Fire("CATEGORY_CHANGED", category)
+    end)
+    categoryNameBoxes[category] = editBox
+
+    return iconBtn
+end
+
+------------------------------------------------------------------------
+-- Section: General
+------------------------------------------------------------------------
+
+-- The one setting that's genuinely global/miscellaneous rather than
+-- belonging to Playback/Multiplayer/Appearance (moved here from the old
+-- Library & Appearance section), PLUS the Mini Soundbook's own window/
+-- activation controls (explicit request: merge the former standalone
+-- Favourites section's content in here rather than keeping it as its own
+-- nav entry). Its visual sizing/text controls stay in Appearance below -
+-- those are look-and-feel, not window behaviour.
+local function BuildGeneralSection(content, topAnchor)
+    local generalHeader = Section(content, "General", topAnchor, -4)
+    local minimapCheck = Checkbox(content, "Show Minimap Button", generalHeader, 0, -8, function(checked)
+        SB.db.ui.minimap.hide = not checked
+        if SB.RefreshMinimapButton then SB:RefreshMinimapButton() end
+    end)
+    minimapCheck:SetChecked(not SB.db.ui.minimap.hide)
+
+    local windowHeader = Section(content, "Window", minimapCheck, -16)
+    local showCheck = Checkbox(content, "Show Mini Soundbook", windowHeader, 0, -8, function(checked)
+        if checked then SB:ShowAnnouncer() else SB:HideAnnouncer() end
+    end)
+    showCheck:SetChecked(SB.db.ui.announcer.shown)
+
+    local lockCheck = Checkbox(content, "Lock position and size", showCheck, 0, -2, function(checked)
+        SB:SetAnnouncerLocked(checked)
+    end)
+    lockCheck:SetChecked(SB.db.ui.layoutLocked)
+
+    -- Mini Soundbook activation mode (explicit requirement) - shared
+    -- verbatim with the exact same checkbox in the Mini Soundbook's own
+    -- Quick Options popup (Announcer.lua's SB.ShowAnnouncerQuickOptions) -
+    -- both simply read/write SB.db.ui.announcer.openOnHover directly, no
+    -- separate value, no extra refresh call needed: the icon's own
+    -- OnEnter handler reads this field live every time it fires, so
+    -- toggling it here takes effect on the very next hover.
+    local hoverCheck = Checkbox(content, "Open Mini Soundbook on Hover", lockCheck, 0, -2, function(checked)
+        SB.db.ui.announcer.openOnHover = checked and true or false
+    end)
+    hoverCheck:SetChecked(SB.db.ui.announcer.openOnHover)
+
+    return hoverCheck
+end
+
+------------------------------------------------------------------------
+-- Section: Playback
+------------------------------------------------------------------------
+
+-- Everything about a normal (local) click's own playback behaviour -
+-- output channel, overlap, and the combat/encounter gates. The old
+-- "Advanced Playback" sub-group (remote repeat cooldown + queueing) moved
+-- to Multiplayer below, since both are about RECEIVED sounds, not local
+-- playback.
+local function BuildPlaybackSection(content, topAnchor)
+    local playbackHeader = Section(content, "Playback", topAnchor, -4)
+
+    local channelLabel = content:CreateFontString(nil, "OVERLAY")
+    channelLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    channelLabel:SetPoint("TOPLEFT", playbackHeader, "BOTTOMLEFT", 0, -8)
+    channelLabel:SetText("Sound Output Channel")
+
+    local CHANNEL_ORDER = { "Master", "SFX", "Music", "Ambience", "Dialog" }
+    local channelDD = SB.Theme.CreateDropdown(content, CONTENT_W - 20, 22, 6)
+    channelDD.button:SetPoint("TOPLEFT", channelLabel, "BOTTOMLEFT", 0, -6)
+    local channelOptions = {}
+    for _, ch in ipairs(CHANNEL_ORDER) do
+        table.insert(channelOptions, { text = ch, value = ch })
+    end
+    channelDD:SetOptions(channelOptions)
+    channelDD:SetValue(SB.db.settings.channel or "Master")
+    channelDD:SetOnChange(function(value)
+        SB.db.settings.channel = value
+    end)
+    Help(channelDD.button, "Sound Output Channel",
+        "Choose which World of Warcraft volume channel Soundbook uses.")
+
+    local overlapCheck = Checkbox(content, "Allow overlapping sounds", channelDD.button, 0, -14, function(checked)
+        SB.db.settings.allowOverlap = checked
+    end)
+    overlapCheck:SetChecked(SB.db.settings.allowOverlap)
+
+    local gameplayHeader = Section(content, "During Gameplay", overlapCheck, -16)
+    local combatCheck = Checkbox(content, "Allow sounds in combat", gameplayHeader, 0, -8, function(checked)
+        SB.db.settings.allowInCombat = checked
+    end)
+    combatCheck:SetChecked(SB.db.settings.allowInCombat)
+
+    local encounterCheck = Checkbox(content, "Allow sounds during boss encounters", combatCheck, 0, -2, function(checked)
+        SB.db.settings.allowInEncounter = checked
+    end)
+    encounterCheck:SetChecked(SB.db.settings.allowInEncounter)
+
+    return encounterCheck
+end
+
+------------------------------------------------------------------------
+-- Section: Multiplayer
+------------------------------------------------------------------------
+
+-- Everything about sending/receiving sounds over the network - the Send/
+-- Receive channel matrix and Notifications (both from the old Sharing &
+-- Receiving section), plus the remote repeat cooldown/queueing controls
+-- (moved here from the old Sound & Playback section's "Advanced
+-- Playback" sub-group - both are about incoming remote sounds, not local
+-- playback, so they fit this section better).
+local function BuildMultiplayerSection(content, topAnchor)
+    local channelMatrix = BuildChannelMatrix(content, topAnchor)
+    local muteInfo = BuildReceiveMuteInfo(content, channelMatrix)
+
+    -- Targeted correction round (explicit requirement): renamed from
+    -- "Chat Notifications" to "Notifications", same section-heading
+    -- hierarchy as "Channels" above. The -24 gap here (was -8, chained
+    -- after a mute-info container that used to always reserve 54px
+    -- whether or not a mute was active) is now the ONLY gap between them -
+    -- muteInfo's own height collapses to ~0 when nothing is displayed in
+    -- it (BuildReceiveMuteInfo/RefreshChannelMatrix below), so this reads
+    -- as "immediately after Channels" instead of leaving a large empty
+    -- region, while still measuring out to the requested ~24px target
+    -- once a mute IS active and muteInfo has real content again.
+    local notifyHeader = Section(content, "Notifications", muteInfo, -24)
+    local notifyMutedCheck = Checkbox(content, "Show received sound details", notifyHeader, 0, -8, function(checked)
+        SB.db.settings.notifyOnMuted = checked
+    end)
+    notifyMutedCheck:SetChecked(SB.db.settings.notifyOnMuted)
+
+    local notifyBlockedCheck = Checkbox(content, "Show blocked/muted sound attempts", notifyMutedCheck, 0, -2, function(checked)
+        SB.db.settings.notifyMutedAttempts = checked
+    end)
+    notifyBlockedCheck:SetChecked(SB.db.settings.notifyMutedAttempts)
+
+    local notifyReceiptsCheck = Checkbox(content, "Show delivery confirmations", notifyBlockedCheck, 0, -2, function(checked)
+        SB.db.settings.notifyFriendReceipts = checked
+    end)
+    notifyReceiptsCheck:SetChecked(SB.db.settings.notifyFriendReceipts)
+
+    -- De-emphasized versus the controls above (explicit requirement) -
+    -- dimmer header, no gold divider.
+    local advHeader = DimSection(content, "Remote Playback", notifyReceiptsCheck, -18)
+
+    local cooldownLabel = content:CreateFontString(nil, "OVERLAY")
+    cooldownLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    cooldownLabel:SetPoint("TOPLEFT", advHeader, "BOTTOMLEFT", 0, -8)
+    cooldownLabel:SetText("Remote repeat cooldown (seconds)")
+    cooldownLabel:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    local cooldownBox = SB.Theme.CreateInputBox(content, 60, 22)
+    cooldownBox:SetPoint("TOPLEFT", cooldownLabel, "BOTTOMLEFT", 0, -6)
+    cooldownBox:SetNumeric(false)
+    cooldownBox:SetMaxLetters(6)
+    cooldownBox:SetText(tostring(SB.db.settings.remoteCooldown))
+    cooldownBox:SetScript("OnEnterPressed", function(self) self:ClearFocus() end)
+    cooldownBox:SetScript("OnEditFocusLost", function(self)
+        local val = tonumber(self:GetText())
+        if not val or val < 0 then val = 1.0 end
+        SB.db.settings.remoteCooldown = val
+        self:SetText(tostring(val))
+    end)
+    Help(cooldownBox, "Remote repeat cooldown",
+        "Minimum time before the same sound can be received again from the same player.")
+
+    local queueCheck = Checkbox(content, "Queue rate-limited remote sounds", cooldownBox, 0, -14, function(checked)
+        SB.db.settings.soundQueueEnabled = checked
+        if not checked and SB.ClearPendingQueue then
+            SB:ClearPendingQueue()
+        end
+    end)
+    queueCheck:SetChecked(SB.db.settings.soundQueueEnabled)
+
+    SB:RefreshChannelMatrix()
+    return queueCheck
+end
+
+------------------------------------------------------------------------
+-- Section: Appearance
+------------------------------------------------------------------------
+
+-- Every look-and-feel control from the old Mini Soundbook section's Size/
+-- Opacity/Now Playing/Text sub-groups, PLUS the Main Soundbook's own font/
+-- scale (moved here from the old Library & Appearance section) - all pure
+-- visual sizing/opacity/font settings now live together.
+local function BuildAppearanceSection(content, topAnchor)
+    -- Two independent scales (targeted correction round, explicit
+    -- requirement): Announcer Size affects ONLY the Announcer itself
+    -- (Preview, Now Playing/Last Sound, announcer text); Mini Soundbook
+    -- Size affects ONLY the favourite-area UI (favourite icons, sound-name
+    -- text, dropdown/name-area width). Neither is coupled to the other,
+    -- and neither is coupled to the Mini Soundbook window's own manual
+    -- drag-resize dimensions - purely persisted SetScale multipliers on
+    -- their own frames. See Core.lua's `announcer.scale`/`announcer.
+    -- favScale` defaults and the v27->v28 migration that seeds favScale
+    -- from a pre-split installation's single prior scale.
+    local sizeHeader = Section(content, "Size", topAnchor, -4)
+    local announcerSizeLabel = content:CreateFontString(nil, "OVERLAY")
+    announcerSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    announcerSizeLabel:SetPoint("TOPLEFT", sizeHeader, "BOTTOMLEFT", 0, -8)
+    announcerSizeLabel:SetText("Announcer Size")
+
+    local announcerSizeSlider = SB.Theme.CreateSlider(content, 50, 200, 10, CONTENT_W - 120, function(value)
+        SB.db.ui.announcer.scale = value / 100
+        SB:RefreshAnnouncerScale()
+    end)
+    announcerSizeSlider:SetPoint("TOPLEFT", announcerSizeLabel, "BOTTOMLEFT", 0, -10)
+    announcerSizeSlider:SetValue(math.floor((SB.db.ui.announcer.scale or 1.0) * 100 + 0.5))
+    announcerSizeSlider:Refresh()
+    Help(announcerSizeSlider, "Announcer Size",
+        "Scale the Announcer itself - the Preview, Now Playing/Last Sound, and the announcer text. Does not affect the size of your favourites.")
+
+    local miniSizeLabel = content:CreateFontString(nil, "OVERLAY")
+    miniSizeLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    miniSizeLabel:SetPoint("TOPLEFT", announcerSizeSlider, "BOTTOMLEFT", 0, -14)
+    miniSizeLabel:SetText("Mini Soundbook Size")
+
+    local miniSizeSlider = SB.Theme.CreateSlider(content, 50, 200, 10, CONTENT_W - 120, function(value)
+        SB.db.ui.announcer.favScale = value / 100
+        SB:RefreshMiniSoundbookScale()
+    end)
+    miniSizeSlider:SetPoint("TOPLEFT", miniSizeLabel, "BOTTOMLEFT", 0, -10)
+    miniSizeSlider:SetValue(math.floor((SB.db.ui.announcer.favScale or 1.0) * 100 + 0.5))
+    miniSizeSlider:Refresh()
+    Help(miniSizeSlider, "Mini Soundbook Size",
+        "Scale your favourites - icons, sound-name text, and the name area's width, useful for avoiding truncated names. Does not affect the Announcer.")
+
+    local opacityHeader = Section(content, "Opacity", miniSizeSlider, -16)
+    local alphaIdleLabel = content:CreateFontString(nil, "OVERLAY")
+    alphaIdleLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    alphaIdleLabel:SetPoint("TOPLEFT", opacityHeader, "BOTTOMLEFT", 0, -8)
+    alphaIdleLabel:SetText("Idle Opacity")
+
+    local alphaIdleSlider = SB.Theme.CreateSlider(content, 0, 100, 1, CONTENT_W - 120, function(value)
+        SB.db.ui.announcer.alphaIdle = math.floor(value + 0.5)
+        SB:RefreshAnnouncerAlpha()
+    end)
+    alphaIdleSlider:SetPoint("TOPLEFT", alphaIdleLabel, "BOTTOMLEFT", 0, -10)
+    alphaIdleSlider:SetValue(SB.db.ui.announcer.alphaIdle)
+    alphaIdleSlider:Refresh()
+    Help(alphaIdleSlider, "Idle Opacity", "Set the Mini Soundbook's opacity while the mouse is away and no sound is playing.")
+
+    local alphaHoverLabel = content:CreateFontString(nil, "OVERLAY")
+    alphaHoverLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    alphaHoverLabel:SetPoint("TOPLEFT", alphaIdleSlider, "BOTTOMLEFT", 0, -14)
+    alphaHoverLabel:SetText("Hover Opacity")
+
+    local alphaHoverSlider = SB.Theme.CreateSlider(content, 0, 100, 1, CONTENT_W - 120, function(value)
+        SB.db.ui.announcer.alphaHover = math.floor(value + 0.5)
+        SB:RefreshAnnouncerAlpha()
+    end)
+    alphaHoverSlider:SetPoint("TOPLEFT", alphaHoverLabel, "BOTTOMLEFT", 0, -10)
+    alphaHoverSlider:SetValue(SB.db.ui.announcer.alphaHover)
+    alphaHoverSlider:Refresh()
+    Help(alphaHoverSlider, "Hover Opacity", "Set the Mini Soundbook's opacity while the mouse is over it.")
+
+    -- Now Playing / Announcement Duration - drives TWO surfaces off the
+    -- one setting (SB.db.settings.announceDuration, clamped 0-15 in
+    -- Database.lua): the Library grid's own "just played" gold highlight
+    -- duration (UI.lua's SetPlayingState, unchanged), AND (playback-
+    -- lifecycle rewrite) the Announcer's own Now Playing banner - a
+    -- genuine MINIMUM display floor there: a sound never disappears
+    -- before this many seconds, is extended up to its own real known
+    -- duration whenever that's longer, and an explicit Stop or an
+    -- overlap-disabled replacement still always bypasses it immediately
+    -- (SoundPlayer.lua/Announcer.lua). 0 turns the minimum off entirely
+    -- for both surfaces - a real natural end just clears immediately.
+    local nowPlayingHeader = Section(content, "Now Playing", alphaHoverSlider, -16)
+    local durationLabel = content:CreateFontString(nil, "OVERLAY")
+    durationLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    durationLabel:SetPoint("TOPLEFT", nowPlayingHeader, "BOTTOMLEFT", 0, -8)
+    durationLabel:SetText("Now Playing Minimum Duration")
+
+    local durationSlider = SB.Theme.CreateSlider(content, 0, 15, 1, CONTENT_W - 140, function(value)
+        SB.db.settings.announceDuration = math.floor(value + 0.5)
+    end, function(value)
+        return value == 0 and "0 (off)" or (value .. "s")
+    end)
+    durationSlider:SetPoint("TOPLEFT", durationLabel, "BOTTOMLEFT", 0, -10)
+    durationSlider:SetValue(tonumber(SB.db.settings.announceDuration) or 3)
+    durationSlider:Refresh()
+    Help(durationSlider, "Now Playing Minimum Duration",
+        "How long the Library highlight and the Announcer's Now Playing banner stay visible after a sound plays, at minimum - extended automatically if the sound itself runs longer. 0 turns the minimum off.")
+
+    local textHeader = Section(content, "Text", durationSlider, -16)
+    local miniFontBtn = BuildFontDropdown(content, "Mini Soundbook Font", textHeader, -8,
+        function() return SB.db.settings.miniFont end,
+        function(path)
+            SB.db.settings.miniFont = path
+            SB:RefreshAnnouncerFont()
+        end)
+
+    local miniFontScaleSlider = BuildFontScaleSlider(content, "Mini Soundbook Text Size", miniFontBtn, -14,
+        function() return SB.db.settings.miniFontScale end,
+        function(mult)
+            SB.db.settings.miniFontScale = mult
+            SB:RefreshAnnouncerFont()
+        end)
+
+    -- Main Soundbook's own font/scale (moved here from the old Library &
+    -- Appearance section - same reasoning as everything else in this
+    -- section, pure look-and-feel).
+    local appearanceHeader = Section(content, "Main Soundbook Appearance", miniFontScaleSlider, -16)
+    local mainFontBtn = BuildFontDropdown(content, "Soundbook Font", appearanceHeader, -8,
+        function() return SB.db.settings.mainFont end,
+        function(path)
+            SB.db.settings.mainFont = path
+            SB:RefreshMainFont()
+        end)
+
+    local mainFontScaleSlider = BuildFontScaleSlider(content, "Soundbook Text Size", mainFontBtn, -14,
+        function() return SB.db.settings.mainFontScale end,
+        function(mult)
+            SB.db.settings.mainFontScale = mult
+            SB:RefreshMainFont()
+        end)
+
+    return mainFontScaleSlider
+end
+
+------------------------------------------------------------------------
+-- Section: Categories
+------------------------------------------------------------------------
+
+-- Library sort order (was the old Library & Appearance section's own
+-- "Library" sub-group) plus the per-category icon/name rows - both about
+-- how the Sound Library organizes/displays categories.
+local function BuildCategoriesSection(content, topAnchor)
+    -- How category and Stammtisch sounds are ordered. Default is
+    -- Popularity (community-wide Analytics play counts, most-played
+    -- first); Alphabetical keeps Sounds.lua's own declaration order.
+    -- Never touches the Favourites grid - those positions are always manual.
+    local libraryHeader = Section(content, "Library", topAnchor, -4)
+    local sortOrderLabel = content:CreateFontString(nil, "OVERLAY")
+    sortOrderLabel:SetFontObject(SB.Fonts.HighlightSmall)
+    sortOrderLabel:SetPoint("TOPLEFT", libraryHeader, "BOTTOMLEFT", 0, -8)
+    sortOrderLabel:SetText("Sound Order")
+
+    local sortOrderDD = SB.Theme.CreateDropdown(content, CONTENT_W - 20, 22, 4)
+    sortOrderDD.button:SetPoint("TOPLEFT", sortOrderLabel, "BOTTOMLEFT", 0, -6)
+    sortOrderDD:SetOptions({
+        { text = "Most Popular (community play counts)", value = "popularity" },
+        { text = "Alphabetical", value = "alphabetical" },
+    })
+    sortOrderDD:SetValue(SB.db.settings.sortMode or "popularity")
+    sortOrderDD:SetOnChange(function(value)
+        SB.db.settings.sortMode = value
+        if SB.InvalidateSoundOrderCache then SB.InvalidateSoundOrderCache() end
+        if SB.RefreshMainWindow then SB:RefreshMainWindow() end
+    end)
+    Help(sortOrderDD.button, "Sound Order",
+        "How category and Stammtisch sounds are ordered. Favourites are always manual regardless of this setting.")
+
+    local categoriesHeader = Section(content, "Categories", sortOrderDD.button, -16)
+    local lastAnchor = categoriesHeader
+    for _, category in ipairs(SB.CATEGORIES) do
+        lastAnchor = BuildCategoryRow(content, lastAnchor, category)
+    end
+
+    -- The last two entries in SB.CATEGORIES (Core.lua) are the numeric,
+    -- user-named "Category 1"/"Category 2" slots (MySounds-backed custom
+    -- sounds), unlike the two fixed built-in categories above them - one
+    -- shared note below the last row (Category 2's own icon/name
+    -- controls), not per-row, explaining that requirement. Same
+    -- secondary/dim hint style as this file's other inline hints (e.g.
+    -- Advanced's own Window Layout hint) - a plain wrapping fontstring,
+    -- no heading/box/border/icon of its own. A bit more top gap than that
+    -- one (LAYOUT.GAP_M, 10px, vs. its tight 4px) since this is meant to
+    -- read as a Categories-section-level note, not glued to the Category
+    -- 2 input the way that hint reads as part of its own button's row.
+    local categoriesHint = content:CreateFontString(nil, "OVERLAY")
+    categoriesHint:SetFontObject(SB.Fonts.DisableSmall)
+    categoriesHint:SetPoint("TOPLEFT", lastAnchor, "BOTTOMLEFT", 0, -SB.Theme.LAYOUT.GAP_M)
+    categoriesHint:SetPoint("RIGHT", -20, 0)
+    categoriesHint:SetJustifyH("LEFT")
+    categoriesHint:SetWordWrap(true)
+    categoriesHint:SetText("* Category 1 and Category 2: custom sounds require the Soundbook MySounds addon. Add your own audio files and play them for friends who have Soundbook MySounds and the same sound files installed.")
+    categoriesHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    return categoriesHint
+end
+
+------------------------------------------------------------------------
+-- Section: Advanced
+------------------------------------------------------------------------
+
+-- Targeted correction round (explicit requirement): "Replay Introduction"
+-- and "Latest Sound Updates" moved here from the old persistent footer,
+-- joining the existing "Run Diagnostics" button as one primary action
+-- area - three buttons, one per row, 8px vertical gap, each the full
+-- available Advanced content width (CONTENT_W - 20, the same column
+-- every other full-width Settings control already uses - never the old
+-- footer's cramped half-width pairing) rather than a fixed narrow width.
+-- Each button's own action is carried over completely unchanged.
+local ACTION_BTN_GAP = 8
+
+local function BuildAdvancedSection(content, topAnchor)
+    local diagHeader = Section(content, "Diagnostics", topAnchor, -4)
+    local debugCheck = Checkbox(content, "Debug Mode", diagHeader, 0, -8, function(checked)
+        SB.db.settings.debug = checked
+    end)
+    debugCheck:SetChecked(SB.db.settings.debug)
+
+    local actionsHeader = Section(content, "Actions", debugCheck, -16)
+
+    local diagnosticsBtn = SB.Theme.CreateFlatButton(content, "Run Diagnostics", CONTENT_W - 20, 22)
+    diagnosticsBtn:SetPoint("TOPLEFT", actionsHeader, "BOTTOMLEFT", 0, -8)
+    diagnosticsBtn:SetScript("OnClick", function()
+        SlashCmdList["SOUNDBOOK"]("doctor")
+    end)
+    Help(diagnosticsBtn, "Run Diagnostics", "Check Soundbook and print a short health report in chat.")
+
+    local introBtn = SB.Theme.CreateSecondaryButton(content, "Replay Introduction", CONTENT_W - 20, 22)
+    introBtn:SetPoint("TOPLEFT", diagnosticsBtn, "BOTTOMLEFT", 0, -ACTION_BTN_GAP)
+    introBtn:SetScript("OnClick", function()
+        SB.db.settings.introSeen = false
+        if SB.ShowIntro then SB:ShowIntro() end
+    end)
+    Help(introBtn, "Replay Introduction", "Show the first-run Soundbook introduction again.")
+
+    local updatesBtn = SB.Theme.CreateSecondaryButton(content, "Latest Sound Updates", CONTENT_W - 20, 22)
+    updatesBtn:SetPoint("TOPLEFT", introBtn, "BOTTOMLEFT", 0, -ACTION_BTN_GAP)
+    updatesBtn:SetScript("OnClick", function()
+        if SB.ShowNewSoundsWindow then SB:ShowNewSoundsWindow() end
+    end)
+    Help(updatesBtn, "Latest Sound Updates", "See which sounds were added recently and try them out.")
+
+    -- A new entry point to EXISTING functionality (Sound History already
+    -- opens identically from Announcer.lua's own Quick Options menu) -
+    -- not new product functionality, just a second way to reach it, since
+    -- the redesign's section list explicitly calls for History under
+    -- Advanced.
+    local historyBtn = SB.Theme.CreateSecondaryButton(content, "Open Sound History", CONTENT_W - 20, 22)
+    historyBtn:SetPoint("TOPLEFT", updatesBtn, "BOTTOMLEFT", 0, -ACTION_BTN_GAP)
+    historyBtn:SetScript("OnClick", function()
+        if SB.ShowHistoryWindow then SB:ShowHistoryWindow() end
+    end)
+    Help(historyBtn, "Open Sound History", "See a log of sounds you played and received.")
+
+    -- Window Layout - explicit requirement: reword to make its effect
+    -- explicit (it only resets window positions/sizes) and communicate
+    -- clearly that it never touches Favourites, sounds, keybindings,
+    -- categories, or any other user content. Moved here from the old
+    -- Library & Appearance section - this is a reset/maintenance action,
+    -- same family as Diagnostics above, not a Categories concern.
+    local layoutHeader = Section(content, "Window Layout", historyBtn, -16)
+    local resetLayoutBtn = SB.Theme.CreateFlatButton(content, "Restore Window Layout", CONTENT_W - 20, 22)
+    resetLayoutBtn:SetPoint("TOPLEFT", layoutHeader, "BOTTOMLEFT", 0, -8)
+    resetLayoutBtn:SetScript("OnClick", function()
+        SlashCmdList["SOUNDBOOK"]("reset")
+    end)
+    Help(resetLayoutBtn, "Restore Window Layout",
+        "Resets the saved window positions and sizes only - Favourites, sounds, keybindings, categories, and every other setting are untouched.")
+
+    local layoutHint = content:CreateFontString(nil, "OVERLAY")
+    layoutHint:SetFontObject(SB.Fonts.DisableSmall)
+    layoutHint:SetPoint("TOPLEFT", resetLayoutBtn, "BOTTOMLEFT", 0, -4)
+    layoutHint:SetPoint("RIGHT", -20, 0)
+    layoutHint:SetJustifyH("LEFT")
+    layoutHint:SetWordWrap(true)
+    layoutHint:SetText("Only resets window positions and sizes. Does not delete Favourites, sounds, keybindings, categories, or any other data.")
+    layoutHint:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    local versionText = content:CreateFontString(nil, "OVERLAY")
+    versionText:SetFontObject(SB.Fonts.DisableSmall)
+    versionText:SetPoint("TOPLEFT", layoutHint, "BOTTOMLEFT", 0, -10)
+    versionText:SetText("Soundbook v" .. tostring(SB.VERSION or "?"))
+    versionText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+
+    return versionText
+end
+
+------------------------------------------------------------------------
+-- Section nav (redesign)
+------------------------------------------------------------------------
+
+-- Settings redesign (explicit requirement): a compact vertical left-hand
+-- nav instead of the old horizontal tab strip - fixed NAV_W width
+-- (~120-130px), ~30-32px rows, a restrained active-state (a thin left
+-- accent bar + a soft same-colour tinted background, no heavy "card"
+-- chrome or glow) and a normal, quieter hover state. Deliberately NOT
+-- built on Theme.CreateTabButton (that component's underline-tab look
+-- doesn't read well stacked vertically at this width) - a small bespoke
+-- row button local to this file instead, same idle/hover/active state
+-- language as the rest of the addon's controls.
+local NAV_ROW_H = 31
+
+-- Row inset from the sidebar's own edges (requirement: 8-10px, "span most
+-- of sidebar width" rather than edge-to-edge) - this is what keeps the
+-- nav's own background/divider (BuildSectionNav below) reading as a
+-- distinct column behind the rows instead of a second frame-in-frame
+-- border on the rows themselves.
+local NAV_ROW_INSET = 9
+local NAV_ROW_W = NAV_W - (NAV_ROW_INSET * 2)
+
+-- One consistent indicator/hover colour for every row (gold - already the
+-- addon's primary chrome accent, and free to reuse here since no section
+-- has been assigned Gold since Favourites merged into General, see
+-- SECTION_ORDER's own comment). Each entry's own `color` still exists for
+-- callers that may want a section's identity colour, but the nav chrome
+-- itself deliberately no longer tints per-section - six saturated fills
+-- read as coloured pills rather than restrained navigation.
+local NAV_ACCENT = SB.Theme.GOLD
+
+local function CreateNavRow(parent, entry)
+    -- Bugfix (live-client crash report): the raw WoW CreateFrame() global
+    -- was used here instead of SB.CreateFrame - on every currently
+    -- supported client, a frame only gets SetBackdrop/SetBackdropColor/
+    -- SetBackdropBorderColor if it inherits "BackdropTemplate", which the
+    -- bare global never adds. SB.CreateFrame (Core.lua) is this addon's
+    -- own wrapper that always mixes that template in - used everywhere
+    -- else a frame needs a backdrop, just missed here. The mock test
+    -- harness never caught this because its own CreateFrame stub doesn't
+    -- distinguish backdrop-template frames from plain ones.
+    local btn = SB.CreateFrame("Button", nil, parent)
+    btn:SetSize(NAV_ROW_W, NAV_ROW_H)
+    btn:SetBackdrop({ bgFile = "Interface\\Buttons\\WHITE8X8" })
+    btn:SetBackdropColor(0, 0, 0, 0)
+
+    -- Active-side marker, same visual language as UI.lua's own attached-
+    -- tab accent strip - a thin colour-coded edge rather than tinting the
+    -- whole row. 3px (top of the 2-3px requirement) so it stays legible
+    -- next to the row's own now-narrower inset width.
+    local accent = btn:CreateTexture(nil, "ARTWORK")
+    accent:SetPoint("TOPLEFT", 0, 0)
+    accent:SetPoint("BOTTOMLEFT", 0, 0)
+    accent:SetWidth(3)
+    accent:SetTexture("Interface\\Buttons\\WHITE8X8")
+    accent:SetVertexColor(NAV_ACCENT[1], NAV_ACCENT[2], NAV_ACCENT[3], 1)
+    accent:Hide()
+    btn.accent = accent
+
+    local label = btn:CreateFontString(nil, "OVERLAY")
+    label:SetFontObject(SB.Fonts.HighlightSmall)
+    label:SetPoint("LEFT", 8, 0)
+    label:SetPoint("RIGHT", -6, 0)
+    label:SetJustifyH("LEFT")
+    label:SetWordWrap(false)
+    label:SetText(entry.label)
+    btn.label = label
+
+    local V3 = SB.Theme.V3
+    local function Idle()
+        btn:SetBackdropColor(0, 0, 0, 0)
+        accent:Hide()
+        label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
+    end
+    local function Hover()
+        -- "subtle arcane-blue/navy fill" - a light wash of the same
+        -- arcane-blue token used elsewhere (V3.ARCANE_BLUE), not a plain
+        -- white overlay.
+        btn:SetBackdropColor(V3.ARCANE_BLUE[1], V3.ARCANE_BLUE[2], V3.ARCANE_BLUE[3], 0.12)
+        accent:Hide()
+        label:SetTextColor(unpack(SB.Theme.TEXT))
+    end
+    local function ActiveVisual()
+        -- "raised dark-blue fill" - V3.HOVER_RAISED literally is that
+        -- token; clearly stronger/more opaque than Hover's 0.12 wash above.
+        btn:SetBackdropColor(V3.HOVER_RAISED[1], V3.HOVER_RAISED[2], V3.HOVER_RAISED[3], 0.95)
+        accent:Show()
+        label:SetTextColor(unpack(V3.TEXT_PRIMARY))
+    end
+
+    function btn:SetActive(active)
+        btn.isActive = active and true or false
+        if btn.isActive then
+            ActiveVisual()
+        elseif btn:IsMouseOver() then
+            Hover()
+        else
+            Idle()
+        end
+    end
+
+    btn:SetScript("OnEnter", function() if not btn.isActive then Hover() end end)
+    btn:SetScript("OnLeave", function() if not btn.isActive then Idle() end end)
+    btn:SetActive(false)
+
+    return btn
+end
+
+-- Footer text size/colour requirement: ~9-10px, nearest existing readable
+-- size - DisableSmall (GameFontDisableSmall-based) is exactly that; the
+-- Advanced section's own version line (above) already uses it for the
+-- same reason. Twitch purple is a one-off brand colour with no existing
+-- Theme token and no other caller, so it stays a local constant here
+-- rather than a new addition to the shared Theme table - restrained
+-- (slightly desaturated) rather than the fully saturated brand hex.
+local TWITCH_PURPLE = { 0.62, 0.40, 0.86 }
+
+-- Parented to `hostParent` (the panel, not `nav` itself) purely so the
+-- existing "nav has exactly N section-row children" regression check
+-- (mock harness, counts nav:GetNumChildren()) keeps meaning what it says
+-- - the footer's own anchors below are still expressed entirely relative
+-- to `nav`, so it stays visually pinned to the sidebar regardless of
+-- which frame technically parents it.
+local function BuildSidebarFooter(nav, hostParent)
+    local footer = CreateFrame("Frame", nil, hostParent)
+    footer:SetFrameLevel(nav:GetFrameLevel() + 1)
+    footer:SetPoint("BOTTOMLEFT", nav, "BOTTOMLEFT", NAV_ROW_INSET, 8)
+    footer:SetPoint("RIGHT", nav, "RIGHT", -NAV_ROW_INSET, 0)
+    footer:SetHeight(14)
+
+    -- Version deliberately NOT repeated here - the Advanced section
+    -- already shows "Soundbook vX.Y.Z" (see BuildAdvancedSection's own
+    -- versionText), and showing it a second time in the sidebar read as
+    -- redundant. Twitch line only.
+    local twitchLine = footer:CreateFontString(nil, "OVERLAY")
+    twitchLine:SetFontObject(SB.Fonts.DisableSmall)
+    twitchLine:SetPoint("BOTTOMLEFT", 0, 0)
+    twitchLine:SetJustifyH("LEFT")
+    twitchLine:SetText("twitch.tv/broles87")
+    twitchLine:SetTextColor(TWITCH_PURPLE[1], TWITCH_PURPLE[2], TWITCH_PURPLE[3])
+
+    return footer
+end
+
+local function BuildSectionNav(parent)
+    local nav = CreateFrame("Frame", nil, parent)
+    nav:SetWidth(NAV_W)
+
+    -- Sidebar background + divider (requirement: visually distinct from
+    -- the content pane, restrained gold divider, no frame-inside-frame).
+    -- Plain BACKGROUND-layer textures rather than SetBackdrop - nav only
+    -- ever needs a flat fill and a 1px edge line, and a raw CreateFrame()
+    -- here has no BackdropTemplate mixin (see CreateNavRow's own bugfix
+    -- comment on that exact trap).
+    local V3 = SB.Theme.V3
+    local bg = nav:CreateTexture(nil, "BACKGROUND")
+    bg:SetAllPoints(nav)
+    bg:SetTexture("Interface\\Buttons\\WHITE8X8")
+    bg:SetVertexColor(V3.RAISED_NAVY[1], V3.RAISED_NAVY[2], V3.RAISED_NAVY[3], 0.9)
+
+    local divider = nav:CreateTexture(nil, "BORDER")
+    divider:SetPoint("TOPRIGHT", nav, "TOPRIGHT", 0, 0)
+    divider:SetPoint("BOTTOMRIGHT", nav, "BOTTOMRIGHT", 0, 0)
+    divider:SetWidth(1)
+    divider:SetTexture("Interface\\Buttons\\WHITE8X8")
+    divider:SetVertexColor(unpack(SB.Theme.BORDER_DIM))
+
+    local function ApplySelection()
+        for key, btn in pairs(sectionTabButtons) do
+            btn:SetActive(key == currentSectionKey)
+        end
+    end
+
+    local lastRow
+    for _, entry in ipairs(SECTION_ORDER) do
+        local btn = CreateNavRow(nav, entry)
+        btn:SetScript("OnClick", function()
+            SB:ShowSettingsSection(entry.key)
+        end)
+        if lastRow then
+            btn:SetPoint("TOPLEFT", lastRow, "BOTTOMLEFT", 0, 0)
+        else
+            btn:SetPoint("TOPLEFT", nav, "TOPLEFT", NAV_ROW_INSET, 0)
+        end
+        sectionTabButtons[entry.key] = btn
+        lastRow = btn
+    end
+
+    -- Sidebar itself is stretched to the full panel height by
+    -- BuildSettingsPanel (LEFT/TOP/BOTTOM anchors) so the background,
+    -- divider and this footer all reach the panel's true bottom edge
+    -- regardless of Main window size - rows stay top-aligned above, the
+    -- footer stays bottom-aligned below, and the large gap between them
+    -- at every supported window size (rows+footer need ~245px; the
+    -- panel is never shorter than roughly 400px even at the Main
+    -- window's minimum resizable size) means they can never collide.
+    BuildSidebarFooter(nav, parent)
+
+    nav.ApplySelection = ApplySelection
+    return nav
+end
+
+------------------------------------------------------------------------
+-- Orchestration
+------------------------------------------------------------------------
+
+local scroll, scrollChild
+
+-- Shows exactly one section's content, hides the rest, resets that
+-- section's own scroll position to the top (explicit requirement: each
+-- section scrolls independently - switching tabs never leaves you
+-- scrolled halfway down a DIFFERENT section), and re-fits the panel's
+-- scrollable height to whichever section is now active.
+function SB:ShowSettingsSection(key)
+    if not sectionContents[key] then return end
+    currentSectionKey = key
+    for k, frame in pairs(sectionContents) do
+        frame:SetShown(k == key)
+    end
+    local nav = panel and panel.nav
+    if nav then nav.ApplySelection() end
+    if scroll then scroll:SetVerticalScroll(0) end
+    if SB.FitSettingsPanelHeight then SB:FitSettingsPanelHeight() end
+end
+
+-- Settings uses the exact same inner book page as the sound library. The
+-- existing contentFrame owns that visible gold boundary and background;
+-- Settings adds no second tinted overlay or competing frame of its own.
+function SB.BuildSettingsPanel(mainFrame, contentFrame)
+    if panel then return panel end
+
+    panel = CreateFrame("Frame", "SoundbookSettingsPanel", mainFrame)
+    -- Regression fix (root cause, 3rd pass): panel used to SetAllPoints
+    -- contentFrame directly - contentFrame IS the Library's own content
+    -- region (UI.lua: content:SetAllPoints(libraryScroll.scroll), anchored
+    -- below the header+Search+tag-filter stack, ~159px down). Since panel
+    -- has SetClipsChildren(true), its OWN top edge is a hard clip
+    -- boundary for every descendant - including the section nav, anchored
+    -- (see below) directly off the header at ~99px down, well ABOVE
+    -- contentFrame's ~159px top. The nav wasn't actually missing, it
+    -- was being clipped into invisibility by its own parent, and the
+    -- scroll content below it lost its own top portion (the first
+    -- section's heading) the exact same way - together, precisely the
+    -- reported "~140-160px empty block, then content starts far too low".
+    -- LEFT/RIGHT/BOTTOM still come from contentFrame (horizontal bounds
+    -- and the bottom edge were never the problem) - only TOP is now
+    -- independent, anchored directly off the header's own bottom edge so
+    -- panel's clip region actually contains everything anchored within
+    -- it, with no gap between the two. Header itself stays untouched.
+    panel:SetPoint("LEFT", contentFrame, "LEFT", 0, 0)
+    panel:SetPoint("RIGHT", contentFrame, "RIGHT", 0, 0)
+    panel:SetPoint("BOTTOM", contentFrame, "BOTTOM", 0, 0)
+    if mainFrame.header then
+        panel:SetPoint("TOP", mainFrame.header, "BOTTOM", 0, 0)
+    else
+        panel:SetPoint("TOP", contentFrame, "TOP", 0, 0)
+    end
+    panel:SetFrameLevel(contentFrame:GetFrameLevel() + 20)
+    if panel.SetClipsChildren then panel:SetClipsChildren(true) end
+    panel:Hide()
+
+    -- Same shared spacing system the rest of the polish pass uses - "fits
+    -- cleanly within the available width without clipping or colliding
+    -- with frame elements".
+    local L = SB.Theme.LAYOUT
+    local nav = BuildSectionNav(panel)
+    -- Regression fix (3rd pass, still applies): the nav itself anchors
+    -- off the shared header's own bottom edge (`mainFrame.header`,
+    -- exposed by UI.lua), with no relationship to the Library's own
+    -- Search/tag-filter stack at all - panel's own clip boundary above
+    -- (see BuildSettingsPanel's own comment) is what actually cut this
+    -- off before it ever reached the screen in the original bug, not the
+    -- anchor math. Explicit target: ~18-22px between the header's gold
+    -- divider (the header's own bottom edge) and the nav - 20px, the
+    -- middle of that range. Falls back to the old offset only if the
+    -- header somehow isn't exposed yet (defensive, should not happen in
+    -- practice). Header itself is explicitly out of scope and stays
+    -- untouched.
+    local HEADER_TO_NAV_GAP = 20
+    nav:SetPoint("LEFT", panel, "LEFT", L.GAP_S, 0)
+    if mainFrame.header then
+        nav:SetPoint("TOP", mainFrame.header, "BOTTOM", 0, -HEADER_TO_NAV_GAP)
+    else
+        local topOffset = (SB.LIBRARY_CONTENT_TOP_OFFSET or 0) + L.GAP_S
+        nav:SetPoint("TOP", mainFrame, "TOP", 0, -topOffset)
+    end
+    -- Sidebar refinement: nav now also anchors to panel's own BOTTOM (in
+    -- addition to LEFT/TOP above) so its background/divider/footer span
+    -- the full Settings panel height at any Main window size, instead of
+    -- only as tall as its own row stack - see BuildSectionNav's own
+    -- footer comment for the resulting never-overlap math.
+    nav:SetPoint("BOTTOM", panel, "BOTTOM", 0, 0)
+    panel.nav = nav
+
+    -- Settings redesign: only the RIGHT content pane scrolls - the LEFT
+    -- nav is a fixed column beside it (BuildSectionNav above), not above
+    -- it, so the scroll region is anchored to the nav's own TOPRIGHT (same
+    -- vertical start, NAV_CONTENT_GAP to its right) rather than below it.
+    -- The old persistent "Help & Information" footer is still gone (Replay
+    -- Introduction/Latest Sound Updates live in Advanced), so the
+    -- scrollable area runs all the way to the panel's own bottom edge.
+    local sf = SB.Theme.CreateScrollFrame(panel)
+    -- Same reasoning as the pre-restructure panel: `scrollChild` is the
+    -- REAL scroll child WoW's ScrollFrame API owns - stays anchored at its
+    -- default TOPLEFT and spans the full viewport width, or
+    -- SetVerticalScroll's math breaks the moment it's actually scrolled
+    -- (see UI.lua's RefreshLibraryImpl for the fuller writeup of this
+    -- exact bug). Each section's own `content` frame (built below) is a
+    -- separate plain child, fixed at CONTENT_W and horizontally centered
+    -- WITHIN scrollChild, not the scroll child itself.
+    scroll, scrollChild = sf.scroll, sf.content
+    panel.scroll = scroll -- exposed for test/harness reachability, same pattern as panel.nav
+    scroll:SetFrameLevel(panel:GetFrameLevel() + 5)
+    scrollChild:SetFrameLevel(scroll:GetFrameLevel() + 1)
+    scroll:SetPoint("TOPLEFT", nav, "TOPRIGHT", NAV_CONTENT_GAP, 0)
+    scroll:SetPoint("BOTTOMRIGHT", panel, "BOTTOMRIGHT", -2, L.GAP_S)
+    -- Provisional, corrected below by FitSettingsPanelHeight once real
+    -- geometry is resolvable - same defensive pattern the pre-restructure
+    -- single-page panel used (content:SetHeight(2000) "provisional,
+    -- corrected below"), which this rewrite had dropped. ROOT CAUSE of a
+    -- reported blank/empty Settings content area: SB:ShowSettingsSection
+    -- runs once at the end of this very function, while `main` (and this
+    -- panel, anchored to its content region) has never actually been
+    -- shown/laid out yet - GetTop()/GetBottom() can legitimately return
+    -- nil at that point, which made FitSettingsPanelHeight's own
+    -- `if top and bottom then` guard silently skip ever calling SetHeight
+    -- at all, leaving both scrollChild and every section's `content`
+    -- frame at a brand-new frame's default height (effectively 0) -
+    -- Shown was correctly true and every control inside was positioned
+    -- correctly, but a zero-height frame inside a ScrollFrame renders as
+    -- a blank page regardless. A generous provisional height here means
+    -- the panel is never degenerate even if that first correction attempt
+    -- can't resolve real geometry yet; the OnShow handler re-runs the fit
+    -- (twice) once the panel is actually visible, when geometry reliably
+    -- resolves, correcting it to the real content height.
+    scrollChild:SetSize(1, 2000)
+
+    for _, entry in ipairs(SECTION_ORDER) do
+        local content = CreateFrame("Frame", nil, scrollChild)
+        content:SetWidth(CONTENT_W)
+        content:SetHeight(2000) -- provisional, see scrollChild's own comment above
+        -- Same "+5" bias-cancel as the pre-restructure panel - scrollChild
+        -- is deliberately 10px narrower than `scroll` (reserved for the
+        -- thumb), which alone would leave content sitting ~5px left of
+        -- scroll/panel's true centre; nudging right by that half-gap
+        -- cancels it out.
+        content:SetPoint("TOP", scrollChild, "TOP", 5, 0)
+        content:SetFrameLevel(scrollChild:GetFrameLevel() + 1)
+        content:Hide()
+
+        local topAnchor = CreateFrame("Frame", nil, content)
+        topAnchor:SetSize(1, 1)
+        topAnchor:SetPoint("TOPLEFT", 4, -4)
+
+        local bottom
+        if entry.key == "general" then
+            bottom = BuildGeneralSection(content, topAnchor)
+        elseif entry.key == "playback" then
+            bottom = BuildPlaybackSection(content, topAnchor)
+        elseif entry.key == "multiplayer" then
+            bottom = BuildMultiplayerSection(content, topAnchor)
+        elseif entry.key == "appearance" then
+            bottom = BuildAppearanceSection(content, topAnchor)
+        elseif entry.key == "categories" then
+            bottom = BuildCategoriesSection(content, topAnchor)
+        elseif entry.key == "advanced" then
+            bottom = BuildAdvancedSection(content, topAnchor)
+        end
+
+        sectionContents[entry.key] = content
+        sectionBottomAnchor[entry.key] = bottom or topAnchor
+    end
+
+    currentSectionKey = currentSectionKey or SECTION_ORDER[1].key
+    SB:ShowSettingsSection(currentSectionKey)
+
+    -- Recomputes scrollChild's live width (needed for WoW's own
+    -- SetVerticalScroll/thumb math to stay correct as the Main window
+    -- resizes) and the CURRENTLY ACTIVE section's scrollable height from
+    -- its own bottom-most control. panel:GetWidth() reflects
+    -- SetAllPoints(contentFrame) immediately; scroll:GetWidth() is only a
+    -- fallback for the rare case that's still 0/stale (before WoW's
+    -- finished a layout pass on a freshly-shown ScrollFrame).
+    --
+    -- Settings redesign: the scroll region no longer spans the panel's
+    -- full width (a fixed-width nav now sits to its left) - the "-18"
+    -- fudge factor the single-column layout used no longer applies, so
+    -- this is now derived from the exact same anchor arithmetic `scroll`
+    -- itself was built with above (nav's own left inset + NAV_W +
+    -- NAV_CONTENT_GAP + the scroll region's own -2 right inset), rather
+    -- than a re-guessed constant that could silently drift out of sync
+    -- with it.
+    function SB:FitSettingsPanelHeight()
+        local panelW = panel:GetWidth()
+        local scrollW = (panelW and panelW > 0)
+            and (panelW - L.GAP_S - NAV_W - NAV_CONTENT_GAP - 2)
+            or scroll:GetWidth()
+        if scrollW and scrollW > 0 then
+            scrollChild:SetWidth(math.max(1, scrollW - 10))
+        end
+        local content = sectionContents[currentSectionKey]
+        local bottomEl = sectionBottomAnchor[currentSectionKey]
+        if not (content and bottomEl) then return end
+        local top = content:GetTop()
+        local bottom = bottomEl:GetBottom()
+        if top and bottom then
+            -- Floored, not just computed directly - a transient bad
+            -- reading (e.g. mid-layout-pass) producing a tiny/negative
+            -- value must never shrink the panel to near-nothing; worst
+            -- case is it stays too tall until the next correction, never
+            -- too short to show its own content.
+            local h = math.max(60, (top - bottom) + 24)
+            content:SetHeight(h)
+            scrollChild:SetHeight(h)
+        end
+    end
+
+    panel:SetScript("OnShow", function()
+        SB:FitSettingsPanelHeight()
+        C_Timer.After(0.05, function()
+            if panel:IsShown() then SB:FitSettingsPanelHeight() end
+        end)
+    end)
+
+    return panel
+end
