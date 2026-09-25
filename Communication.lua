@@ -27,8 +27,22 @@ end
 SB.KnownUserInfo = KnownUserInfo
 
 local function IsSelf(sender)
+    if not sender then return false end
     local me = SB.GetUnitFullName and SB.GetUnitFullName("player") or UnitName("player")
-    return IdentityKey(sender) == IdentityKey(me)
+    if not me then return false end
+
+    -- Primary check keeps the realm-aware identity semantics used everywhere
+    -- else. Some Classic clients/roster APIs can nevertheless represent the
+    -- local player slightly differently (realm-qualified vs. unqualified),
+    -- which made our own Guild broadcast slip through as if it came from
+    -- another player. Fall back to the character-name portion so our own
+    -- packets can never be treated as remote playback.
+    local senderKey, meKey = IdentityKey(sender), IdentityKey(me)
+    if senderKey and meKey and senderKey == meKey then return true end
+
+    local senderName = NormalizeName(sender)
+    local meName = NormalizeName(me)
+    return senderName and meName and senderName:lower() == meName:lower()
 end
 
 ------------------------------------------------------------------------
@@ -389,6 +403,10 @@ function SB.ComputeReachablePlayers()
     local function CollectInto(bucketName, iterFn)
         local bucket = result[bucketName]
         iterFn(function(rawName)
+            -- The sender already hears every click locally. Self is therefore
+            -- never a meaningful Guild/Raid/Friends recipient and must not be
+            -- selectable, counted, persisted into a live subset, or whispered.
+            if IsSelf(rawName) then return end
             local key = IdentityKey(rawName)
             if not key or not KnownUserInfo(rawName) or claimedBy[key] then return end
             claimedBy[key] = true
