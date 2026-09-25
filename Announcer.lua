@@ -297,8 +297,19 @@ local function BuildIcon()
     end)
 
     icon:SetScript("OnEnter", function(self)
-        GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-        GameTooltip:SetText("Soundbook", 1, 1, 1)
+        -- Anchor toward whichever side the Mini Soundbook/Quick Options do
+        -- NOT expand into, so this tooltip never overlaps a hover-opened
+        -- favMenu sitting right next to the icon. Reuses the same
+        -- direction the popups themselves resolve (SB.ResolvePopoutDirection)
+        -- rather than a second, independent screen-edge calculation, and
+        -- maps it to the opposite GameTooltip anchor.
+        local oppositeAnchor = {
+            LEFT = "ANCHOR_RIGHT", RIGHT = "ANCHOR_LEFT",
+            UP = "ANCHOR_BOTTOM", DOWN = "ANCHOR_TOP",
+        }
+        local direction = SB.ResolvePopoutDirection(self)
+        GameTooltip:SetOwner(self, oppositeAnchor[direction] or "ANCHOR_LEFT")
+        GameTooltip:SetText("Soundbook", unpack(Theme.GOLD))
         -- Explains the ACTUAL scope of an active Raid Admin restriction, who
         -- applied it, and that local Self playback still works - shown
         -- alongside the player's own receive-mute state below it.
@@ -325,7 +336,6 @@ local function BuildIcon()
             GameTooltip:AddLine("Your own receive-mute is also active.", 1, 0.5, 0.5)
         end
         GameTooltip:AddLine(" ")
-        GameTooltip:AddLine("Left Click: Send a Favourite", 0.85, 0.9, 1)
         GameTooltip:AddLine("Right Click: Open Soundbook", 0.85, 0.9, 1)
         GameTooltip:AddLine("Shift + Right Click: Quick Options", 0.85, 0.9, 1)
         GameTooltip:Show()
@@ -626,15 +636,25 @@ local function GetOrCreateOverlapMarker(index)
     banner.markers = banner.markers or {}
     local marker = banner.markers[index]
     if not marker then
-        -- OVERLAY draws above `fill` (ARTWORK), so a marker always reads
-        -- clearly whether it lands over the filled or unfilled portion of
-        -- the bar - additive blend brightens either background instead of
-        -- needing two different colours for the two cases.
-        marker = banner.track:CreateTexture(nil, "OVERLAY")
-        marker:SetTexture("Interface\\Buttons\\WHITE8X8")
-        marker:SetBlendMode("ADD")
-        marker:SetWidth(2)
-        marker:SetVertexColor(1, 1, 1, 0.85)
+        -- Additive white washed out against a light/white fill (e.g. the
+        -- "All"/"Self only" target colour) since ADD blending can only
+        -- brighten, never darken, a near-white destination. A normal-blend
+        -- gold core - the same gold as the Mini Soundbook's own border -
+        -- reads clearly against any fill colour, and a slightly wider dark
+        -- shadow layer behind it keeps it visible against light art too.
+        -- `shadow` is OVERLAY so it draws above `fill` (ARTWORK); `core`
+        -- is created after it so it layers on top within the same sublevel.
+        local shadow = banner.track:CreateTexture(nil, "OVERLAY")
+        shadow:SetTexture("Interface\\Buttons\\WHITE8X8")
+        shadow:SetWidth(4)
+        shadow:SetVertexColor(0, 0, 0, 0.55)
+
+        local core = banner.track:CreateTexture(nil, "OVERLAY")
+        core:SetTexture("Interface\\Buttons\\WHITE8X8")
+        core:SetWidth(2)
+        core:SetVertexColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 1)
+
+        marker = { shadow = shadow, core = core }
         banner.markers[index] = marker
     end
     return marker
@@ -642,7 +662,10 @@ end
 
 local function HideAllOverlapMarkers()
     if not (banner and banner.markers) then return end
-    for _, marker in ipairs(banner.markers) do marker:Hide() end
+    for _, marker in ipairs(banner.markers) do
+        marker.shadow:Hide()
+        marker.core:Hide()
+    end
 end
 
 -- Recomputed on every progress tick (continuous movement as playback
@@ -676,10 +699,13 @@ local function RefreshOverlapMarkers()
                 shown = shown + 1
                 local marker = GetOrCreateOverlapMarker(shown)
                 local fraction = math.max(0, math.min(1, remaining / primaryRemaining))
-                marker:ClearAllPoints()
-                marker:SetPoint("TOP", banner.track, "TOPLEFT", 1 + trackW * fraction, -1)
-                marker:SetPoint("BOTTOM", banner.track, "BOTTOMLEFT", 1 + trackW * fraction, 1)
-                marker:Show()
+                local x = 1 + trackW * fraction
+                for _, part in ipairs({ marker.shadow, marker.core }) do
+                    part:ClearAllPoints()
+                    part:SetPoint("TOP", banner.track, "TOPLEFT", x, -1)
+                    part:SetPoint("BOTTOM", banner.track, "BOTTOMLEFT", x, 1)
+                    part:Show()
+                end
             end
         end
         -- An entry with no known duration simply can't be placed on this
@@ -687,7 +713,10 @@ local function RefreshOverlapMarkers()
         -- requirement: respect existing tracking limitations rather than
         -- inventing playback state).
     end
-    for i = shown + 1, #banner.markers do banner.markers[i]:Hide() end
+    for i = shown + 1, #banner.markers do
+        banner.markers[i].shadow:Hide()
+        banner.markers[i].core:Hide()
+    end
 end
 
 ------------------------------------------------------------------------
@@ -1491,10 +1520,37 @@ end
 -- line. The keybind moved to a hover tooltip instead of its own label -
 -- there isn't enough per-tile width left for it once the row is narrowed
 -- down to a grid column.
+-- Additive to the existing hover highlight (`hl`) and per-item progress
+-- fill, never a replacement: a thin gold outline shown while the row is
+-- hovered OR while its own sound is currently playing (derived, not a
+-- separate flag, from `progressFill:IsShown()` - the two states already
+-- drive that fill so this can never drift out of sync with it), and
+-- never doubled when both are true at once since it's a single on/off
+-- border, not two stacked layers.
+local function UpdateRowBorder(row)
+    local visible = row.isHovered or (row.progressFill and row.progressFill:IsShown())
+    if visible then
+        row:SetBackdropBorderColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 1)
+    else
+        row:SetBackdropBorderColor(0, 0, 0, 0)
+    end
+    -- SetBackdropBorderColor has no getter - mirror the on/off state in a
+    -- plain field so it can be asserted on directly (by tests, or future
+    -- code) without re-deriving it.
+    row._borderShown = visible
+end
+
 local function GetOrCreateFavMenuRow(index)
     if favMenu.rows[index] then return favMenu.rows[index] end
-    local row = CreateFrame("Button", nil, favMenu.content)
+    local row = SB.CreateFrame("Button", nil, favMenu.content)
     row:SetHeight(FAV_MENU_ROW_H)
+    -- Row border insets deliberately at 0 (SetBackdrop with edgeFile/
+    -- edgeSize alone, no bgFile - the exact same "border-only" pattern
+    -- already used for UI.lua's favouriteHover) so it sits right at the
+    -- row's own edge, never overlapping the icon/text content inside it.
+    row:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1 })
+    row:SetBackdropBorderColor(0, 0, 0, 0)
+    row._borderShown = false
     local hl = row:CreateTexture(nil, "HIGHLIGHT")
     hl:SetAllPoints()
     hl:SetColorTexture(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.15)
@@ -1548,6 +1604,8 @@ local function GetOrCreateFavMenuRow(index)
         if self.soundID then SB:TriggerSound(self.soundID) end
     end)
     row:SetScript("OnEnter", function(self)
+        self.isHovered = true
+        UpdateRowBorder(self)
         local saved = self.soundID and SB.db.sounds and SB.db.sounds[self.soundID]
         local override = saved and saved.outputOverride and saved.outputOverride ~= "ALL" and saved.outputOverride
         if (self.hotkey and self.hotkey ~= "") or override then
@@ -1561,7 +1619,11 @@ local function GetOrCreateFavMenuRow(index)
             GameTooltip:Show()
         end
     end)
-    row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    row:SetScript("OnLeave", function(self)
+        self.isHovered = false
+        UpdateRowBorder(self)
+        GameTooltip:Hide()
+    end)
     favMenu.rows[index] = row
     return row
 end
@@ -1710,6 +1772,8 @@ local function PopulateFavMenu()
             if row.soundID ~= soundID then
                 row.progressFill:Hide()
                 row.progressFill:SetWidth(0.01)
+                row.isHovered = false
+                UpdateRowBorder(row)
             end
             row.soundID = soundID
             row.icon:SetTexture(SB:GetSoundIcon(soundID))
@@ -1773,11 +1837,13 @@ SB:On("PLAYBACK_PROGRESS_UPDATE", function(state)
         -- Never fake a percentage for an unknown duration, same rule the
         -- Announcer banner itself already follows.
         row.progressFill:Hide()
+        UpdateRowBorder(row)
         return
     end
     local pct = state.progress or 0
     row.progressFill:SetWidth(math.max(0.01, (row:GetWidth() or 1) * pct))
     row.progressFill:Show()
+    UpdateRowBorder(row)
 end)
 
 SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
@@ -1786,6 +1852,7 @@ SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
     if not row then return end
     row.progressFill:Hide()
     row.progressFill:SetWidth(0.01)
+    UpdateRowBorder(row)
 end)
 
 ------------------------------------------------------------------------
