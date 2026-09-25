@@ -1501,12 +1501,12 @@ local MAX_FAV_COLUMNS = 5
 -- taller, more readable cards; many rows -> shrinks back down), bounded
 -- so a short list never gets comically tall cards and a long one never
 -- shrinks past legibility.
-local ROW_H_MIN, ROW_H_MAX = 20, 28
+local ROW_H_MIN, ROW_H_MAX = 18, 24
 -- Soft TOTAL content-height budget (1x units) row height is solved
 -- against - not a hard cap (ROW_H_MIN already floors individual rows
 -- below it when there are enough of them), just what "use the extra
 -- space, don't leave a huge empty row" is measured relative to.
-local GRID_SOFT_H = 220
+local GRID_SOFT_H = 180
 -- Card width per candidate column count (1x units), not derived from a
 -- strict height*aspect formula - deriving width strictly from row height
 -- leaves no usable headroom against MIN_REAL_COL_W across the full 0.5-2.0
@@ -1518,7 +1518,7 @@ local GRID_SOFT_H = 220
 -- col=2>=0.633, col=1>=0.5 - the slider's own minimum), and each one sits
 -- within the requested ~2.0-3.0:1 width:height "sound card" shape against
 -- ROW_H_MIN/ROW_H_MAX.
-local FAV_COL_W = { [1] = 195, [2] = 180, [3] = 165, [4] = 155, [5] = 145 }
+local FAV_COL_W = { [1] = 150, [2] = 145, [3] = 135, [4] = 130, [5] = 125 }
 -- More than this many rows in a column reads as "one giant vertical
 -- list" (the exact regression report) - escalate to more columns when
 -- the resulting grid still fits on screen.
@@ -1526,7 +1526,7 @@ local ROWS_SOFT_MAX = 6
 -- Icon grows/shrinks with the chosen row height, within its own sensible
 -- bounds - explicit requirement, never so small it's unreadable, never
 -- so large a tall card looks like an oversized button.
-local ICON_MIN, ICON_MAX = 14, 22
+local ICON_MIN, ICON_MAX = 13, 18
 
 -- The old responsive pass protected only a tiny minimum card width, which
 -- meant most real sound names were still ellipsized in 4/5-column layouts.
@@ -1535,7 +1535,7 @@ local ICON_MIN, ICON_MAX = 14, 22
 -- the Mini Soundbook into a screen-wide panel. Because favScale scales the
 -- card, icon and text together, measuring in the frame's unscaled units keeps
 -- the same amount of name text visible at every Mini Soundbook Size.
-local FAV_NAME_MIN_W, FAV_NAME_MAX_W = 86, 165
+local FAV_NAME_MIN_W, FAV_NAME_MAX_W = 80, 150
 local FAV_CARD_CHROME_W = 3 + ICON_MAX + 4 + 3 -- left inset + icon + gap + right inset
 local FAV_SCREEN_SIDE_PAD = 32
 
