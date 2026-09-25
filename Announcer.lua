@@ -1501,12 +1501,12 @@ local MAX_FAV_COLUMNS = 5
 -- taller, more readable cards; many rows -> shrinks back down), bounded
 -- so a short list never gets comically tall cards and a long one never
 -- shrinks past legibility.
-local ROW_H_MIN, ROW_H_MAX = 22, 36
+local ROW_H_MIN, ROW_H_MAX = 20, 28
 -- Soft TOTAL content-height budget (1x units) row height is solved
 -- against - not a hard cap (ROW_H_MIN already floors individual rows
 -- below it when there are enough of them), just what "use the extra
 -- space, don't leave a huge empty row" is measured relative to.
-local GRID_SOFT_H = 300
+local GRID_SOFT_H = 220
 -- Card width per candidate column count (1x units), not derived from a
 -- strict height*aspect formula - deriving width strictly from row height
 -- leaves no usable headroom against MIN_REAL_COL_W across the full 0.5-2.0
@@ -1518,7 +1518,7 @@ local GRID_SOFT_H = 300
 -- col=2>=0.633, col=1>=0.5 - the slider's own minimum), and each one sits
 -- within the requested ~2.0-3.0:1 width:height "sound card" shape against
 -- ROW_H_MIN/ROW_H_MAX.
-local FAV_COL_W = { [1] = 210, [2] = 195, [3] = 180, [4] = 170, [5] = 160 }
+local FAV_COL_W = { [1] = 195, [2] = 180, [3] = 165, [4] = 155, [5] = 145 }
 -- More than this many rows in a column reads as "one giant vertical
 -- list" (the exact regression report) - escalate to more columns when
 -- the resulting grid still fits on screen.
@@ -1526,7 +1526,7 @@ local ROWS_SOFT_MAX = 6
 -- Icon grows/shrinks with the chosen row height, within its own sensible
 -- bounds - explicit requirement, never so small it's unreadable, never
 -- so large a tall card looks like an oversized button.
-local ICON_MIN, ICON_MAX = 16, 30
+local ICON_MIN, ICON_MAX = 14, 22
 
 -- The old responsive pass protected only a tiny minimum card width, which
 -- meant most real sound names were still ellipsized in 4/5-column layouts.
@@ -1535,8 +1535,8 @@ local ICON_MIN, ICON_MAX = 16, 30
 -- the Mini Soundbook into a screen-wide panel. Because favScale scales the
 -- card, icon and text together, measuring in the frame's unscaled units keeps
 -- the same amount of name text visible at every Mini Soundbook Size.
-local FAV_NAME_MIN_W, FAV_NAME_MAX_W = 110, 165
-local FAV_CARD_CHROME_W = 4 + ICON_MAX + 5 + 4 -- left inset + icon + gap + right inset
+local FAV_NAME_MIN_W, FAV_NAME_MAX_W = 86, 165
+local FAV_CARD_CHROME_W = 3 + ICON_MAX + 4 + 3 -- left inset + icon + gap + right inset
 local FAV_SCREEN_SIDE_PAD = 32
 
 local function GetPreferredFavColWidth(favourites)
@@ -1561,6 +1561,47 @@ local function GetPreferredFavColWidth(favourites)
 
     local nameW = math.max(FAV_NAME_MIN_W, math.min(FAV_NAME_MAX_W, maxNameW))
     return FAV_CARD_CHROME_W + nameW
+end
+
+-- Once the column COUNT is chosen, size each visual column to the longest
+-- name that actually lands in that column. This removes the large blank
+-- horizontal pockets caused by applying the single longest favourite name
+-- to every column while still preserving readable/full names in the usual
+-- case. Only extremely long names hit FAV_NAME_MAX_W and ellipsize.
+local function GetCompactFavColumnWidths(favourites, columns, fallbackColW)
+    local widths = {}
+    local maxNameByColumn = {}
+    for col = 1, columns do maxNameByColumn[col] = 0 end
+
+    if not favMenu then
+        for col = 1, columns do widths[col] = fallbackColW end
+        return widths
+    end
+
+    if not favMenu.nameMeasure then
+        local measure = favMenu:CreateFontString(nil, "OVERLAY")
+        measure:SetFontObject(SB.Fonts.HighlightSmall)
+        measure:Hide()
+        favMenu.nameMeasure = measure
+    end
+
+    local shown = 0
+    for slot = 1, SB.MAX_FAVOURITES do
+        local soundID = favourites and favourites[slot]
+        if soundID then
+            shown = shown + 1
+            local col = ((shown - 1) % columns) + 1
+            favMenu.nameMeasure:SetText(SB:GetSoundDisplayName(soundID) or "")
+            local width = favMenu.nameMeasure.GetStringWidth and favMenu.nameMeasure:GetStringWidth() or 0
+            if width > maxNameByColumn[col] then maxNameByColumn[col] = width end
+        end
+    end
+
+    for col = 1, columns do
+        local nameW = math.max(FAV_NAME_MIN_W, math.min(FAV_NAME_MAX_W, maxNameByColumn[col]))
+        widths[col] = math.max(FAV_COL_W[columns] or fallbackColW, FAV_CARD_CHROME_W + nameW)
+    end
+    return widths
 end
 
 local function FavGridFitsScreen(columns, colW, scale)
@@ -1671,7 +1712,7 @@ local function GetOrCreateFavMenuRow(index)
     hl:SetColorTexture(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.15)
     local icon = row:CreateTexture(nil, "ARTWORK")
     icon:SetSize(20, 20)
-    icon:SetPoint("LEFT", 4, 0)
+    icon:SetPoint("LEFT", 3, 0)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     row.icon = icon
     -- Small routing badge, shown only on a sound with its own per-sound
@@ -1704,8 +1745,8 @@ local function GetOrCreateFavMenuRow(index)
     row.progressFill = progressFill
     local text = row:CreateFontString(nil, "OVERLAY")
     text:SetFontObject(SB.Fonts.HighlightSmall)
-    text:SetPoint("LEFT", icon, "RIGHT", 5, 0)
-    text:SetPoint("RIGHT", -4, 0)
+    text:SetPoint("LEFT", icon, "RIGHT", 4, 0)
+    text:SetPoint("RIGHT", -3, 0)
     text:SetJustifyH("LEFT")
     text:SetWordWrap(false)
     row.text = text
@@ -1789,7 +1830,7 @@ local function BuildFavMenu()
 
     favMenu.title = favMenu:CreateFontString(nil, "OVERLAY")
     favMenu.title:SetFontObject(SB.Fonts.Highlight)
-    favMenu.title:SetPoint("TOPLEFT", FAV_TITLE_SIDE_INSET, -8)
+    favMenu.title:SetPoint("TOPLEFT", FAV_TITLE_SIDE_INSET, -6)
     favMenu.title:SetPoint("RIGHT", -FAV_TITLE_SIDE_INSET, 0)
     favMenu.title:SetJustifyH("LEFT")
     favMenu.title:SetWordWrap(false)
@@ -1823,7 +1864,7 @@ local function BuildFavMenu()
     -- so fewer Favourites always means a smaller popup, never a fixed or
     -- clipped viewport.
     local content = CreateFrame("Frame", nil, favMenu)
-    content:SetPoint("TOPLEFT", 4, -30)
+    content:SetPoint("TOPLEFT", 4, -27)
     favMenu.content = content
     favMenu.rows = {}
 
@@ -1844,7 +1885,13 @@ local function PopulateFavMenu()
     -- previous one.
     local preferredColW = GetPreferredFavColWidth(favourites)
     local columns, colW, rowH = GetFavMenuLayout(favCount, preferredColW)
-    local gridW = columns * colW
+    local colWidths = GetCompactFavColumnWidths(favourites, columns, colW)
+    local colX = {}
+    local gridW = 0
+    for col = 1, columns do
+        colX[col] = gridW
+        gridW = gridW + colWidths[col]
+    end
     local iconSize = math.max(ICON_MIN, math.min(ICON_MAX, rowH - 6))
     -- FAV_TITLE_SIDE_INSET matches favMenu.title's own two-point anchor
     -- insets exactly (one constant, shared with BuildFavMenu's anchors -
@@ -1861,7 +1908,7 @@ local function PopulateFavMenu()
     -- Extra headroom when the secondary breakdown line is showing - measure
     -- the real rendered height rather than guessing a fixed offset.
     local subtitleH = secondary and ((favMenu.subtitle:GetHeight() or 0) + 2) or 0
-    local topOffset = 30 + subtitleH
+    local topOffset = 27 + subtitleH
     favMenu:SetWidth(gridW + 8)
     favMenu.content:ClearAllPoints()
     favMenu.content:SetPoint("TOPLEFT", 4, -topOffset)
@@ -1876,9 +1923,10 @@ local function PopulateFavMenu()
             -- Same col/row grid math as UI.lua's LayoutEntries.
             local col = (shown - 1) % columns
             local gridRow = math.floor((shown - 1) / columns)
+            local visualCol = col + 1
             row:ClearAllPoints()
-            row:SetSize(colW, rowH)
-            row:SetPoint("TOPLEFT", col * colW, -(gridRow * rowH))
+            row:SetSize(colWidths[visualCol], rowH)
+            row:SetPoint("TOPLEFT", colX[visualCol], -(gridRow * rowH))
             -- Icon grows/shrinks with the row height this layout chose
             -- (see GetFavMenuLayout/ICON_MIN/ICON_MAX) - text stays
             -- anchored off the icon's own RIGHT edge (GetOrCreateFavMenuRow),
@@ -1927,7 +1975,7 @@ local function PopulateFavMenu()
     favMenu.content:SetHeight(math.max(1, contentH))
 
     local titleH = (shown == 0) and 46 or 24
-    favMenu:SetHeight(topOffset + math.max(titleH - 22, contentH == 0 and 24 or contentH) + 10)
+    favMenu:SetHeight(topOffset + math.max(titleH - 22, contentH == 0 and 24 or contentH) + 6)
 end
 
 -- Drives each Favourite row's own progress fill directly off the same
