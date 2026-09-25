@@ -471,11 +471,10 @@ local function BuildBanner()
     fill:SetVertexColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 1)
     banner.fill = fill
 
-    local overlapBadge = banner:CreateFontString(nil, "OVERLAY")
-    overlapBadge:SetFontObject(SB.Fonts.DisableSmall)
-    overlapBadge:SetPoint("BOTTOMRIGHT", timeText, "BOTTOMLEFT", -4, 0)
-    overlapBadge:SetTextColor(unpack(V3.ARCANE_CYAN))
-    banner.overlapBadge = overlapBadge
+    -- Overlap markers (one thin vertical line per OTHER currently-playing
+    -- sound, replacing the old "+N" badge) are pooled textures on `track`
+    -- itself, created lazily - see RefreshOverlapMarkers below. No fixed
+    -- pool here; banner.markers starts empty.
 
     banner:SetScript("OnMouseUp", function(self, mouseButton)
         -- Right-click interrupts playback (not a permanent mute - that's
@@ -610,6 +609,88 @@ local function ValidDuration(d)
 end
 
 ------------------------------------------------------------------------
+-- Overlap markers: a thin vertical line inside the progress bar for
+-- every OTHER currently-playing sound - explicit replacement for the old
+-- numeric "+N" badge. A marker's position is that background sound's OWN
+-- remaining time as a fraction of the PRIMARY (displayed) sound's
+-- remaining time: the bar's left edge is "now" (0 remaining), the right
+-- edge is the primary's own remaining duration, so a background sound
+-- ending sooner than the primary sits proportionally further left, one
+-- that would outlast the primary clamps to the right edge. Pooled
+-- textures parented to `track` itself, created lazily and reused frame
+-- to frame - deliberately not a generic animation framework, just this
+-- one small pool for this one feature.
+------------------------------------------------------------------------
+
+local function GetOrCreateOverlapMarker(index)
+    banner.markers = banner.markers or {}
+    local marker = banner.markers[index]
+    if not marker then
+        -- OVERLAY draws above `fill` (ARTWORK), so a marker always reads
+        -- clearly whether it lands over the filled or unfilled portion of
+        -- the bar - additive blend brightens either background instead of
+        -- needing two different colours for the two cases.
+        marker = banner.track:CreateTexture(nil, "OVERLAY")
+        marker:SetTexture("Interface\\Buttons\\WHITE8X8")
+        marker:SetBlendMode("ADD")
+        marker:SetWidth(2)
+        marker:SetVertexColor(1, 1, 1, 0.85)
+        banner.markers[index] = marker
+    end
+    return marker
+end
+
+local function HideAllOverlapMarkers()
+    if not (banner and banner.markers) then return end
+    for _, marker in ipairs(banner.markers) do marker:Hide() end
+end
+
+-- Recomputed on every progress tick (continuous movement as playback
+-- progresses) AND immediately whenever a background sound starts or
+-- ends (never waiting for the next tick to appear/disappear). Reads
+-- activeDisplays directly and touches only the marker pool - never the
+-- primary's own fill width or elapsed/duration text, so this can run
+-- freely without risking the "reset to 0" class of bug that motivated
+-- keeping this fully separate from RenderPrimary's own ticker state.
+local function RefreshOverlapMarkers()
+    if not banner or not banner.track then return end
+    banner.markers = banner.markers or {}
+    local primary = activeDisplays[#activeDisplays]
+    if not primary or not ValidDuration(primary.duration) then
+        HideAllOverlapMarkers()
+        return
+    end
+    local now = GetTime()
+    local primaryRemaining = primary.duration - (now - (primary.startedAt or now))
+    if primaryRemaining <= 0 then
+        HideAllOverlapMarkers()
+        return
+    end
+    local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2) -- same 1px-per-side inset the fill itself uses
+    local shown = 0
+    for i = 1, #activeDisplays - 1 do -- every entry EXCEPT the primary (last)
+        local entry = activeDisplays[i]
+        if ValidDuration(entry.duration) then
+            local remaining = entry.duration - (now - (entry.startedAt or now))
+            if remaining > 0 then
+                shown = shown + 1
+                local marker = GetOrCreateOverlapMarker(shown)
+                local fraction = math.max(0, math.min(1, remaining / primaryRemaining))
+                marker:ClearAllPoints()
+                marker:SetPoint("TOP", banner.track, "TOPLEFT", 1 + trackW * fraction, -1)
+                marker:SetPoint("BOTTOM", banner.track, "BOTTOMLEFT", 1 + trackW * fraction, 1)
+                marker:Show()
+            end
+        end
+        -- An entry with no known duration simply can't be placed on this
+        -- timeline - no marker for it, never a guessed position (explicit
+        -- requirement: respect existing tracking limitations rather than
+        -- inventing playback state).
+    end
+    for i = shown + 1, #banner.markers do banner.markers[i]:Hide() end
+end
+
+------------------------------------------------------------------------
 -- Persistent "RAID MUTED" banner: an active Raid Admin restriction must
 -- be unmistakable even while the Announcer is otherwise idle. Reuses the
 -- same banner frame/elements RenderPrimary uses for a real sound, fed
@@ -655,7 +736,7 @@ local function ShowRaidMuteBanner()
     banner.nameText:SetTextColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3])
     banner.subText:SetText(ov.mutedAll and "Sending & receiving disabled" or "Sending to Raid/Party + Guild disabled")
     banner.subText:SetTextColor(unpack(V3.TEXT_SECONDARY))
-    banner.overlapBadge:SetText("")
+    HideAllOverlapMarkers()
     banner.fill:SetVertexColor(RAID_MUTE_COLOR[1], RAID_MUTE_COLOR[2], RAID_MUTE_COLOR[3], 1)
 
     StopRaidMuteTicker()
@@ -715,9 +796,6 @@ local function RenderPrimary()
     -- everywhere else a channel is shown.
     banner.fill:SetVertexColor(color.r, color.g, color.b, 1)
 
-    local extra = #activeDisplays - 1
-    banner.overlapBadge:SetText(extra > 0 and ("+" .. extra) or "")
-
     local queued = (SB.GetPendingQueueSize and SB:GetPendingQueueSize()) or 0
     if queued > 0 then
         banner.timeText:SetText(string.format("+%d queued", queued))
@@ -732,9 +810,11 @@ local function RenderPrimary()
         banner.fill:Show()
     else
         -- Never fake a percentage for an unknown duration - hide the bar
-        -- entirely rather than guess.
+        -- entirely rather than guess. No timeline to place overlap
+        -- markers against either.
         banner.track:Hide()
         banner.fill:Hide()
+        HideAllOverlapMarkers()
     end
 
     LayoutBanner()
@@ -761,7 +841,12 @@ local function RenderPrimary()
             local pct = math.max(0, math.min(1, displayElapsed / entry.duration))
             banner.fill:SetWidth(math.max(0.01, trackW * pct))
             banner.timeText:SetText(string.format("%s / %s", FormatTime(displayElapsed), FormatTime(entry.duration)))
+            -- Continuous marker movement, driven off the SAME tick as the
+            -- primary's own fill - never resets/touches the fill or time
+            -- text itself.
+            RefreshOverlapMarkers()
         end)
+        RefreshOverlapMarkers()
     end
 end
 
@@ -873,6 +958,10 @@ local function AddDisplay(soundID, sender, channelLabel)
     })
     if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
     RenderPrimary()
+    -- The newly-added entry is now primary; whatever was primary before
+    -- (if anything) is demoted to a background sound and needs its own
+    -- overlap marker placed immediately, not just on the next tick.
+    RefreshOverlapMarkers()
 end
 
 -- Instance-scoped removal (unlike SB.RemoveAnnouncerDisplayForSound above,
@@ -880,16 +969,35 @@ end
 -- sound going muted). Used by the ENDED handler below, including from a
 -- deferred minimum-display-duration timer - safe to call on an instanceID
 -- that's already gone: finds nothing, does nothing.
+--
+-- Bugfix (progress-stability regression): this used to call RenderPrimary()
+-- unconditionally whenever ANY tracked instance ended, including a
+-- background/overlapping sound that was never the displayed (last/
+-- primary) entry in the first place. RenderPrimary() does a FULL repaint -
+-- resets banner.fill to near-zero width and restarts the progress ticker
+-- from scratch - so ending an unrelated background sound made the
+-- CURRENTLY DISPLAYED sound's own progress visibly flash/reset to 0
+-- before the ticker's next tick caught it back up, even though the
+-- primary itself never actually changed. Only a removal that was ITSELF
+-- the primary entry is a genuine primary change and warrants the full
+-- repaint; a background entry ending only ever needs its own overlap
+-- marker removed, never a repaint of the untouched primary.
 local function RemoveDisplayByInstance(instanceID)
-    local removed = false
+    local removed, removedWasPrimary = false, false
     for i = #activeDisplays, 1, -1 do
         if activeDisplays[i].instanceID == instanceID then
+            removedWasPrimary = (i == #activeDisplays)
             table.remove(activeDisplays, i)
             removed = true
         end
     end
     if not removed then return end
-    if #activeDisplays > 0 then
+    if #activeDisplays > 0 and not removedWasPrimary then
+        -- The primary is unchanged - only recompute overlap markers
+        -- (the ended sound's own marker disappears immediately), never
+        -- touch the primary's own fill/ticker/text.
+        RefreshOverlapMarkers()
+    elseif #activeDisplays > 0 then
         RenderPrimary()
     else
         ScheduleCollapse()
@@ -1015,7 +1123,7 @@ local function PopulatePreviewBanner()
     local color = SB.GetChannelColor("Raid")
     banner.subText:SetText(string.format("Preview |cff%s- Raid|r", color.hex))
     banner.fill:SetVertexColor(color.r, color.g, color.b, 1)
-    banner.overlapBadge:SetText("")
+    HideAllOverlapMarkers()
     banner.track:Show()
     banner.fill:Show()
 end
@@ -1405,6 +1513,24 @@ local function GetOrCreateFavMenuRow(index)
     overrideDot:SetTexture("Interface\\Buttons\\WHITE8X8")
     overrideDot:Hide()
     row.overrideDot = overrideDot
+    -- Per-row playback progress (explicit requirement: the clicked slot
+    -- itself shows progress while the Mini Soundbook stays open, instead
+    -- of closing on click) - a plain left-to-right fill BEHIND the icon/
+    -- text (BACKGROUND draw layer, below the HIGHLIGHT hover texture and
+    -- both ARTWORK/OVERLAY content), so neither stays readable is ever
+    -- compromised and hovering still shows its own highlight on top as
+    -- before. Driven entirely by the shared PLAYBACK_PROGRESS_UPDATE/
+    -- ENDED events (see the listeners below), the exact same broadcast
+    -- the Announcer banner itself already listens to - no separate
+    -- polling/ticker needed here.
+    local progressFill = row:CreateTexture(nil, "BACKGROUND")
+    progressFill:SetPoint("TOPLEFT", 0, 0)
+    progressFill:SetPoint("BOTTOMLEFT", 0, 0)
+    progressFill:SetWidth(0.01)
+    progressFill:SetTexture("Interface\\Buttons\\WHITE8X8")
+    progressFill:SetVertexColor(Theme.ACCENT[1], Theme.ACCENT[2], Theme.ACCENT[3], 0.28)
+    progressFill:Hide()
+    row.progressFill = progressFill
     local text = row:CreateFontString(nil, "OVERLAY")
     text:SetFontObject(SB.Fonts.HighlightSmall)
     text:SetPoint("LEFT", icon, "RIGHT", 5, 0)
@@ -1412,9 +1538,14 @@ local function GetOrCreateFavMenuRow(index)
     text:SetJustifyH("LEFT")
     text:SetWordWrap(false)
     row.text = text
+    -- Explicit requirement: clicking a Favourite must NOT close the Mini
+    -- Soundbook - the player can keep clicking further sounds while
+    -- earlier ones (with overlap enabled) are still playing and showing
+    -- their own row progress. The existing proximity/auto-collapse
+    -- system (StartMiniProximityTicker et al.) is untouched and still
+    -- closes it once the cursor actually leaves, independent of playback.
     row:SetScript("OnClick", function(self)
         if self.soundID then SB:TriggerSound(self.soundID) end
-        favMenu:Hide()
     end)
     row:SetScript("OnEnter", function(self)
         local saved = self.soundID and SB.db.sounds and SB.db.sounds[self.soundID]
@@ -1570,6 +1701,16 @@ local function PopulateFavMenu()
             row:ClearAllPoints()
             row:SetSize(colW, FAV_MENU_ROW_H)
             row:SetPoint("TOPLEFT", col * colW, -(gridRow * FAV_MENU_ROW_H))
+            -- A pooled row being reassigned to a DIFFERENT sound (a real
+            -- favourites reorder/replace, not just a repopulate for an
+            -- unrelated reason like a font/selection change while this
+            -- exact sound keeps playing) must not carry over a stale
+            -- progress fill that belonged to whatever sound used to sit
+            -- in this slot.
+            if row.soundID ~= soundID then
+                row.progressFill:Hide()
+                row.progressFill:SetWidth(0.01)
+            end
             row.soundID = soundID
             row.icon:SetTexture(SB:GetSoundIcon(soundID))
             row.text:SetText(SB:GetSoundDisplayName(soundID))
@@ -1600,6 +1741,52 @@ local function PopulateFavMenu()
     local titleH = (shown == 0) and 46 or 24
     favMenu:SetHeight(topOffset + math.max(titleH - 22, contentH == 0 and 24 or contentH) + 10)
 end
+
+-- Drives each Favourite row's own progress fill directly off the same
+-- shared PLAYBACK_PROGRESS_UPDATE/ENDED broadcast SoundPlayer.lua already
+-- fires for every tracked instance (primary or background alike) - the
+-- exact same events the Announcer banner listens to independently, so
+-- there is no coordination/hand-off logic needed between the two: each
+-- just reacts to the live state while it's actually visible. Gated on
+-- the Mini Soundbook actually being open - no work at all while it's
+-- closed, and nothing here ever affects the Announcer banner's own
+-- display. A row is matched purely by soundID (never by instanceID),
+-- since that's the only thing a row itself knows - two simultaneous
+-- instances of the identical sound both update the same row, an
+-- accepted, pre-existing tracking limitation (see SoundPlayer.lua's own
+-- "ambiguous overlap" handling) rather than inventing per-row identity
+-- Soundbook doesn't actually track.
+local function FindFavMenuRowForSound(soundID)
+    if not (favMenu and favMenu.rows) then return nil end
+    for _, row in pairs(favMenu.rows) do
+        if row.soundID == soundID and row:IsShown() then return row end
+    end
+    return nil
+end
+
+SB:On("PLAYBACK_PROGRESS_UPDATE", function(state)
+    if not (favMenu and favMenu:IsShown()) then return end
+    if not state or not state.soundID then return end
+    local row = FindFavMenuRowForSound(state.soundID)
+    if not row then return end
+    if not (type(state.duration) == "number" and state.duration == state.duration and state.duration > 0) then
+        -- Never fake a percentage for an unknown duration, same rule the
+        -- Announcer banner itself already follows.
+        row.progressFill:Hide()
+        return
+    end
+    local pct = state.progress or 0
+    row.progressFill:SetWidth(math.max(0.01, (row:GetWidth() or 1) * pct))
+    row.progressFill:Show()
+end)
+
+SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
+    if not state or not state.soundID then return end
+    local row = FindFavMenuRowForSound(state.soundID)
+    if not row then return end
+    row.progressFill:Hide()
+    row.progressFill:SetWidth(0.01)
+end)
 
 ------------------------------------------------------------------------
 -- Proximity-based auto-close: a single shared, throttled ticker covering
