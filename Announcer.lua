@@ -1493,32 +1493,57 @@ local FAV_MENU_ROW_H = 24
 -- (e.g. to make room for a future header control).
 local FAV_TITLE_SIDE_INSET = 10
 
--- Column count mirrors UI.lua's own 2-vs-3 column switch, keyed off the
--- independent Mini Soundbook Size slider (SB.db.ui.announcer.favScale),
--- not the Announcer Size slider - favScale exclusively owns the
--- favourite-area UI. Column width tuned so usable text width (colW - 33:
--- 4px icon inset + 20px icon + 5px icon->text gap + 4px text->edge gap,
--- see GetOrCreateFavMenuRow) stays above ~170px even for long sound
--- names. The whole favMenu frame is additionally SetScale'd by favScale
--- (see SB:RefreshMiniSoundbookScale below) for the continuous 50%-200%
--- range these base widths multiply from.
-local FAV_COL_W = { [2] = 205, [3] = 160 }
--- `count` (optional) adds an adaptive safety net on top of the scale-
--- based choice above: since the popup never scrolls and always shows
--- every entry at once, 2 columns' worth of a large list could grow into
--- an awkwardly tall popup on a short screen. Only ever escalates 2->3
--- (never overrides an explicit large-Mini-Soundbook-Size 3 back down to
--- 2) - this only reacts to available screen HEIGHT, column WIDTH is
--- handled by FAV_COL_W's fixed values.
+-- Base per-column card width (unscaled "1x" reference) - the WHOLE favMenu
+-- frame is separately SetScale'd by the independent Mini Soundbook Size
+-- slider (SB.db.ui.announcer.favScale, not the Announcer Size slider -
+-- favScale exclusively owns the favourite-area UI; see
+-- SB:RefreshMiniSoundbookScale below) for its continuous 50%-200% range,
+-- so these widths multiply uniformly from here rather than being
+-- recomputed per scale. Chosen so usable text width (colW - 33: 4px icon
+-- inset + 20px icon + 5px icon->text gap + 4px text->edge gap, see
+-- GetOrCreateFavMenuRow) shrinks gracefully as more columns are needed
+-- for a larger list - long names simply truncate (SetWordWrap(false) +
+-- ellipsis) rather than overlap.
+local FAV_COL_W = { [1] = 205, [2] = 205, [3] = 160, [4] = 140, [5] = 125 }
+local MAX_FAV_COLUMNS = 5
+
+-- Content-driven preferred column count, purely from how many Favourites
+-- currently exist - a short list reads better as a vertical stack than
+-- stretched thin across a wide, mostly-empty row.
+local function PreferredColumnsForCount(count)
+    if count <= 3 then return 1
+    elseif count <= 6 then return 2
+    elseif count <= 12 then return 3
+    elseif count <= 16 then return 4
+    else return MAX_FAV_COLUMNS end
+end
+
+-- Below this REAL (post-favScale) card width, a column can no longer
+-- comfortably fit its icon plus a few readable characters of name - adapt
+-- DOWNWARD (fewer, wider columns) instead of squeezing further. Mostly
+-- bites at a small Mini Soundbook Size with a high Favourite count, where
+-- the preferred table's narrower per-column widths would otherwise shrink
+-- past usefulness once scaled down.
+local MIN_REAL_COL_W = 95
+
+-- Above this REAL total grid width, keep shrinking columns too - the whole
+-- grid scales together with favScale, so a large Mini Soundbook Size times
+-- a high preferred column count would otherwise balloon the popup far
+-- wider than a "mini" panel should ever be. This is what makes a larger
+-- scale naturally favour fewer columns, the opposite direction from the
+-- floor above (which mostly bites at small scale).
+local MAX_REAL_GRID_W = 650
+
 local function GetFavMenuColumns(count)
+    count = count or 0
+    if count <= 0 then return 1 end
     local scale = (SB.db.ui.announcer and SB.db.ui.announcer.favScale) or 1
-    local columns = scale >= 1.15 and 3 or 2
-    if columns == 2 and count and count > 0 then
-        local screenH = UIParent:GetHeight() or 768
-        local rows2 = math.ceil(count / 2)
-        if rows2 * FAV_MENU_ROW_H > screenH * 0.6 then
-            columns = 3
-        end
+    local columns = PreferredColumnsForCount(count)
+    while columns > 1 and (FAV_COL_W[columns] * scale) < MIN_REAL_COL_W do
+        columns = columns - 1
+    end
+    while columns > 1 and (FAV_COL_W[columns] * columns * scale) > MAX_REAL_GRID_W do
+        columns = columns - 1
     end
     return columns
 end
@@ -2641,11 +2666,14 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         AddRow("Sound History", function()
             if SB.ShowHistoryWindow then SB:ShowHistoryWindow() end
         end)
-        -- Opens the Main Soundbook only, not the Settings panel directly -
-        -- UI.lua's ToggleSettings is a local function, not exposed for
-        -- this menu to call.
+        -- Deep-links straight into the Settings view (UI.lua's
+        -- SB:ShowSettingsView) - whether Soundbook is currently closed,
+        -- showing the Library, or on Admin/Keybind mode, this always lands
+        -- directly on Settings in one click, reusing the exact same
+        -- navigation ToggleSettings' own "opening" branch already does
+        -- rather than a separate, duplicated path into the panel.
         AddRow("Open Settings", function()
-            SB:Fire("TOGGLE_MAIN_UI")
+            if SB.ShowSettingsView then SB:ShowSettingsView() end
         end)
 
         -- Mini Soundbook activation mode: writes the same persisted field

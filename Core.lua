@@ -60,10 +60,10 @@ SB.VALID_CHANNELS   = { Master = true, SFX = true, Music = true, Ambience = true
 -- Send/Receive matrix, output dropdowns, SendMenu, chat notifications).
 -- RGB floats (SetTextColor) and matching "rrggbb" hex (|cffRRGGBB) are
 -- kept side by side so both stay in sync from one definition.
--- SELF is not a channel colour - it's the neutral shade used elsewhere
--- for unrelated "this isn't a real multiplayer channel" UI (e.g. the
--- Settings "General" tab colour). Output-TARGET labels (Self Only, All)
--- deliberately do NOT use it - see TARGET_WHITE below.
+-- SELF also doubles as the output-TARGET colour for "Self" (see
+-- CHANNEL_COLOR_BY_LABEL below) - a neutral, visually distinct grey, not
+-- a dimmed/disabled look, since Self is an active, selectable target like
+-- any other.
 SB.CHANNEL_COLOR = {
     DIRECT  = { r = 0.72, g = 0.55, b = 0.95, hex = "b88cf2" }, -- purple
     FRIENDS = { r = 0.55, g = 0.75, b = 0.98, hex = "8cbffa" }, -- pastel blue
@@ -76,18 +76,21 @@ SB.CHANNEL_COLOR = {
 -- its own key so a direct SB.CHANNEL_COLOR.PARTY lookup still resolves
 -- instead of falling through to nil/SELF grey.
 SB.CHANNEL_COLOR.PARTY = SB.CHANNEL_COLOR.RAID
--- Explicit requirement: "Self Only" and "All" are not real multiplayer
--- channels and must both read in the normal (white) text colour, never
--- SB.CHANNEL_COLOR.SELF's grey - matches Theme.TEXT/V3.TEXT_PRIMARY's own
--- off-white exactly (Core.lua loads before Theme.lua, so this is a
--- literal duplicate of that value rather than a reference to it).
+-- Explicit requirement: "All" is not a real multiplayer channel/target and
+-- is the only one that reads in the normal (bright white) text colour -
+-- matches Theme.TEXT/V3.TEXT_PRIMARY's own off-white exactly (Core.lua
+-- loads before Theme.lua, so this is a literal duplicate of that value
+-- rather than a reference to it). "Self", unlike "All", IS an active,
+-- selectable target - it reads in SB.CHANNEL_COLOR.SELF's neutral grey
+-- instead (see CHANNEL_COLOR_BY_LABEL below), never white and never a
+-- dimmed/disabled-looking shade.
 local TARGET_WHITE = { r = 0.91, g = 0.94, b = 1.00, hex = "e8f0ff" }
 -- Looks a colour up by the human-readable label string used throughout
 -- the addon for output-target/source display (the Announcer's "sender ->
 -- channel" line, History's source colour, etc). Singular "Friend"
 -- (WHISPER mapping) and plural "Friends" (dropdown/SendMenu header) both
--- resolve to FRIENDS. "Self"/"All" and anything unrecognized all read as
--- the normal white text colour, never SELF's grey.
+-- resolve to FRIENDS. "All" and anything unrecognized read as the normal
+-- white text colour; "Self" reads as its own neutral grey.
 local CHANNEL_COLOR_BY_LABEL = {
     Direct = SB.CHANNEL_COLOR.DIRECT,
     Friend = SB.CHANNEL_COLOR.FRIENDS,
@@ -95,7 +98,7 @@ local CHANNEL_COLOR_BY_LABEL = {
     Guild = SB.CHANNEL_COLOR.GUILD,
     Raid = SB.CHANNEL_COLOR.RAID,
     Party = SB.CHANNEL_COLOR.PARTY,
-    Self = TARGET_WHITE,
+    Self = SB.CHANNEL_COLOR.SELF,
     All = TARGET_WHITE,
 }
 function SB.GetChannelColor(label)
@@ -1320,6 +1323,12 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
         SB.databaseStatus = databaseStatus
 
         if SB.isFreshInstall then
+            -- Never backfilled for an existing/upgrading install - only a
+            -- genuine fresh install gets this stamp. Used by UI.lua's Dusty
+            -- computation to grant addedAt-less (bundled) sounds a 7-day
+            -- grace period from install time instead of counting as
+            -- infinitely dusty from the first login.
+            SB.db.installedAt = time()
             -- introSeen's own default is true (see GetDefaultDB) so an
             -- upgrading install stays untouched - a genuinely fresh one
             -- needs it explicitly flipped back to false to actually show

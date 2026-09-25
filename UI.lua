@@ -392,7 +392,19 @@ end
 -- DUSTY_MIN_DAYS floor via addedAt where one exists, so a sound added
 -- yesterday and simply not played YET still isn't dusty (it'd show "New"
 -- anyway, see GetTag's precedence, until that 48h window passes).
-local DUSTY_MIN_DAYS = 3
+--
+-- Explicit correction, round 3: that math.huge sentinel bypasses the
+-- DUSTY_MIN_DAYS floor entirely for any addedAt-less sound - fine for an
+-- established install (its untouched originals really have been around
+-- indefinitely), but wrong for a genuinely fresh install, whose entire
+-- bundled starter library is addedAt-less from minute one and would
+-- otherwise all register as maximally dusty on first login. SB.db.installedAt
+-- (stamped once, fresh-install-only, see Core.lua) gives those sounds a real
+-- age instead - measured from install time, same as everything else, so the
+-- existing DUSTY_MIN_DAYS floor applies to them too. Absent installedAt (any
+-- existing/upgrading install, since it's never backfilled), behavior is
+-- unchanged: math.huge, same as before this round.
+local DUSTY_MIN_DAYS = 7
 local DUSTY_MAX_COUNT = 3
 local DUSTY_MAX_COUNT_PRIVATE = 2
 local dustySetCache, dustySetCacheAt
@@ -411,7 +423,13 @@ local function ComputeDustySet(eligibleFn, maxCount)
                 else
                     local saved = SB:GetSoundSaved(soundID)
                     local addedAt = saved and saved.addedAt
-                    daysSince = (addedAt and addedAt > 0) and math.floor((time() - addedAt) / 86400) or math.huge
+                    if addedAt and addedAt > 0 then
+                        daysSince = math.floor((time() - addedAt) / 86400)
+                    elseif SB.db and SB.db.installedAt and SB.db.installedAt > 0 then
+                        daysSince = math.floor((time() - SB.db.installedAt) / 86400)
+                    else
+                        daysSince = math.huge
+                    end
                 end
                 if daysSince >= DUSTY_MIN_DAYS then
                     table.insert(candidates, { soundID = soundID, days = daysSince })
@@ -2399,18 +2417,21 @@ local function BuildMainFrame()
     -- Explicit requirement: the closed "Send to:" chip always renders in
     -- the selected channel's own colour (Guild/Raid/Friends) -
     -- unconditionally, regardless of whether anyone is currently
-    -- reachable on it. "All" and "Self Only" are not real multiplayer
-    -- channels and both render in the normal (white) text colour, never
-    -- SB.CHANNEL_COLOR.SELF's grey - that grey is still used elsewhere
-    -- for unrelated purposes (e.g. the Settings "General" tab colour),
-    -- just never for this "what will a click send to" label.
+    -- reachable on it. "All" is not a real multiplayer channel/target and
+    -- is the only one that renders in the normal (white) text colour.
+    -- "Self" IS an active, selectable target (just not a multiplayer one)
+    -- and renders in SB.CHANNEL_COLOR.SELF's own neutral grey - the same
+    -- shade used elsewhere for unrelated purposes (e.g. the Settings
+    -- "General" tab colour), never white and never dimmed/disabled-looking.
     local function RefreshSendToLabel()
         local target = (SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL"
-        local text, color = nil, SB.Theme.TEXT -- "All"/"Self" (and any unrecognised target) use the normal text colour
+        local text, color = nil, SB.Theme.TEXT -- "All" (and any unrecognised target) uses the normal text colour
         if target == "ALL" then
             text = "Send to: All"
         elseif target == "SELF" then
             text = "Send to: Self"
+            local c = SB.CHANNEL_COLOR.SELF
+            color = { c.r, c.g, c.b }
         else
             text = "Send to: " .. BucketLabel(target) .. ChannelCountSuffix(target)
             local c = SB.CHANNEL_COLOR[target]
@@ -2437,6 +2458,12 @@ local function BuildMainFrame()
         })
         table.insert(opts, {
             text = "Self", value = "SELF",
+            -- Same "full colour while active, dimmed while not" treatment
+            -- SetRowFont below already gives Guild/Raid/Friends - "Self"
+            -- is an active, selectable target too, so its own currently-
+            -- selected state must read the same way, just in its neutral
+            -- grey rather than a channel colour.
+            isActiveChannel = ((SB.db.settings and SB.db.settings.defaultOutputTarget) or "ALL") == "SELF",
             onRowClick = function()
                 SB.db.settings.defaultOutputTarget = "SELF"
                 SB.ResetChannelSubsetsExcept(nil)
@@ -2923,6 +2950,29 @@ function SB:ShowDefaultSounds()
     -- Land at the very top (Favourites, then Legacy) rather than wherever
     -- the Library happened to be scrolled to last.
     if main.libraryScroll then main.libraryScroll.scroll:SetVerticalScroll(0) end
+end
+
+-- Deep-link entry point for external "jump straight to Settings" callers
+-- (Announcer.lua's Quick Options "Open Settings" row) - reuses this same
+-- Settings/Admin/Keybind-mode mutual-exclusion state ToggleSettings itself
+-- owns, but always LANDS on Settings instead of toggling relative to
+-- whatever was showing before, and opens the main window first (building
+-- it, and therefore settingsPanel, if this is the very first open this
+-- session) rather than requiring it to already be open. Covers both
+-- "closed -> open directly on Settings" and "open on another tab -> switch
+-- to Settings" in one call.
+function SB:ShowSettingsView()
+    if not main then BuildMainFrame() end
+    if not settingsPanel then
+        SB:Print("|cffff5555Settings is unavailable|r - it failed to load this session (see the earlier error).")
+        return
+    end
+    isSettingsOpen = true
+    isAdminOpen = false
+    isKeybindModeOpen = false
+    ClearFiltering()
+    main:Show()
+    SB:RefreshMainWindow()
 end
 
 function SB:HideMainWindow()
