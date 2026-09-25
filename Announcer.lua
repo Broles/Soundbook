@@ -44,9 +44,16 @@ local HandleMiniIconHoverEnter, SetMiniActiveInteraction, NoteMiniSurfaceHidden
 -- keeps tracking real playback underneath, and RestoreRealAnnouncerState()
 -- catches the banner up once the preview ends.
 local dragPreviewActive = false
+-- Same idea, set only by Start/EndAnnouncerSizePreview (the Announcer Size
+-- slider's own live-preview, see below) - kept as a genuinely separate flag
+-- rather than reusing dragPreviewActive, since the two interactions are
+-- unrelated (no shared OnUpdate/easter-egg machinery here) even though they
+-- can never physically overlap (dragging the icon and dragging a slider at
+-- the same time isn't possible).
+local announcerSizePreviewActive = false
 
 local function IsPreviewActive()
-    return dragPreviewActive
+    return dragPreviewActive or announcerSizePreviewActive
 end
 
 -- The most recently seen PLAYBACK_PROGRESS_STARTED, consumed by the very
@@ -2195,6 +2202,63 @@ local function EndMiniSizePreview()
     end
 end
 
+------------------------------------------------------------------------
+-- Announcer Size live preview - the same pattern as Mini Soundbook Size's
+-- own StartMiniSizePreview/EndMiniSizePreview just above, targeting the
+-- Announcer banner itself instead of the Mini Soundbook popup. While the
+-- slider is actively dragged: the banner is forced to full opacity and, if
+-- nothing is really playing, shown with the same fixed, deterministic
+-- content the icon-drag preview already uses (PopulatePreviewBanner) so the
+-- real layout/dimensions are visible rather than a placeholder. If a real
+-- sound IS already playing/displayed, that real banner is simply resized
+-- live in place (SB:RefreshAnnouncerScale, already called on every slider
+-- value change) - never a second, duplicate preview.
+------------------------------------------------------------------------
+
+local announcerSizePreviewForcedOpen = false
+
+local function StartAnnouncerSizePreview()
+    icon:SetAlpha(1)
+    if #activeDisplays > 0 then
+        -- Real content already owns the banner - just make sure it's at
+        -- full opacity too (RenderPrimary already keeps it at 1; this is a
+        -- harmless belt-and-braces in case that ever changes) and let the
+        -- slider's own live SetScale calls resize it in place.
+        if banner then banner:SetAlpha(1) end
+        return
+    end
+    announcerSizePreviewActive = true
+    announcerSizePreviewForcedOpen = true
+    PopulatePreviewBanner()
+    LayoutBanner()
+    -- CollapseToIdle fades the banner to alpha 0 then Hides it once nothing
+    -- real is left to show; without resetting alpha here, a bare Show()
+    -- would leave that faded-out alpha in place and the preview would be
+    -- invisible (same reasoning as StartIconDragPreview above).
+    if UIFrameFadeRemoveFrame then UIFrameFadeRemoveFrame(banner) end
+    banner:SetAlpha(1)
+    banner:Show()
+end
+
+-- Never writes SB.db.ui.announcer.alphaIdle/alphaHover - only ever reads
+-- them (via SB:RefreshAnnouncerAlpha, the exact same call every other idle-
+-- opacity restore already uses), so "restore the exact opacity that was
+-- active before resizing started" falls out naturally: nothing here ever
+-- touched the persisted value in the first place. Skipped while real
+-- content is genuinely active (#activeDisplays > 0) - RenderPrimary's own
+-- invariant keeps the icon at full opacity for as long as a real banner is
+-- showing, and forcing alphaIdle back on top of that here would fight it.
+local function EndAnnouncerSizePreview()
+    if announcerSizePreviewForcedOpen then
+        announcerSizePreviewActive = false
+        announcerSizePreviewForcedOpen = false
+        RestoreRealAnnouncerState()
+    end
+    if #activeDisplays == 0 then
+        SB:RefreshAnnouncerAlpha()
+    end
+end
+
 -- Mini Soundbook Size - independent of Announcer Size (SB:RefreshAnnouncerScale
 -- above): scales ONLY the favourite-area popup (icons, sound-name text,
 -- dropdown/name-area width, spacing) via a plain frame SetScale, same
@@ -2591,11 +2655,17 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         sizeLabel:SetTextColor(unpack(Theme.TEXT_DIM))
 
         -- Live preview: the icon/banner rescale continuously while
-        -- dragging, not only on mouse-up. Unlike Mini Soundbook Size below,
-        -- no forced-open/positioning step is needed - the icon (and banner,
-        -- when shown) are already on-screen and anchored off the icon's own
-        -- live edges (SB.PositionRelativeToIcon), so resizing in place
-        -- naturally carries quickMenu's own anchor along with it.
+        -- dragging, not only on mouse-up - no separate positioning step is
+        -- needed the way Mini Soundbook Size's forced-open below needs one,
+        -- since the icon (and banner, when shown) are already on-screen and
+        -- anchored off the icon's own live edges (SB.PositionRelativeToIcon),
+        -- so resizing in place naturally carries quickMenu's own anchor
+        -- along with it. StartAnnouncerSizePreview/EndAnnouncerSizePreview
+        -- (above) additionally force full opacity for the duration and, if
+        -- nothing is really playing, show the same deterministic preview
+        -- content the icon-drag preview uses so the real banner
+        -- dimensions/layout are visible rather than resizing an invisible
+        -- (0% opacity) or absent banner.
         local sizeSlider = Theme.CreateSlider(quickMenu, 50, 200, 10, 120, function(value)
             SB.db.ui.announcer.scale = value / 100
             SB:RefreshAnnouncerScale()
@@ -2605,8 +2675,14 @@ function SB.ShowAnnouncerQuickOptions(anchor)
         -- Dragging this slider must never be interrupted by proximity
         -- auto-close - HookScript composes with the OnMouseUp handler
         -- above rather than replacing it.
-        sizeSlider:HookScript("OnMouseDown", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end end)
-        sizeSlider:HookScript("OnMouseUp", function() if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end end)
+        sizeSlider:HookScript("OnMouseDown", function()
+            if SetMiniActiveInteraction then SetMiniActiveInteraction(true) end
+            StartAnnouncerSizePreview()
+        end)
+        sizeSlider:HookScript("OnMouseUp", function()
+            if SetMiniActiveInteraction then SetMiniActiveInteraction(false) end
+            EndAnnouncerSizePreview()
+        end)
         quickMenu.sizeSlider = sizeSlider
 
         -- Writes the same ui.announcer.favScale field Settings -> Mini's
