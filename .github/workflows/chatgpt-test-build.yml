@@ -1,0 +1,54 @@
+name: ChatGPT Soundbook 3.0.2 Compact Mini Test Build
+
+on:
+  push:
+    branches:
+      - claude/soundbook-repo-setup-2l4dxo
+
+jobs:
+  test-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Lua 5.1
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lua5.1
+
+      - name: Lua syntax check
+        run: |
+          set -e
+          for f in *.lua; do
+            luac5.1 -p "$f"
+          done
+
+      - name: Verify compact Mini Soundbook constants
+        run: |
+          set -e
+          grep -q 'local ROW_H_MIN, ROW_H_MAX = 18, 24' Announcer.lua
+          grep -q 'local ICON_MIN, ICON_MAX = 13, 18' Announcer.lua
+          grep -q 'GetCompactFavColumnWidths' Announcer.lua
+          grep -q '## Version: 3.0.2' Soundbook.toc
+
+      - name: Build TEST ZIP
+        run: |
+          set -e
+          rm -rf dist
+          mkdir -p dist/Soundbook
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='dist' \
+            --exclude='*.md' \
+            --exclude='tools' \
+            ./ dist/Soundbook/
+          cd dist
+          zip -qr ../Soundbook-3.0.2-test.zip Soundbook
+
+      - name: Upload TEST ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Soundbook-3.0.2-test
+          path: Soundbook-3.0.2-test.zip
+          if-no-files-found: error
