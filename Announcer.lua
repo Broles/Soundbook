@@ -309,7 +309,7 @@ local function BuildIcon()
         }
         local direction = SB.ResolvePopoutDirection(self)
         GameTooltip:SetOwner(self, oppositeAnchor[direction] or "ANCHOR_LEFT")
-        GameTooltip:SetText("Soundbook", unpack(Theme.GOLD))
+        GameTooltip:SetText("Mini Soundbook", unpack(Theme.GOLD))
         -- Explains the ACTUAL scope of an active Raid Admin restriction, who
         -- applied it, and that local Self playback still works - shown
         -- alongside the player's own receive-mute state below it.
@@ -621,29 +621,36 @@ end
 ------------------------------------------------------------------------
 -- Overlap markers: a thin vertical line inside the progress bar for
 -- every OTHER currently-playing sound - explicit replacement for the old
--- numeric "+N" badge. A marker's position is that background sound's OWN
--- remaining time as a fraction of the PRIMARY (displayed) sound's
--- remaining time: the bar's left edge is "now" (0 remaining), the right
--- edge is the primary's own remaining duration, so a background sound
--- ending sooner than the primary sits proportionally further left, one
--- that would outlast the primary clamps to the right edge. Pooled
--- textures parented to `track` itself, created lazily and reused frame
--- to frame - deliberately not a generic animation framework, just this
--- one small pool for this one feature.
+-- numeric "+N" badge. Each marker moves entirely independently, driven
+-- purely by that ONE background sound's own elapsed/duration (0% at its
+-- own start, 100% when IT finishes) - deliberately never relative to the
+-- primary's own remaining time. An earlier version positioned a marker at
+-- `remaining / primaryRemaining`: since both numerator and denominator
+-- shrink by the same real-time amount every tick, that fraction actually
+-- DECREASES over time whenever the background sound is shorter than the
+-- primary's own remaining duration (a live report: "one indicator moved
+-- backwards") - a background-only, elapsed-based fraction is monotonic by
+-- construction as long as its own startedAt/duration don't change, which
+-- they never do while the same tracked instance stays active. Pooled
+-- textures parented to `track` itself, created lazily and reused frame to
+-- frame - deliberately not a generic animation framework, just this one
+-- small pool for this one feature.
 ------------------------------------------------------------------------
 
 local function GetOrCreateOverlapMarker(index)
     banner.markers = banner.markers or {}
     local marker = banner.markers[index]
     if not marker then
-        -- Additive white washed out against a light/white fill (e.g. the
-        -- "All"/"Self only" target colour) since ADD blending can only
-        -- brighten, never darken, a near-white destination. A normal-blend
-        -- gold core - the same gold as the Mini Soundbook's own border -
-        -- reads clearly against any fill colour, and a slightly wider dark
-        -- shadow layer behind it keeps it visible against light art too.
-        -- `shadow` is OVERLAY so it draws above `fill` (ARTWORK); `core`
-        -- is created after it so it layers on top within the same sublevel.
+        -- A gold core (matching the primary bar's own orange/gold fill)
+        -- barely registered against that same fill - not enough hue
+        -- separation to read as a distinct, secondary signal. Arcane cyan
+        -- (V3.ARCANE_CYAN, the same family the Mini Soundbook's own
+        -- backdrop/chrome uses) sits opposite gold/orange on the colour
+        -- wheel, so it reads as clearly "different" against both the
+        -- filled and unfilled portions of the bar; the dark shadow layer
+        -- behind it keeps it visible over light art too. `shadow` is
+        -- OVERLAY so it draws above `fill` (ARTWORK); `core` is created
+        -- after it so it layers on top within the same sublevel.
         local shadow = banner.track:CreateTexture(nil, "OVERLAY")
         shadow:SetTexture("Interface\\Buttons\\WHITE8X8")
         shadow:SetWidth(4)
@@ -652,7 +659,7 @@ local function GetOrCreateOverlapMarker(index)
         local core = banner.track:CreateTexture(nil, "OVERLAY")
         core:SetTexture("Interface\\Buttons\\WHITE8X8")
         core:SetWidth(2)
-        core:SetVertexColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], 1)
+        core:SetVertexColor(V3.ARCANE_CYAN[1], V3.ARCANE_CYAN[2], V3.ARCANE_CYAN[3], 1)
 
         marker = { shadow = shadow, core = core }
         banner.markers[index] = marker
@@ -678,34 +685,28 @@ end
 local function RefreshOverlapMarkers()
     if not banner or not banner.track then return end
     banner.markers = banner.markers or {}
-    local primary = activeDisplays[#activeDisplays]
-    if not primary or not ValidDuration(primary.duration) then
-        HideAllOverlapMarkers()
-        return
-    end
     local now = GetTime()
-    local primaryRemaining = primary.duration - (now - (primary.startedAt or now))
-    if primaryRemaining <= 0 then
-        HideAllOverlapMarkers()
-        return
-    end
     local trackW = math.max(1, (banner.track:GetWidth() or 1) - 2) -- same 1px-per-side inset the fill itself uses
     local shown = 0
     for i = 1, #activeDisplays - 1 do -- every entry EXCEPT the primary (last)
         local entry = activeDisplays[i]
         if ValidDuration(entry.duration) then
-            local remaining = entry.duration - (now - (entry.startedAt or now))
-            if remaining > 0 then
-                shown = shown + 1
-                local marker = GetOrCreateOverlapMarker(shown)
-                local fraction = math.max(0, math.min(1, remaining / primaryRemaining))
-                local x = 1 + trackW * fraction
-                for _, part in ipairs({ marker.shadow, marker.core }) do
-                    part:ClearAllPoints()
-                    part:SetPoint("TOP", banner.track, "TOPLEFT", x, -1)
-                    part:SetPoint("BOTTOM", banner.track, "BOTTOMLEFT", x, 1)
-                    part:Show()
-                end
+            -- Entirely this ONE entry's own elapsed/duration - never the
+            -- primary's. Clamped 0..1 so a tick landing slightly past the
+            -- real end (before its own PLAYBACK_PROGRESS_ENDED removes it
+            -- from activeDisplays) sits at the right edge rather than
+            -- overshooting it, and never goes negative for a just-started
+            -- instance whose startedAt is (rarely) a hair in the future.
+            local elapsed = now - (entry.startedAt or now)
+            local fraction = math.max(0, math.min(1, elapsed / entry.duration))
+            shown = shown + 1
+            local marker = GetOrCreateOverlapMarker(shown)
+            local x = 1 + trackW * fraction
+            for _, part in ipairs({ marker.shadow, marker.core }) do
+                part:ClearAllPoints()
+                part:SetPoint("TOP", banner.track, "TOPLEFT", x, -1)
+                part:SetPoint("BOTTOM", banner.track, "BOTTOMLEFT", x, 1)
+                part:Show()
             end
         end
         -- An entry with no known duration simply can't be placed on this
