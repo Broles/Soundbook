@@ -19,7 +19,7 @@ end
 local function BuildButton()
     if button then return button end
 
-    button = CreateFrame("Button", "SoundbookMinimapButton", Minimap)
+    button = SB.CreateFrame("Button", "SoundbookMinimapButton", Minimap)
     button:SetSize(31, 31)
     -- Back to "MEDIUM" (Soundbook 1.9.1, explicit requirement) - the same
     -- normal strata the Minimap itself and virtually every other addon's
@@ -36,41 +36,40 @@ local function BuildButton()
     button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
     button:RegisterForDrag("LeftButton")
 
-    -- Bugfix (round 2): shrinking/tinting Blizzard's stock zoom-button
-    -- highlight wasn't enough - the REAL root cause was the border/icon
-    -- pairing itself. "MiniMap-TrackingBorder" is a 54x54 ring sprite whose
-    -- artwork assumes a specific icon inset (the standard LibDBIcon-style
-    -- offset used by virtually every minimap-button addon); this file
-    -- instead centred an 18x18 icon on the 31x31 BUTTON itself
-    -- (SetPoint("CENTER")), which is NOT the same point as the ring
-    -- sprite's own visual centre (border is anchored at the button's
-    -- TOPLEFT and extends 54px, well past the 31px button on two sides) -
-    -- the icon and the ring's "hole" never lined up, so part of the ring's
-    -- own dark inner shading sat over the book artwork, reading as a dark/
-    -- blue circular overlay "replacing" the icon. Icon now uses the exact
-    -- standard offset (TOPLEFT, 7, -6 at 20x20) that sprite was authored
-    -- for, so it actually sits centred inside the ring's real hole.
-    local icon = button:CreateTexture(nil, "BACKGROUND")
+    -- Bugfix (round 3): two earlier rounds both tried to tame Blizzard's
+    -- own minimap-button art (first the zoom-button highlight texture,
+    -- then the MiniMap-TrackingBorder ring's icon-inset alignment) and the
+    -- book icon was STILL being visually replaced by a large dark/cyan
+    -- circle - live-tested confirmation that the problem was never really
+    -- the alignment, it's that texture's own native rendered appearance,
+    -- which this environment has no way to preview before shipping.
+    -- Dropped entirely. Every visual element here is now a plain flat
+    -- colour/backdrop this file fully controls itself (SB.CreateFrame
+    -- above already carries BackdropTemplate) - nothing pulled from an
+    -- unpredictable Blizzard sprite, so there is no art asset left that
+    -- could ever render as a large dark/blue/cyan overlay again.
+    button:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 1.5 })
+    button:SetBackdropColor(0, 0, 0, 0) -- fully transparent fill - never covers the icon
+    button:SetBackdropBorderColor(0.92, 0.68, 0.28, 0.9) -- Theme.GOLD, thin ring around the button's own edge only
+
+    local icon = button:CreateTexture(nil, "ARTWORK")
     icon:SetSize(20, 20)
-    icon:SetPoint("TOPLEFT", 7, -6)
+    icon:SetPoint("CENTER", 0, 0)
     icon:SetTexture(SB.APP_ICON)
+    -- Crops the dark padding WoW icon art bakes in around its edges (same
+    -- technique Theme.lua's own icon slots use) so the book fills this
+    -- square instead of floating in the middle of visible dead space.
+    icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     button.icon = icon
 
-    local border = button:CreateTexture(nil, "OVERLAY")
-    border:SetSize(54, 54)
-    border:SetPoint("TOPLEFT")
-    border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-    button.border = border
-
-    -- Subtle hover glow ONLY, sized and positioned off the (now correctly
-    -- placed) icon itself, never the button/ring - a soft gold glow just
-    -- past the icon's own edges, never large or bright enough to read as a
-    -- second graphic replacing the book artwork.
+    -- Subtle hover glow ONLY - a soft, low-alpha, additive-blended flat
+    -- gold wash across the whole button, never a separate sprite that
+    -- could visually replace the icon underneath it.
     local highlight = button:CreateTexture(nil, "HIGHLIGHT")
-    highlight:SetSize(24, 24)
-    highlight:SetPoint("CENTER", icon, "CENTER", 0, 0)
-    highlight:SetTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-    highlight:SetVertexColor(0.92, 0.68, 0.28, 0.8)
+    highlight:SetAllPoints(button)
+    highlight:SetTexture("Interface\\Buttons\\WHITE8X8")
+    highlight:SetVertexColor(0.92, 0.68, 0.28, 0.35)
+    highlight:SetBlendMode("ADD")
     button.highlight = highlight
 
     -- Explicit requirement: pressed state must never cover/replace the
