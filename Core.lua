@@ -1284,6 +1284,42 @@ function SB:ApplyFreshInstallFavourites()
     end
 end
 
+-- One-time correction, same shape as the historical addedAt fixes above
+-- (privateLegacyFixApplied/companionAddedAtFixApplied/
+-- knownSoundsFix250Applied): an earlier build of BackfillAddedAt's own
+-- first-run check (SoundRegistry.lua) was defeated by SanitizeDatabase
+-- always pre-creating knownSoundIDs before it ever ran, so a fresh
+-- install's very first PLAYER_LOGIN under that build stamped its ENTIRE
+-- then-current library "New" in one shot - indistinguishable from data
+-- alone from a real library UNLESS most of it is currently New at once,
+-- which never happens organically (a real content update adds a small
+-- handful of sounds, never a majority of the whole registry). Runs only
+-- once (SB.db.massNewTagBugFixApplied): only if more than half of every
+-- currently-registered sound is presently within the New window does this
+-- clear addedAt back to legacy for exactly that set - a genuine handful of
+-- real recent additions is always far below that threshold and is left
+-- completely untouched, so this can never wrongly wipe legitimate
+-- New-state for an established user. Extracted as its own method (called
+-- from PLAYER_LOGIN below) so it can be exercised directly by tests
+-- without needing to fire native WoW events through the init frame.
+function SB:FixMassNewTagBugOnce()
+    if not (SB.db and not SB.db.massNewTagBugFixApplied) then return end
+    SB.db.massNewTagBugFixApplied = true
+    local total, currentlyNew = 0, {}
+    for soundID in pairs(SB.registry) do
+        total = total + 1
+        if SB.IsSoundNew and SB:IsSoundNew(soundID) then
+            table.insert(currentlyNew, soundID)
+        end
+    end
+    if total > 0 and (#currentlyNew / total) > 0.5 then
+        for _, soundID in ipairs(currentlyNew) do
+            local saved = SB.db.sounds and SB.db.sounds[soundID]
+            if saved then saved.addedAt = nil end
+        end
+    end
+end
+
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("ADDON_LOADED")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -1459,6 +1495,8 @@ initFrame:SetScript("OnEvent", function(_, event, arg1)
                 SB.db.knownSoundIDs[id] = true
             end
         end
+
+        if SB.FixMassNewTagBugOnce then SB:FixMassNewTagBugOnce() end
 
         SB:Fire("PLAYER_LOGIN")
     elseif event == "PLAYER_ENTERING_WORLD" then

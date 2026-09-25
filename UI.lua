@@ -404,6 +404,19 @@ end
 -- existing DUSTY_MIN_DAYS floor applies to them too. Absent installedAt (any
 -- existing/upgrading install, since it's never backfilled), behavior is
 -- unchanged: math.huge, same as before this round.
+--
+-- Explicit correction, round 4: round 3's floor only guarded the addedAt-
+-- less SENTINEL branch - but SB.Analytics_SoundMetrics' "all" filter
+-- aggregates COMMUNITY-wide usage (every observed node/player, not just
+-- this local install, see Analytics.lua's EnsureDB/records-by-node shape),
+-- so a bundled sound other players have used for months already carries a
+-- real, old `m.lastUsed` the moment a brand-new install's first analytics
+-- sync arrives - `m.plays > 0` immediately, taking the FIRST branch below
+-- and computing `daysSince` from that old community timestamp, completely
+-- bypassing installedAt's grace period. The fix must gate on how long THIS
+-- installation itself has known the sound (addedAt, or installedAt for a
+-- fresh install's baseline) BEFORE even considering community data -
+-- unconditionally, not just inside the sentinel branch.
 local DUSTY_MIN_DAYS = 7
 local DUSTY_MAX_COUNT = 3
 local DUSTY_MAX_COUNT_PRIVATE = 2
@@ -417,22 +430,31 @@ local function ComputeDustySet(eligibleFn, maxCount)
         if eligibleFn(soundID) then
             local ok, m = pcall(SB.Analytics_SoundMetrics, soundID, "all")
             if ok then
-                local daysSince
-                if m.plays > 0 and m.lastUsed and m.lastUsed > 0 then
-                    daysSince = math.floor((time() - m.lastUsed) / 86400)
-                else
-                    local saved = SB:GetSoundSaved(soundID)
-                    local addedAt = saved and saved.addedAt
-                    if addedAt and addedAt > 0 then
-                        daysSince = math.floor((time() - addedAt) / 86400)
-                    elseif SB.db and SB.db.installedAt and SB.db.installedAt > 0 then
-                        daysSince = math.floor((time() - SB.db.installedAt) / 86400)
+                -- Local eligibility gate FIRST, independent of community
+                -- analytics: how long THIS installation has known about the
+                -- sound - a real addedAt if it has one, else installedAt for
+                -- a fresh install's addedAt-less baseline, else nil (an
+                -- established install's pre-existing sound - no gate,
+                -- existing behaviour unchanged).
+                local saved = SB:GetSoundSaved(soundID)
+                local knownSince = saved and saved.addedAt
+                if not (knownSince and knownSince > 0) then
+                    knownSince = SB.db and SB.db.installedAt
+                end
+                local knownDays = (knownSince and knownSince > 0)
+                    and math.floor((time() - knownSince) / 86400) or nil
+                if not knownDays or knownDays >= DUSTY_MIN_DAYS then
+                    local daysSince
+                    if m.plays > 0 and m.lastUsed and m.lastUsed > 0 then
+                        daysSince = math.floor((time() - m.lastUsed) / 86400)
+                    elseif knownDays then
+                        daysSince = knownDays
                     else
                         daysSince = math.huge
                     end
-                end
-                if daysSince >= DUSTY_MIN_DAYS then
-                    table.insert(candidates, { soundID = soundID, days = daysSince })
+                    if daysSince >= DUSTY_MIN_DAYS then
+                        table.insert(candidates, { soundID = soundID, days = daysSince })
+                    end
                 end
             end
         end
@@ -476,6 +498,15 @@ local function GetDustySetPrivate()
         and ComputeDustySet(SB.Analytics_IsPrivatePoolEligible, DUSTY_MAX_COUNT_PRIVATE) or {}
     dustySetCachePrivateAt = now
     return dustySetCachePrivate
+end
+
+--- Whether `soundID` currently carries the Dusty tag (either pool) - a
+--- thin, side-effect-free accessor onto the otherwise module-local Dusty
+--- computation above, exposed for external inspection/testing without
+--- duplicating its eligibility/ranking logic anywhere else.
+function SB.IsSoundDusty(soundID)
+    if not soundID then return false end
+    return (GetDustySet()[soundID] or GetDustySetPrivate()[soundID]) and true or false
 end
 
 -- "Cringe" (explicit request, data signal = "One-Man-Show" - the NAME
