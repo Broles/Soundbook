@@ -28,20 +28,32 @@ SB.KnownUserInfo = KnownUserInfo
 
 local function IsSelf(sender)
     if not sender then return false end
-    local me = SB.GetUnitFullName and SB.GetUnitFullName("player") or UnitName("player")
-    if not me then return false end
 
-    -- Primary check keeps the realm-aware identity semantics used everywhere
-    -- else. Some Classic clients/roster APIs can nevertheless represent the
-    -- local player slightly differently (realm-qualified vs. unqualified),
-    -- which made our own Guild broadcast slip through as if it came from
-    -- another player. Fall back to the character-name portion so our own
-    -- packets can never be treated as remote playback.
-    local senderKey, meKey = IdentityKey(sender), IdentityKey(me)
+    local me = SB.GetUnitFullName and SB.GetUnitFullName("player") or UnitName("player")
+    local unitName = UnitName and UnitName("player") or me
+    if not me and not unitName then return false end
+
+    -- First use the normal realm-aware identity path.
+    local senderKey, meKey = IdentityKey(sender), IdentityKey(me or unitName)
     if senderKey and meKey and senderKey == meKey then return true end
 
+    -- Classic clients can report the local character through roster/addon
+    -- events in a different qualified form than UnitFullName. Ambiguate is
+    -- Blizzard's own helper for collapsing Name-Realm back to the character
+    -- name, so use it when available.
+    if Ambiguate and unitName then
+        local ok, short = pcall(Ambiguate, sender, "short")
+        if ok and short and short:lower() == unitName:lower() then return true end
+    end
+
+    -- Final defensive fallback. WoW character names contain no spaces, so
+    -- comparing the realm-stripped first token safely catches odd local
+    -- Name-Realm/name formatting without allowing our own broadcast to loop
+    -- back into remote playback.
     local senderName = NormalizeName(sender)
-    local meName = NormalizeName(me)
+    local meName = NormalizeName(unitName or me)
+    if senderName then senderName = senderName:match("^(%S+)") or senderName end
+    if meName then meName = meName:match("^(%S+)") or meName end
     return senderName and meName and senderName:lower() == meName:lower()
 end
 
@@ -439,7 +451,9 @@ function SB.ComputeReachablePlayers()
             -- current member count.
             for i = 1, SB.MAX_RAID_MEMBERS do
                 local name, _, _, _, _, _, _, online = GetRaidRosterInfo(i)
-                if name and online then add(name) end
+                local unit = "raid" .. i
+                local isMe = UnitIsUnit and UnitExists and UnitExists(unit) and UnitIsUnit(unit, "player")
+                if name and online and not isMe then add(name) end
             end
         elseif IsInGroup() then
             for i = 1, SB.GetNumGroupMembers() - 1 do
@@ -452,9 +466,11 @@ function SB.ComputeReachablePlayers()
     end)
     CollectInto("GUILD", function(add)
         if IsInGuild() and GetNumGuildMembers then
+            local playerGUID = UnitGUID and UnitGUID("player")
             for i = 1, GetNumGuildMembers() do
-                local fullName, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
-                if fullName and isOnline then add(fullName) end
+                local fullName, _, _, _, _, _, _, _, isOnline, _, _, _, _, _, _, _, guid = GetGuildRosterInfo(i)
+                local isMe = playerGUID and guid and playerGUID == guid
+                if fullName and isOnline and not isMe then add(fullName) end
             end
         end
     end)
