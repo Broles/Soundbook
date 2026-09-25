@@ -76,7 +76,7 @@ The Announcer is the always-on HUD that replaces the old Mini Soundbook window -
 
 Left-click the idle icon (or hover it, if "Open on hover" is enabled) to expand a compact "Mini Soundbook" grid of your favourites for quick access without opening the Main window. Managing favourites - adding, removing, renaming - still happens in the Main Soundbook's own Library (see "Main Soundbook" above); the Announcer's popup is a read/play-only shortcut to the same 20 slots.
 
-Its title bar shows exactly who a click would reach right now. For a single channel (Guild/Raid-Party/Friends) with a small enough recipient list, it shows their actual names ("Play for Alice and Bob:") instead of a bare count - it genuinely measures whether the names fit the title bar's real width before showing them, so it only ever falls back to a count ("Play for Guild (3):") when they wouldn't, never once names get merely "long-ish". "All" and Self Only are unaffected.
+Its title bar shows exactly who a click would reach right now, in that channel's own colour. For a single channel (Guild/Raid-Party/Friends) it shows their actual names ("Play for Alice and Bob:") instead of a bare count whenever they genuinely fit - a real pixel-width measurement against the title bar's actual width, not a fixed cap, so any number of short names is shown as names as long as they fit, and it only falls back to a count ("Play for Guild (3):") once they wouldn't. Zero selected recipients reads "Guild (0):" rather than silently falling back to "Play for Yourself". The title also recalculates immediately on a font/Text Size change, in addition to resizing, recipient selection, and roster changes. "All" and Self Only are unaffected.
 
 ## Multiplayer
 

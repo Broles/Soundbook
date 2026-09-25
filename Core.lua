@@ -251,6 +251,13 @@ function SB:RefreshMainFont()
         local size = math.max(9, math.floor((obj.baseSize or 12) * scale + 0.5))
         obj:SetFont(path, size, flags or "")
     end
+    -- A rendered font's actual glyph widths just changed - anything doing
+    -- its own pixel-width fit-check against one of these font objects
+    -- (e.g. Announcer.lua's Mini Soundbook title, which decides between
+    -- showing real recipient names and a bare count based on measured
+    -- width) has to redo that check, not keep whatever it decided under
+    -- the previous size.
+    SB:Fire("MAIN_FONT_CHANGED")
 end
 
 ------------------------------------------------------------------------

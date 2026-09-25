@@ -1129,6 +1129,21 @@ end
 
 local BUCKET_LABEL = { GUILD = "Guild", RAID = "Raid", FRIENDS = "Friends" }
 
+-- Explicit request: the recipient phrase (names or the "Guild (3)"
+-- fallback alike - one coherent "who this goes to" segment, not an
+-- arbitrary split) renders in that channel's own colour, the same
+-- SB.CHANNEL_COLOR hex every other Guild/Raid/Friends label in the addon
+-- already uses (chat lines, the Send-to dropdown's own rows) - a plain
+-- embedded WoW colour code inside favMenu.title's single FontString, so
+-- the surrounding "Play for "/":" wrapper stays the header's normal gold.
+-- GetStringWidth() correctly ignores |cxxxxxxxx/|r escapes for layout
+-- purposes, so this never skews the fit-check.
+local function ColorizeForBucket(text, bucket)
+    local color = SB.CHANNEL_COLOR and SB.CHANNEL_COLOR[bucket]
+    if not color or not color.hex then return text end
+    return "|cff" .. color.hex .. text .. "|r"
+end
+
 -- The title describes exactly what the SAME single-select Default
 -- Output (SB.db.settings.defaultOutputTarget, the Main window's "Send
 -- to:" control) would actually use for a normal click - never a
@@ -1170,11 +1185,15 @@ local function ComputeLiveTargetCounts()
         local names = SB.ComputeChannelSubsetRecipients and SB.ComputeChannelSubsetRecipients(target)
         if not names then names = reachable[target] or {} end
         local n = #names
-        if n > 0 then
-            perBucket[target] = n
-            total = n
-        end
-        return total, perBucket, total == 0, nil, false, names
+        -- Always recorded, including 0 - explicit requirement: a channel
+        -- with zero selected recipients must read "Guild (0)", never
+        -- silently fall back to "Play for Yourself" as if it were plain
+        -- Self Only. isLocal is therefore unconditionally false here;
+        -- only a genuine SELF target (above) or "All" with nothing
+        -- reachable (below) still counts as local.
+        perBucket[target] = n
+        total = n
+        return total, perBucket, false, nil, false, names
     end
     -- "ALL" (default/fallback) - every currently Send-enabled channel,
     -- exactly matching SB:BroadcastSound's own modes-driven fan-out.
@@ -1184,27 +1203,14 @@ local function ComputeLiveTargetCounts()
     return total, perBucket, total == 0, nil, true, nil
 end
 
--- Describes the CURRENT Default Output target as a short phrase
--- ("Guild (10)", "People (6)", "Bob", ...) plus an optional secondary
--- breakdown line ("Guild (4)  -  Friends (2)") for the multi-source "All"
--- case. `isLocal` is true for Self Only AND "selected but zero real
--- recipients right now" - zero actual remote recipients always reads as
--- "Play for Yourself" regardless of which target is technically active
--- (see SB:ResolveOutputTarget's fallback, Communication.lua, for the
--- send-side equivalent). "People" (never "N people" or a per-channel
--- label) is used whenever more than one channel contributes a real
--- recipient under "All", or whenever "All" is the target at all, even
--- if only one channel happens to have anyone reachable right now - the
--- user's actual intent was "everyone", not one specific group.
 -- Explicit request: when the selected channel's actual recipient names
 -- would fit the Mini Soundbook's title bar, show them ("Alice and Bob")
 -- instead of a bare count ("Guild (3)") - GetFavMenuHeaderText below
 -- decides whether this candidate actually fits (it owns the "Play for "/
--- ":" wrapping and the real pixel measurement); this just builds the
--- candidate text and bails out early for cases that could never
--- realistically fit a HUD title bar, so a wide popup doesn't bother
--- measuring an obviously-too-long list.
-local MAX_NAMES_FOR_TITLE = 3
+-- ":" wrapping and the real pixel measurement, never a name-count
+-- ceiling here - any number of names is a valid candidate; whether it
+-- actually renders within the available width is entirely the
+-- measurement's call, not a guess based on how many there are).
 local function JoinNamesNaturally(names)
     local n = #names
     if n == 1 then return names[1] end
@@ -1212,7 +1218,7 @@ local function JoinNamesNaturally(names)
     return table.concat(names, ", ", 1, n - 1) .. " and " .. names[n]
 end
 local function BuildNamesCandidate(names)
-    if not names or #names == 0 or #names > MAX_NAMES_FOR_TITLE then return nil end
+    if not names or #names == 0 then return nil end
     local displayNames = {}
     for _, name in ipairs(names) do
         table.insert(displayNames, (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name)
@@ -1224,32 +1230,41 @@ end
 -- ("Guild (10)", "People (6)", "Bob", ...) plus an optional secondary
 -- breakdown line ("Guild (4)  -  Friends (2)") for the multi-source "All"
 -- case, and (4th return) a names-list candidate GetFavMenuHeaderText may
--- prefer over the count phrase if it fits. `isLocal` is true for Self
--- Only AND "selected but zero real recipients right now" - zero actual
--- remote recipients always reads as "Play for Yourself" regardless of
--- which target is technically active (see SB:ResolveOutputTarget's
--- fallback, Communication.lua, for the send-side equivalent). "People"
--- (never "N people" or a per-channel label) is used whenever more than
--- one channel contributes a real recipient under "All", or whenever
--- "All" is the target at all, even if only one channel happens to have
--- anyone reachable right now - the user's actual intent was "everyone",
--- not one specific group.
+-- prefer over the count phrase if it fits. `isLocal` is true ONLY for a
+-- genuine Self Only target, or "All" with zero real recipients under any
+-- currently Send-enabled channel - a single Guild/Raid/Friends target
+-- with zero SELECTED recipients is deliberately NOT local: it must read
+-- "Guild (0)" (explicit requirement - "so it is obvious that nothing
+-- will be broadcast"), never be silently folded into "Play for
+-- Yourself" as if the player had picked Self Only. "People" (never "N
+-- people" or a per-channel label) is used whenever more than one
+-- channel contributes a real recipient under "All", or whenever "All"
+-- is the target at all, even if only one channel happens to have anyone
+-- reachable right now - the user's actual intent was "everyone", not
+-- one specific group.
 local function DescribeEffectiveTargetPhrase()
     local total, perBucket, isLocal, directName, isAllTarget, singleBucketNames = ComputeLiveTargetCounts()
     if directName then return directName, nil, false end
-    if isLocal or total == 0 then return "locally", nil, true end
+    if isLocal then return "locally", nil, true end
 
+    -- Existence (not "> 0") is what marks a bucket as "the/a contributing
+    -- target" - a single Guild/Raid/Friends target with 0 selected still
+    -- sets perBucket[target] = 0 (see ComputeLiveTargetCounts above), and
+    -- must still be recognized as that one bucket here, not silently
+    -- dropped into the multi-bucket "People" formatting below.
     local contributing, onlyBucket = 0, nil
     for _, bucket in ipairs({ "GUILD", "RAID", "FRIENDS" }) do
-        if (perBucket[bucket] or 0) > 0 then
+        if perBucket[bucket] ~= nil then
             contributing = contributing + 1
             onlyBucket = bucket
         end
     end
 
     if not isAllTarget and contributing <= 1 and onlyBucket then
-        local countPhrase = string.format("%s (%d)", BUCKET_LABEL[onlyBucket], perBucket[onlyBucket])
-        return countPhrase, nil, false, BuildNamesCandidate(singleBucketNames)
+        local countPhrase = ColorizeForBucket(string.format("%s (%d)", BUCKET_LABEL[onlyBucket], perBucket[onlyBucket]), onlyBucket)
+        local namesCandidate = BuildNamesCandidate(singleBucketNames)
+        if namesCandidate then namesCandidate = ColorizeForBucket(namesCandidate, onlyBucket) end
+        return countPhrase, nil, false, namesCandidate
     end
 
     local parts = {}
@@ -1325,6 +1340,13 @@ end
 -- upvalue - a local declared below the function that references it
 -- would resolve to a global instead.
 local FAV_MENU_ROW_H = 24
+
+-- favMenu.title's own left/right anchor insets (see BuildFavMenu below,
+-- "TOPLEFT 10,-8" / "RIGHT -10,0") - shared with PopulateFavMenu's own
+-- title-fit-check width computation via this one constant, so the two
+-- can never silently drift apart if the header's own insets ever change
+-- (e.g. to make room for a future header control).
+local FAV_TITLE_SIDE_INSET = 10
 
 -- Column count mirrors UI.lua's own 2-vs-3 column switch, keyed off the
 -- independent Mini Soundbook Size slider (SB.db.ui.announcer.favScale),
@@ -1460,8 +1482,8 @@ local function BuildFavMenu()
 
     favMenu.title = favMenu:CreateFontString(nil, "OVERLAY")
     favMenu.title:SetFontObject(SB.Fonts.Highlight)
-    favMenu.title:SetPoint("TOPLEFT", 10, -8)
-    favMenu.title:SetPoint("RIGHT", -10, 0)
+    favMenu.title:SetPoint("TOPLEFT", FAV_TITLE_SIDE_INSET, -8)
+    favMenu.title:SetPoint("RIGHT", -FAV_TITLE_SIDE_INSET, 0)
     favMenu.title:SetJustifyH("LEFT")
     favMenu.title:SetWordWrap(false)
     favMenu.title:SetTextColor(unpack(SB.Theme.GOLD))
@@ -1515,10 +1537,12 @@ local function PopulateFavMenu()
     local columns = GetFavMenuColumns(favCount)
     local colW = FAV_COL_W[columns]
     local gridW = columns * colW
-    -- Matches favMenu.title's own two-point anchor insets (10px left,
-    -- -10px right - see BuildFavMenu) exactly, so the measurement lines
-    -- up with what will actually render.
-    local titleAvailableWidth = (gridW + 8) - 20
+    -- FAV_TITLE_SIDE_INSET matches favMenu.title's own two-point anchor
+    -- insets exactly (one constant, shared with BuildFavMenu's anchors -
+    -- see its declaration above), so the measurement always lines up
+    -- with what will actually render, including any future header
+    -- control that narrows those insets.
+    local titleAvailableWidth = (gridW + 8) - (2 * FAV_TITLE_SIDE_INSET)
 
     local primary, secondary = GetFavMenuHeaderText(titleAvailableWidth)
     favMenu.title:SetText(primary)
@@ -1866,6 +1890,14 @@ end)
 -- header reads the plain live phrase or the "Default destination: X"
 -- variant - refresh the same way OUTPUT_SELECTION_CHANGED does.
 SB:On("SOUND_DISPLAY_CHANGED", function()
+    if favMenu and favMenu:IsShown() then PopulateFavMenu() end
+end)
+
+-- A font/Text Size change (Settings) actually changes rendered glyph
+-- widths (Core.lua's SB:RefreshMainFont), which the title's own names-
+-- vs-count fit-check measures against - refresh the same way, so an open
+-- Mini Soundbook doesn't keep showing a decision made under the old size.
+SB:On("MAIN_FONT_CHANGED", function()
     if favMenu and favMenu:IsShown() then PopulateFavMenu() end
 end)
 
