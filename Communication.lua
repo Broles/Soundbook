@@ -389,6 +389,12 @@ function SB.ComputeReachablePlayers()
     local function CollectInto(bucketName, iterFn)
         local bucket = result[bucketName]
         iterFn(function(rawName)
+            -- Local playback is unconditional for the sender, so the player
+            -- must never appear as one of their own selectable recipients.
+            -- Keeping this at the canonical reachable-player boundary removes
+            -- Self consistently from Guild/Raid/Friends checkbox lists,
+            -- counts, saved-subset resolution and actual subset dispatch.
+            if IsSelf(rawName) then return end
             local key = IdentityKey(rawName)
             if not key or not KnownUserInfo(rawName) or claimedBy[key] then return end
             claimedBy[key] = true
@@ -1148,6 +1154,7 @@ end
 -- `code` is the single-letter channel (F/P/R/G) the acking player actually
 -- received the sound over - see CHANNEL_CODE above.
 local function HandleAck(soundID, code, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return -- not something we broadcast recently - ignore
@@ -1171,6 +1178,7 @@ end
 -- counts for Analytics (CreditAnalyticsOnce above) - a real other
 -- player's client genuinely received it, they just chose not to hear it.
 local function HandleMuteAck(soundID, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return
@@ -1195,6 +1203,7 @@ end
 -- sound was never sent. Analytics crediting happens regardless of Debug
 -- Mode (same reasoning as HandleMuteAck above).
 local function HandleRxOffAck(soundID, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return
@@ -1220,6 +1229,7 @@ end
 -- Analytics the same way a mute is - a real other client genuinely
 -- received and processed the message, they just aren't allowed to play it.
 local function HandleIgnoreAck(soundID, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return
