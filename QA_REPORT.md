@@ -2538,3 +2538,13 @@ Investigated the reported regression ("Online Greeting notification appears, but
 Full mock suite re-run (the same three pre-existing, unrelated failures aside - `loader.lua`, `loader_minititle.lua`, `loader_settings.lua`); `luac -p` clean across every `Soundbook.toc`-listed file.
 
 No version bump this round - still 3.0.4, unreleased/unmerged.
+
+## Soundbook 3.0.4: /sb testgreeting - clearer "why no sound" message
+
+Follow-up to the previous round's investigation: a player tested `/sb testgreeting <name>` with a name they don't actually know (not a real Friend/Guild member) and saw no sound, then reasonably assumed that was the cause. It wasn't - the fallback Greeting Sound pool works for ANY typed name, known or made up, entirely independent of whether it matches a real roster entry. The real, much more common cause is simply that "Play Greeting Sound" defaults to OFF, and the previous chat message gave no hint of that when it was off (its info suffix was silently blank).
+
+**Fix (`Communication.lua`, `SB:SimulateOnlineGreeting`)**: the chat line now always explicitly states which of the three cases applies - a real Greeting Sound found, "Play Greeting Sound is OFF in Settings" (the previously-silent case), or "no Greeting Sound available (no history, no eligible favourite)" when the setting is on but nothing resolves. No behavioural change to detection/resolution/playback itself - purely a clearer diagnostic message, matching the same spirit as the previous round's `SB:Debug` addition.
+
+Full mock suite re-run (the same three pre-existing, unrelated failures aside - `loader.lua`, `loader_minititle.lua`, `loader_settings.lua`); `luac -p` clean across every `Soundbook.toc`-listed file.
+
+No version bump this round - still 3.0.4, unreleased/unmerged.

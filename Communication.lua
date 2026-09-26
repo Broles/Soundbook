@@ -3119,9 +3119,20 @@ function SB:SimulateOnlineGreeting(name)
     local soundID = playSoundOn and SB:ResolveGreetingSound(name) or nil
     local soundName = soundID and SB.GetSoundDisplayName and SB:GetSoundDisplayName(soundID)
 
-    SB:Print(string.format("Simulating Online Greeting for %s (%s)%s", displayName, relationship,
-        soundName and (" - Greeting Sound: " .. soundName)
-            or (playSoundOn and " - no Greeting Sound available (no history, no eligible favourite)" or "")))
+    -- Explicit about WHY there's no sound in every case - not knowing the
+    -- typed name is never the reason (the fallback pool works for ANY
+    -- name, real or made up); "Play Greeting Sound" being off, or genuinely
+    -- no history/eligible favourite, are the only two possibilities, and
+    -- a tester should never have to guess which.
+    local soundNote
+    if soundName then
+        soundNote = " - Greeting Sound: " .. soundName
+    elseif not playSoundOn then
+        soundNote = " - Play Greeting Sound is OFF in Settings, so no sound will play regardless of history/fallback"
+    else
+        soundNote = " - no Greeting Sound available (no history, no eligible favourite)"
+    end
+    SB:Print(string.format("Simulating Online Greeting for %s (%s)%s", displayName, relationship, soundNote))
 
     if not greetingsOn and not playSoundOn then
         SB:Print("Online Greetings and Play Greeting Sound are both off - nothing would show for a real transition either.")
