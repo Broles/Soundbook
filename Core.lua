@@ -543,6 +543,14 @@ local function GetDefaultDB()
         -- given player has sent YOU most often - never the anonymous
         -- community Analytics system.
         greetingStats = {},
+        -- [IdentityKey] = soundID - the persisted fallback Greeting Sound
+        -- for a player with no received-sound history yet (Communication.
+        -- lua's SB:GetGreetingFallbackSoundFor), randomly chosen once from
+        -- our own 10 shortest-duration favourites and reused on every
+        -- later login until it's no longer valid (removed/muted) or that
+        -- player's real received history takes over. Independent of
+        -- greetingStats above - a real history entry always wins over this.
+        greetingFallbackSounds = {},
         categories = {
             ["Legacy"] = { name = SB.DEFAULT_CATEGORY_INFO["Legacy"].name, icon = SB.DEFAULT_CATEGORY_INFO["Legacy"].icon },
             ["German Memes"] = { name = SB.DEFAULT_CATEGORY_INFO["German Memes"].name, icon = SB.DEFAULT_CATEGORY_INFO["German Memes"].icon },

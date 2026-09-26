@@ -80,6 +80,12 @@ local function SanitizeDatabase(db, defaults)
     -- instead (SB:GetGreetingSoundFor/BumpGreetingStat), not sanitized
     -- eagerly here.
     EnsureTable(db, "greetingStats")
+    -- The persisted fallback Greeting Sound assignment for a player with no
+    -- received history yet (see Core.lua's GetDefaultDB comment) - same
+    -- lightweight treatment; a malformed or now-invalid entry is simply
+    -- replaced the next time it's read (SB:GetGreetingFallbackSoundFor),
+    -- never sanitized eagerly here.
+    EnsureTable(db, "greetingFallbackSounds")
 
     -- The persisted "latest update batch" (SoundRegistry.lua's
     -- BackfillAddedAt/GetLatestSoundUpdateSoundIDs) - deliberately separate

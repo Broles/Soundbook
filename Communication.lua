@@ -2845,7 +2845,7 @@ local function VerifyAndFireGreeting(key, name, isFriend, isGuild)
     if not greetingsOn and not playSoundOn then return end
 
     local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
-    local soundID = playSoundOn and SB.GetGreetingSoundFor and SB:GetGreetingSoundFor(name) or nil
+    local soundID = playSoundOn and SB:ResolveGreetingSound(name) or nil
 
     if greetingsOn then
         local relationship = (isFriend and isGuild) and "Friend + Guild" or (isFriend and "Friend") or "Guild"
@@ -2985,6 +2985,95 @@ function SB:GetGreetingSoundFor(name)
     return bestID
 end
 
+------------------------------------------------------------------------
+-- Fallback Greeting Sound - a Soundbook Friend/Guild member with NO
+-- received-sound history yet still gets a Greeting Sound, randomly picked
+-- once from our own shortest favourites and then persisted so every later
+-- login reuses the same one, rather than randomizing every time. A real
+-- received-history entry (SB:GetGreetingSoundFor above) always takes
+-- priority the moment it exists - see SB:ResolveGreetingSound below.
+------------------------------------------------------------------------
+
+local FALLBACK_POOL_SIZE = 10
+
+-- Favourited sounds with a KNOWN duration (SB.registry[id].durationSeconds -
+-- explicit per-entry, precomputed, or already learned this session/a past
+-- one; Reuse existing duration data and duration-learning infrastructure,
+-- explicit requirement - never guessed here), not currently muted, sorted
+-- shortest-first, capped at the 10 shortest. Only ever computed when a
+-- fallback actually needs to be (re-)assigned - no periodic scan.
+local function ShortestFavouritesPool()
+    local pool = {}
+    local seen = {}
+    for _, soundID in pairs(SB:GetFavourites()) do
+        if not seen[soundID] then
+            seen[soundID] = true
+            local info = SB.registry[soundID]
+            local saved = SB:GetSoundSaved(soundID)
+            if info and info.durationSeconds and not (saved and saved.muted) then
+                table.insert(pool, soundID)
+            end
+        end
+    end
+    table.sort(pool, function(a, b)
+        return SB.registry[a].durationSeconds < SB.registry[b].durationSeconds
+    end)
+    while #pool > FALLBACK_POOL_SIZE do
+        table.remove(pool)
+    end
+    return pool
+end
+
+-- A persisted fallback is only ever trusted after re-checking it still
+-- exists and is playable right now - a sound removed from the registry
+-- (can't happen mid-session, but a SavedVariables edit/downgrade could
+-- leave a stale id) or since muted is invalid and must be replaced, never
+-- just silently skipped. Removing the sound from FAVOURITES alone does NOT
+-- invalidate an already-assigned fallback - explicit requirement, the
+-- favourite list is only ever consulted when (re-)assigning.
+local function ValidFallback(soundID)
+    if not soundID then return false end
+    local info = SB.registry[soundID]
+    if not info then return false end
+    local saved = SB:GetSoundSaved(soundID)
+    if saved and saved.muted then return false end
+    return true
+end
+
+--- The persisted fallback Greeting Sound for `name` - their existing
+--- assignment if it's still valid, otherwise a fresh one randomly chosen
+--- from our current shortest-favourites pool (persisted immediately so the
+--- SAME sound is reused on every later login). nil only when no eligible
+--- favourite exists at all right now.
+function SB:GetGreetingFallbackSoundFor(name)
+    local key = IdentityKey(name)
+    if not (key and SB.db) then return nil end
+    SB.db.greetingFallbackSounds = SB.db.greetingFallbackSounds or {}
+
+    local existing = SB.db.greetingFallbackSounds[key]
+    if ValidFallback(existing) then
+        return existing
+    end
+
+    local pool = ShortestFavouritesPool()
+    if #pool == 0 then
+        SB.db.greetingFallbackSounds[key] = nil
+        return nil
+    end
+
+    local chosen = pool[math.random(#pool)]
+    SB.db.greetingFallbackSounds[key] = chosen
+    return chosen
+end
+
+--- Full Greeting Sound resolution for `name`, in priority order: (1) the
+--- sound they've actually sent US most often (real received history always
+--- wins the moment it exists), (2) their persisted random fallback from our
+--- shortest favourites. nil only when neither is available.
+function SB:ResolveGreetingSound(name)
+    return SB:GetGreetingSoundFor(name) or SB:GetGreetingFallbackSoundFor(name)
+end
+
 -- Manual test hook (/sb testgreeting <name>, Core.lua) - previews the
 -- Online Greeting banner for a name of your choosing without needing a
 -- second real Soundbook client to actually go offline/online. Reuses the
@@ -3027,12 +3116,12 @@ function SB:SimulateOnlineGreeting(name)
     local greetingsOn = SB.db and SB.db.settings and SB.db.settings.onlineGreetings
     local playSoundOn = SB.db and SB.db.settings and SB.db.settings.playGreetingSound
     local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
-    local soundID = playSoundOn and SB:GetGreetingSoundFor(name) or nil
+    local soundID = playSoundOn and SB:ResolveGreetingSound(name) or nil
     local soundName = soundID and SB.GetSoundDisplayName and SB:GetSoundDisplayName(soundID)
 
     SB:Print(string.format("Simulating Online Greeting for %s (%s)%s", displayName, relationship,
         soundName and (" - Greeting Sound: " .. soundName)
-            or (playSoundOn and " - no Greeting Sound history for them" or "")))
+            or (playSoundOn and " - no Greeting Sound available (no history, no eligible favourite)" or "")))
 
     if not greetingsOn and not playSoundOn then
         SB:Print("Online Greetings and Play Greeting Sound are both off - nothing would show for a real transition either.")
