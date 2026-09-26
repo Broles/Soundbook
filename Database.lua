@@ -73,6 +73,35 @@ local function SanitizeDatabase(db, defaults)
     EnsureTable(db, "knownSoundIDs")
     EnsureTable(db, "soundDurations")
     EnsureTable(db, "newSoundHeardCounts")
+    -- Online Greetings' local per-player received-sound tallies (see
+    -- Core.lua's GetDefaultDB comment) - same lightweight
+    -- EnsureTable-only treatment as newSoundHeardCounts above; malformed
+    -- per-player/per-sound entries are skipped defensively at READ time
+    -- instead (SB:GetGreetingSoundFor/BumpGreetingStat), not sanitized
+    -- eagerly here.
+    EnsureTable(db, "greetingStats")
+    -- The persisted fallback Greeting Sound assignment for a player with no
+    -- received history yet (see Core.lua's GetDefaultDB comment) - same
+    -- lightweight treatment; a malformed or now-invalid entry is simply
+    -- replaced the next time it's read (SB:GetGreetingFallbackSoundFor),
+    -- never sanitized eagerly here.
+    EnsureTable(db, "greetingFallbackSounds")
+
+    -- The persisted "latest update batch" (SoundRegistry.lua's
+    -- BackfillAddedAt/GetLatestSoundUpdateSoundIDs) - deliberately separate
+    -- from the temporary New tag's own addedAt timestamps, so Settings'
+    -- "Latest Sound Updates" keeps working long after those expire.
+    local latestUpdate = EnsureTable(db, "latestSoundUpdate")
+    local rawUpdateIDs = type(latestUpdate.soundIDs) == "table" and latestUpdate.soundIDs or {}
+    local cleanUpdateIDs, seenUpdateIDs = {}, {}
+    for _, soundID in ipairs(rawUpdateIDs) do
+        if SB.IsValidSoundID(soundID) and not seenUpdateIDs[soundID] then
+            table.insert(cleanUpdateIDs, soundID)
+            seenUpdateIDs[soundID] = true
+        end
+    end
+    latestUpdate.soundIDs = cleanUpdateIDs
+    latestUpdate.autoShown = BooleanOr(latestUpdate.autoShown, false)
 
     for soundID, saved in pairs(db.sounds) do
         if type(soundID) == "string" and SB.registry and SB.registry[soundID] then

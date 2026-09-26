@@ -100,6 +100,13 @@ local CHANNEL_COLOR_BY_LABEL = {
     Party = SB.CHANNEL_COLOR.PARTY,
     Self = SB.CHANNEL_COLOR.SELF,
     All = TARGET_WHITE,
+    -- Online Greetings' own combined relationship label (Communication.lua's
+    -- presence scan) - reuses the Friends colour rather than inventing a
+    -- third one: Friends already outranks Guild everywhere else a player
+    -- can belong to both (SB.ComputeReachablePlayers' own Friends > Raid >
+    -- Guild priority), so this stays consistent with that established
+    -- precedence.
+    ["Friend + Guild"] = SB.CHANNEL_COLOR.FRIENDS,
 }
 function SB.GetChannelColor(label)
     return CHANNEL_COLOR_BY_LABEL[label] or TARGET_WHITE
@@ -527,6 +534,23 @@ local function GetDefaultDB()
         -- the menu only shows someone also currently online in a reachable
         -- group, so a stale entry just never surfaces.
         knownUsers = {},
+        -- [IdentityKey] = { [soundID] = { count, lastReceived } } - purely
+        -- local per-player received-sound tallies (Communication.lua's
+        -- BumpGreetingStat, hooked into the existing REMOTE_SOUND_PLAYED
+        -- event - so a muted/rejected/invalid incoming sound, which never
+        -- reaches that event, never counts). Powers Online Greetings' own
+        -- "Greeting Sound" selection (SB:GetGreetingSoundFor) - the sound a
+        -- given player has sent YOU most often - never the anonymous
+        -- community Analytics system.
+        greetingStats = {},
+        -- [IdentityKey] = soundID - the persisted fallback Greeting Sound
+        -- for a player with no received-sound history yet (Communication.
+        -- lua's SB:GetGreetingFallbackSoundFor), randomly chosen once from
+        -- our own 10 shortest-duration favourites and reused on every
+        -- later login until it's no longer valid (removed/muted) or that
+        -- player's real received history takes over. Independent of
+        -- greetingStats above - a real history entry always wins over this.
+        greetingFallbackSounds = {},
         categories = {
             ["Legacy"] = { name = SB.DEFAULT_CATEGORY_INFO["Legacy"].name, icon = SB.DEFAULT_CATEGORY_INFO["Legacy"].icon },
             ["German Memes"] = { name = SB.DEFAULT_CATEGORY_INFO["German Memes"].name, icon = SB.DEFAULT_CATEGORY_INFO["German Memes"].icon },
@@ -608,6 +632,21 @@ local function GetDefaultDB()
             -- Debug Mode on.
             notifyMutedAttempts = true,
             notifyFriendReceipts = true, -- who received/played sounds you sent
+            -- Online Greetings (Communication.lua's presence scan) - a
+            -- known Soundbook Friend/Guild member's own offline -> online
+            -- transition. Two entirely SEPARATE features, not one
+            -- notification with an optional extra: onlineGreetings prints
+            -- a plain chat line (default ON - discoverable, low-cost,
+            -- never touches the Announcer); playGreetingSound is the
+            -- Announcer/sound side on its own (Announcer.lua's
+            -- SB:ShowOnlineGreeting) - plays their personal "Greeting
+            -- Sound" (the sound they've sent US most often, or a
+            -- persisted fallback, see SB:ResolveGreetingSound) and shows
+            -- the Announcer ONLY when that actually happens (default OFF -
+            -- actual audio playback is the one a player should opt INTO,
+            -- not be surprised by).
+            onlineGreetings   = true,
+            playGreetingSound = false,
             -- Anonymous usage analytics (Analytics.lua, /sb analytics) - on
             -- by default, with a single switch to fully stop collecting
             -- and transmitting. Never stores/sends character names, GUIDs,
@@ -1596,6 +1635,10 @@ local function HandleSlash(msg)
     elseif cmd == "debug" then
         SB.db.settings.debug = not SB.db.settings.debug
         SB:Print("Debug mode " .. (SB.db.settings.debug and "ON" or "OFF"))
+    elseif cmd == "testgreeting" then
+        if SB.SimulateOnlineGreeting then
+            SB:SimulateOnlineGreeting(rest)
+        end
     elseif cmd == "help" then
         SB:Print("Commands:")
         SB:Print("  /sb - toggle the main Soundbook window")
@@ -1606,6 +1649,7 @@ local function HandleSlash(msg)
         SB:Print("  /sb play <category::name>[::<target>] - play (and optionally send) a sound")
         SB:Print("  /sb stop - stop anything currently playing and clear the incoming queue")
         SB:Print("  /sb mute - toggle receiving remote sounds (keeps your previous channel choices)")
+        SB:Print("  /sb testgreeting <name> - preview the Online Greeting banner for that name")
         SB:Print("  /sb doctor - print a short runtime diagnostic report")
         SB:Print("  /sb reset - reset window positions and Mini Soundbook size")
         SB:Print("  /sb debug - toggle debug logging")

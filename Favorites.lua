@@ -119,6 +119,34 @@ function SB:ToggleFavourite(soundID)
     end
 end
 
+-- Swaps the sound stored in an already-occupied slot for a different one,
+-- without touching the slot itself (its keybind, keyed by slot number in
+-- Keybindings.lua's SB.db.settings.favKeybinds and never by soundID, is
+-- untouched by construction) or any other slot. Used by the New Sounds
+-- window's "Favourites are full" replacement grid - explicit requirement:
+-- replacing slot 7 must leave slot 7's own keybind attached, move nothing
+-- else, and the displaced sound must simply stop being a favourite (not
+-- get relocated to some other slot).
+function SB:ReplaceFavourite(slot, soundID)
+    if slot < 1 or slot > SlotCount() then return false end
+    if not SB.registry[soundID] then return false end
+    local list = List()
+    local oldSoundID = list[slot]
+    if oldSoundID == soundID then return true end
+
+    list[slot] = soundID
+    if oldSoundID then
+        local oldSaved = SB:GetSoundSaved(oldSoundID)
+        oldSaved.favourite = false
+        if SB.AnalyticsSetFavourite then SB:AnalyticsSetFavourite(oldSoundID, false) end
+    end
+    local newSaved = SB:GetSoundSaved(soundID)
+    newSaved.favourite = true
+    if SB.AnalyticsSetFavourite then SB:AnalyticsSetFavourite(soundID, true) end
+    SB:Fire("FAVOURITES_CHANGED")
+    return true
+end
+
 -- Move into any of the 20 real positions. An occupied target swaps, while an
 -- empty target leaves a deliberate gap at the old location.
 function SB:MoveFavourite(fromIndex, toIndex)

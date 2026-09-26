@@ -2798,6 +2798,368 @@ SB:On("PLAYER_LOGIN", function()
     C_Timer.NewTicker(HELLO_INTERVAL, SendHello)
 end)
 
+------------------------------------------------------------------------
+-- Online Greetings (Settings -> Multiplayer -> Notifications) - a known
+-- Soundbook Friend/Guild member's own offline -> online transition.
+-- "Does this person even run Soundbook" reuses the existing HELLO-driven
+-- knownUsers table above unchanged; what's genuinely new here is the
+-- offline/online EDGE detection itself - knownUsers only ever accumulates
+-- a lastSeen timestamp, it has no notion of "offline" at all. Built on
+-- Blizzard's own real Friends/Guild roster online state instead (the same
+-- GetFriendInfo/GetGuildRosterInfo calls SB.ComputeReachablePlayers above
+-- already uses), driven purely by the GUILD_ROSTER_UPDATE/FRIENDLIST_UPDATE
+-- events WoW already fires on its own - no new outgoing traffic, no
+-- polling ticker.
+--
+-- Redesign (explicit requirement): the two settings are two entirely
+-- separate FEATURES, not a shared banner with an optional extra:
+--   - "Online Greetings" -> a plain in-chat text line ("PlayerX is
+--     online"), nothing more. Never touches the Announcer at all.
+--   - "Play Greeting Sound" -> the Announcer/sound side, completely on
+--     its own - shows the Announcer banner ONLY when a real Greeting
+--     Sound actually plays. No sound resolved (no history, no eligible
+--     favourite) means no Announcer, ever - never a generic/soundless
+--     banner. See Announcer.lua's SB:ShowOnlineGreeting, which is now a
+--     thin "play soundID, show it if it played" wrapper with no
+--     notification-only fallback shape left in it at all.
+------------------------------------------------------------------------
+
+--- The chat line for "Online Greetings" - independent of, and never
+--- gated by, whether a Greeting Sound plays.
+local function PrintOnlineGreeting(displayName, relationship)
+    local color = SB.GetChannelColor(relationship)
+    SB:Print(string.format("%s is online |cff%s- %s|r", displayName, color.hex, relationship))
+end
+
+-- [IdentityKey] = true for every Friend/Guild member CURRENTLY seen
+-- online, replaced wholesale on every scan (see ScanPresence below) -
+-- anyone previously online but missing from a later scan is implicitly
+-- "went offline", so their eventual reappearance reads as a genuine new
+-- transition. Deliberately in-memory only, never persisted - a fresh
+-- session (login/reload) starting from an empty table, combined with
+-- pastInitialSettle below, is exactly what makes the very first scan
+-- read as "establishing the baseline", never a wave of announcements.
+local onlineState = {}
+-- Only true once the post-login settle window has elapsed (see
+-- PLAYER_LOGIN below) - guards every transition check so partial roster
+-- data still trickling in right after login/reload can never itself look
+-- like a burst of "just came online" transitions.
+local pastInitialSettle = false
+
+-- Comfortably longer than SendHello's own 5s post-login delay - by the
+-- time a genuine transition gets here, this player's own client has had
+-- a real chance to send its HELLO and have it land in knownUsers, so a
+-- true Soundbook user is never missed purely from event-ordering timing.
+local GREETING_VERIFY_DELAY = 7
+
+-- Re-verified here, not trusted from the scan that scheduled it: the
+-- player must still be online (a roster blip didn't just flicker true/
+-- false/true within a moment) and must now be a CONFIRMED Soundbook user
+-- (KnownUserInfo, populated by the HELLO exchange above) before a real
+-- greeting fires.
+local function VerifyAndFireGreeting(key, name, isFriend, isGuild)
+    if not (onlineState[key] and KnownUserInfo(name)) then return end
+    local greetingsOn = SB.db and SB.db.settings and SB.db.settings.onlineGreetings
+    local playSoundOn = SB.db and SB.db.settings and SB.db.settings.playGreetingSound
+    if not greetingsOn and not playSoundOn then return end
+
+    local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
+    local relationship = (isFriend and isGuild) and "Friend + Guild" or (isFriend and "Friend") or "Guild"
+
+    if greetingsOn then
+        PrintOnlineGreeting(displayName, relationship)
+    end
+
+    if playSoundOn then
+        local soundID = SB:ResolveGreetingSound(name)
+        if soundID and SB.ShowOnlineGreeting then
+            SB:ShowOnlineGreeting(displayName, relationship, soundID)
+        end
+    end
+end
+
+-- One full pass over currently-ONLINE Friends + Guild members, diffed
+-- against the previous pass's own onlineState to find genuine offline ->
+-- online transitions - never scans or tracks anyone offline; their
+-- absence from this pass IS what "offline" means here.
+local function ScanPresence()
+    if not SB.db then return end
+    local seen = {} -- [IdentityKey] = { name, isFriend, isGuild }
+
+    local n = SB.GetNumFriends()
+    for i = 1, n do
+        local name, connected = SB.GetFriendInfoByIndex(i)
+        if name and connected and not IsSelf(name) then
+            local key = IdentityKey(name)
+            if key then
+                seen[key] = seen[key] or { name = name }
+                seen[key].isFriend = true
+            end
+        end
+    end
+
+    if IsInGuild() and GetNumGuildMembers then
+        for i = 1, GetNumGuildMembers() do
+            local fullName, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+            if fullName and isOnline and not IsSelf(fullName) then
+                local key = IdentityKey(fullName)
+                if key then
+                    seen[key] = seen[key] or { name = fullName }
+                    seen[key].isGuild = true
+                end
+            end
+        end
+    end
+
+    if pastInitialSettle then
+        for key, info in pairs(seen) do
+            if not onlineState[key] then
+                -- Own local bindings per iteration (Lua's for-in gives
+                -- each pass a fresh `key`/`info`), so the deferred closure
+                -- below always captures the right player, never the last
+                -- one iterated.
+                local capturedName, capturedFriend, capturedGuild = info.name, info.isFriend, info.isGuild
+                C_Timer.After(GREETING_VERIFY_DELAY, function()
+                    VerifyAndFireGreeting(key, capturedName, capturedFriend, capturedGuild)
+                end)
+            end
+        end
+    end
+
+    local nextState = {}
+    for key in pairs(seen) do nextState[key] = true end
+    onlineState = nextState
+end
+
+local presenceEventFrame = CreateFrame("Frame", "SoundbookPresenceFrame")
+presenceEventFrame:RegisterEvent("GUILD_ROSTER_UPDATE")
+presenceEventFrame:RegisterEvent("FRIENDLIST_UPDATE")
+presenceEventFrame:SetScript("OnEvent", function()
+    local ok, err = pcall(ScanPresence)
+    if not ok then SB:Debug("Presence scan error: %s", tostring(err)) end
+end)
+
+SB:On("PLAYER_LOGIN", function()
+    -- Every scan before this fires still updates onlineState (so the
+    -- picture is accurate once settled), it just can never trigger a
+    -- transition check yet - explicit requirement: never announce the
+    -- initial roster after login/reload/first sync.
+    C_Timer.After(8, function()
+        pastInitialSettle = true
+        ScanPresence()
+    end)
+end)
+
+------------------------------------------------------------------------
+-- Greeting Sound selection - the sound a given player has sent YOU most
+-- often, tie-broken by most recently received. Purely local, never the
+-- anonymous community Analytics system. BumpGreetingStat hooks the
+-- EXISTING REMOTE_SOUND_PLAYED event (fired only once SB:PlaySound has
+-- already succeeded - past the Ignore-list, per-sound mute, and Raid
+-- Admin checks) so a muted/rejected/invalid incoming sound can never
+-- build statistics; nothing here duplicates that gating.
+------------------------------------------------------------------------
+
+local function BumpGreetingStat(senderKey, soundID)
+    if not (senderKey and soundID and SB.db) then return end
+    SB.db.greetingStats = SB.db.greetingStats or {}
+    local perSound = SB.db.greetingStats[senderKey]
+    if not perSound then
+        perSound = {}
+        SB.db.greetingStats[senderKey] = perSound
+    end
+    local entry = perSound[soundID]
+    if not entry then
+        entry = { count = 0, lastReceived = 0 }
+        perSound[soundID] = entry
+    end
+    entry.count = (entry.count or 0) + 1
+    entry.lastReceived = time()
+end
+
+SB:On("REMOTE_SOUND_PLAYED", function(soundID, sender, channelLabel, senderKey)
+    BumpGreetingStat(senderKey, soundID)
+end)
+
+--- The sound `name` has sent this player most often (ties broken by most
+--- recently received), or nil if there's no history for them at all - "no
+--- history = no Greeting Sound", explicit requirement, never a fallback.
+function SB:GetGreetingSoundFor(name)
+    local key = IdentityKey(name)
+    local perSound = key and SB.db and SB.db.greetingStats and SB.db.greetingStats[key]
+    if type(perSound) ~= "table" then return nil end
+    local bestID, bestCount, bestLast = nil, 0, 0
+    for soundID, entry in pairs(perSound) do
+        if SB.registry[soundID] and type(entry) == "table" then
+            local count, last = entry.count or 0, entry.lastReceived or 0
+            if count > bestCount or (count == bestCount and last > bestLast) then
+                bestID, bestCount, bestLast = soundID, count, last
+            end
+        end
+    end
+    return bestID
+end
+
+------------------------------------------------------------------------
+-- Fallback Greeting Sound - a Soundbook Friend/Guild member with NO
+-- received-sound history yet still gets a Greeting Sound, randomly picked
+-- once from our own shortest favourites and then persisted so every later
+-- login reuses the same one, rather than randomizing every time. A real
+-- received-history entry (SB:GetGreetingSoundFor above) always takes
+-- priority the moment it exists - see SB:ResolveGreetingSound below.
+------------------------------------------------------------------------
+
+local FALLBACK_POOL_SIZE = 10
+
+-- Favourited sounds with a KNOWN duration (SB.registry[id].durationSeconds -
+-- explicit per-entry, precomputed, or already learned this session/a past
+-- one; Reuse existing duration data and duration-learning infrastructure,
+-- explicit requirement - never guessed here), not currently muted, sorted
+-- shortest-first, capped at the 10 shortest. Only ever computed when a
+-- fallback actually needs to be (re-)assigned - no periodic scan.
+local function ShortestFavouritesPool()
+    local pool = {}
+    local seen = {}
+    for _, soundID in pairs(SB:GetFavourites()) do
+        if not seen[soundID] then
+            seen[soundID] = true
+            local info = SB.registry[soundID]
+            local saved = SB:GetSoundSaved(soundID)
+            if info and info.durationSeconds and not (saved and saved.muted) then
+                table.insert(pool, soundID)
+            end
+        end
+    end
+    table.sort(pool, function(a, b)
+        return SB.registry[a].durationSeconds < SB.registry[b].durationSeconds
+    end)
+    while #pool > FALLBACK_POOL_SIZE do
+        table.remove(pool)
+    end
+    return pool
+end
+
+-- A persisted fallback is only ever trusted after re-checking it still
+-- exists and is playable right now - a sound removed from the registry
+-- (can't happen mid-session, but a SavedVariables edit/downgrade could
+-- leave a stale id) or since muted is invalid and must be replaced, never
+-- just silently skipped. Removing the sound from FAVOURITES alone does NOT
+-- invalidate an already-assigned fallback - explicit requirement, the
+-- favourite list is only ever consulted when (re-)assigning.
+local function ValidFallback(soundID)
+    if not soundID then return false end
+    local info = SB.registry[soundID]
+    if not info then return false end
+    local saved = SB:GetSoundSaved(soundID)
+    if saved and saved.muted then return false end
+    return true
+end
+
+--- The persisted fallback Greeting Sound for `name` - their existing
+--- assignment if it's still valid, otherwise a fresh one randomly chosen
+--- from our current shortest-favourites pool (persisted immediately so the
+--- SAME sound is reused on every later login). nil only when no eligible
+--- favourite exists at all right now.
+function SB:GetGreetingFallbackSoundFor(name)
+    local key = IdentityKey(name)
+    if not (key and SB.db) then return nil end
+    SB.db.greetingFallbackSounds = SB.db.greetingFallbackSounds or {}
+
+    local existing = SB.db.greetingFallbackSounds[key]
+    if ValidFallback(existing) then
+        return existing
+    end
+
+    local pool = ShortestFavouritesPool()
+    if #pool == 0 then
+        SB.db.greetingFallbackSounds[key] = nil
+        return nil
+    end
+
+    local chosen = pool[math.random(#pool)]
+    SB.db.greetingFallbackSounds[key] = chosen
+    return chosen
+end
+
+--- Full Greeting Sound resolution for `name`, in priority order: (1) the
+--- sound they've actually sent US most often (real received history always
+--- wins the moment it exists), (2) their persisted random fallback from our
+--- shortest favourites. nil only when neither is available.
+function SB:ResolveGreetingSound(name)
+    return SB:GetGreetingSoundFor(name) or SB:GetGreetingFallbackSoundFor(name)
+end
+
+-- Manual test hook (/sb testgreeting <name>, Core.lua) - previews both
+-- Online Greeting halves for a name of your choosing without needing a
+-- second real Soundbook client to actually go offline/online. Reuses the
+-- exact same settings truth table and code paths a real detected
+-- transition uses (PrintOnlineGreeting/SB:ShowOnlineGreeting/
+-- SB:ResolveGreetingSound) - only the presence edge-detection and the
+-- "confirmed Soundbook user" check are skipped, since a test name has
+-- neither. Relationship is read from your REAL current Friends/Guild
+-- roster whenever the name matches someone on it, so a real name previews
+-- its real "Friend"/"Guild"/"Friend + Guild" label and (if Play Greeting
+-- Sound is on) its real Greeting Sound history; an unmatched name just
+-- defaults to "Friend" for preview purposes.
+function SB:SimulateOnlineGreeting(name)
+    name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        SB:Print("Usage: /sb testgreeting <name>")
+        return
+    end
+
+    local key = IdentityKey(name)
+    local isFriend, isGuild = false, false
+
+    local n = SB.GetNumFriends()
+    for i = 1, n do
+        local friendName, connected = SB.GetFriendInfoByIndex(i)
+        if friendName and connected and IdentityKey(friendName) == key then
+            isFriend = true
+        end
+    end
+    if IsInGuild() and GetNumGuildMembers then
+        for i = 1, GetNumGuildMembers() do
+            local fullName, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+            if fullName and isOnline and IdentityKey(fullName) == key then
+                isGuild = true
+            end
+        end
+    end
+    local relationship = (isFriend and isGuild) and "Friend + Guild" or (isGuild and "Guild") or "Friend"
+
+    local greetingsOn = SB.db and SB.db.settings and SB.db.settings.onlineGreetings
+    local playSoundOn = SB.db and SB.db.settings and SB.db.settings.playGreetingSound
+    local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
+
+    if not greetingsOn and not playSoundOn then
+        SB:Print("Online Greetings and Play Greeting Sound are both off - nothing would happen for a real transition either.")
+        return
+    end
+
+    -- Two entirely independent halves, previewed separately - matches
+    -- production exactly: the chat line never depends on a sound, and the
+    -- Announcer/sound never depends on the chat line.
+    if greetingsOn then
+        PrintOnlineGreeting(displayName, relationship)
+    else
+        SB:Print("Online Greetings is OFF in Settings, so no chat line would print for a real transition.")
+    end
+
+    if playSoundOn then
+        local soundID = SB:ResolveGreetingSound(name)
+        if soundID and SB.ShowOnlineGreeting then
+            local soundName = SB.GetSoundDisplayName and SB:GetSoundDisplayName(soundID)
+            SB:Print("Play Greeting Sound: playing " .. tostring(soundName or soundID))
+            SB:ShowOnlineGreeting(displayName, relationship, soundID)
+        else
+            SB:Print("Play Greeting Sound is on, but no Greeting Sound is available for " .. displayName .. " (no history, no eligible favourite) - no Announcer for a real transition either.")
+        end
+    else
+        SB:Print("Play Greeting Sound is OFF in Settings, so no sound/Announcer would show for a real transition.")
+    end
+end
+
 -- A remote sound actually played for you - the base "did I miss
 -- something" notification.
 --

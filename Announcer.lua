@@ -820,14 +820,40 @@ local function RenderPrimary()
 
     banner.soundbookSoundID = entry.soundID
     banner.slot.texture:SetTexture(SoundIcon(entry.soundID))
-    banner.nameText:SetText(SoundName(entry.soundID))
-    banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
 
-    -- Plain ASCII separator, not a Unicode middle dot - WoW's bundled
-    -- fonts don't reliably cover every codepoint (same reasoning as the
-    -- Library's section-header carets in UI.lua).
-    local color = SB.GetChannelColor(entry.channelLabel or "Self")
-    banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
+    -- Online Greeting entries (SB:ShowOnlineGreeting below) get their own
+    -- title/subtitle framing - explicit requirement: this must read as a
+    -- distinct Soundbook social event, never like an ordinary sound
+    -- trigger. Icon/progress-bar/ticker logic below is entirely shared and
+    -- unchanged: a Greeting entry only ever exists here with a real
+    -- soundID and a real entry.duration (set exactly like any other local
+    -- play - SB:ShowOnlineGreeting never creates one without both), so it
+    -- gets the exact same "normal playback progress behaviour" any other
+    -- sound does, with zero special-casing needed further down.
+    --
+    -- Layout refinement round (explicit requirement): reads first as the
+    -- SOUND, second as the online event - "PLAYERX IS ONLINE" is no longer
+    -- the headline, and the sound name is no longer squeezed into the
+    -- subtitle behind a "Greeting Sound: " prefix. Title is the sound's
+    -- own name, exactly like an ordinary local/remote play, getting the
+    -- SAME full-width title slot any other Now Playing sound name already
+    -- gets - the actual fix for long names truncating more than before.
+    -- The relationship (Friend/Guild/Friend + Guild) still drives the
+    -- progress bar's own colour below exactly as before; it's just no
+    -- longer spelled out as text here, so the subtitle can stay a short,
+    -- single "<Player> is online" line with no risk of overlap.
+    local color
+    if entry.isGreeting then
+        color = SB.GetChannelColor(entry.channelLabel or "Guild")
+        banner.nameText:SetText(SoundName(entry.soundID))
+        banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
+        banner.subText:SetText(string.format("%s · is online", entry.sender or "?"))
+    else
+        banner.nameText:SetText(SoundName(entry.soundID))
+        banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
+        color = SB.GetChannelColor(entry.channelLabel or "Self")
+        banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
+    end
     -- Progress bar takes on the channel's own colour (green for Guild, etc.)
     -- instead of always gold - same SB.CHANNEL_COLOR semantics used
     -- everywhere else a channel is shown.
@@ -969,7 +995,7 @@ local function LocalTargetToChannelLabel(target)
     return LOCAL_TARGET_LABEL[target] or "Self"
 end
 
-local function AddDisplay(soundID, sender, channelLabel)
+local function AddDisplay(soundID, sender, channelLabel, isGreeting)
     -- No Now Playing display at all while the HUD itself is hidden (a
     -- fresh install defaults to hidden - see Core.lua's "safer first start").
     if not icon or not icon:IsShown() then return end
@@ -992,6 +1018,12 @@ local function AddDisplay(soundID, sender, channelLabel)
         -- never soundID alone (would confuse overlapping instances of the
         -- same sound).
         instanceID = instanceID,
+        -- Online Greetings (SB:ShowOnlineGreeting below) - `sender`/
+        -- `channelLabel` are reused as-is (the player who came online /
+        -- their relationship), only this flag changes how RenderPrimary
+        -- renders the title+subtitle. Every existing caller omits this
+        -- argument, so nil/false for every ordinary sound, unchanged.
+        isGreeting = isGreeting or nil,
     })
     if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
     RenderPrimary()
@@ -1041,6 +1073,56 @@ local function RemoveDisplayByInstance(instanceID)
     end
 end
 
+------------------------------------------------------------------------
+-- Online Greetings, the "Play Greeting Sound" half only (Communication.
+-- lua's presence scan calls into this) - the "Online Greetings" chat-line
+-- half lives entirely in Communication.lua and never touches the
+-- Announcer at all. This function ONLY ever shows the Announcer when a
+-- real Greeting Sound actually plays - a real Greeting Sound goes through
+-- the exact same activeDisplays/progress-ticker machinery any other local
+-- play uses (SB:PlaySound is called directly, not SB:TriggerSound, since
+-- this is never subject to Default Output routing - it is strictly
+-- local/Self by definition, matches the explicit "never broadcast, never
+-- generate delivery receipts" requirement). No sound resolved, or a
+-- resolved sound that fails to play, means no Announcer at all - there is
+-- no notification-only shape left here any more (explicit requirement:
+-- never a generic/soundless banner).
+------------------------------------------------------------------------
+
+-- Display-duration refinement round (explicit requirement): a Greeting
+-- Sound's own minimum visible time is a FIXED 2 seconds, deliberately
+-- independent of the user's configurable "Now Playing Minimum Duration"
+-- (SB.db.settings.announceDuration, 0-15s, applies to every ordinary
+-- sound below) - a Greeting toast must never vanish before 2s even if
+-- that setting is 0, and must never linger past 2s just because the
+-- setting happens to be higher. See the PLAYBACK_PROGRESS_ENDED handler
+-- below, which is the one place either minimum is actually enforced.
+local GREETING_MIN_DISPLAY_SECONDS = 2
+
+--- Plays `soundID` as a Greeting Sound and shows the Announcer for it.
+--- Called only when Play Greeting Sound is on AND a Greeting Sound was
+--- actually resolved (Communication.lua's VerifyAndFireGreeting) - never
+--- called with a nil soundID. Returns true if it actually played.
+function SB:ShowOnlineGreeting(playerName, relationshipLabel, soundID)
+    if not (icon and icon:IsShown()) or not soundID then return false end
+    BuildBanner()
+    local played = SB:PlaySound(soundID, "local")
+    if played then
+        AddDisplay(soundID, playerName, relationshipLabel, true)
+    else
+        -- Sound failed to play (muted mid-flight, combat/encounter-gated,
+        -- missing file, etc.) - SB:PlaySound already logged the specific
+        -- reason via its own SB:Debug calls; this one confirms it was
+        -- specifically an Online Greeting that hit it, so a "no Announcer
+        -- appeared" report is traceable with Debug Mode on instead of a
+        -- silent mystery. No notification-only fallback any more - a
+        -- failed Greeting Sound simply shows nothing.
+        SB:Debug("Online Greeting for %s: Greeting Sound '%s' failed to play.",
+            tostring(playerName), tostring(soundID))
+    end
+    return played
+end
+
 SB:On("PLAYBACK_PROGRESS_STARTED", function(state)
     if not state then return end
     pendingStart = { soundID = state.soundID, handle = state.handle, duration = state.duration, startedAt = GetTime(), instanceID = state.instanceID }
@@ -1065,7 +1147,8 @@ SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
                 RemoveDisplayByInstance(state.instanceID)
                 return
             end
-            local minDisplay = tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
+            local minDisplay = entry.isGreeting and GREETING_MIN_DISPLAY_SECONDS
+                or tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
             local minUntil = (entry.startedAt or 0) + math.max(0, minDisplay)
             local now = GetTime()
             if minDisplay > 0 and now < minUntil then

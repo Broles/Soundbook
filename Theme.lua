@@ -640,7 +640,18 @@ function Theme.AttachTooltip(frame, title, body)
 end
 
 -- A flat rectangular button: solid fill, 1px border, brightens on hover -
--- used instead of UIPanelButtonTemplate's carved-stone look.
+-- used instead of UIPanelButtonTemplate's carved-stone look. Three
+-- variants: "primary" (saturated fill, gold border - the prominent
+-- action), "secondary" (the default - dimmer fill, still a gold border),
+-- and "outline" (explicit requirement, New Sounds' own "Remove Favourite" -
+-- a near-transparent dark fill matching the existing row/panel wash
+-- elsewhere in this addon, plus the same neutral Theme.BORDER blue every
+-- other panel's own inner border already uses, instead of gold - reads as
+-- "already-added/secondary" rather than a second primary action).
+-- `btn:SetVariant(variant)` lets a caller change this AFTER creation and
+-- re-applies the button's current state immediately - needed for a
+-- pooled button whose role toggles (Add Favourite <-> Remove Favourite)
+-- without rebuilding the widget.
 function Theme.CreateFlatButton(parent, text, width, height, variant)
     variant = variant or "secondary"
     local btn = SB.CreateFrame("Button", nil, parent)
@@ -664,13 +675,21 @@ function Theme.CreateFlatButton(parent, text, width, height, variant)
         label:SetTextColor(unpack(Theme.TEXT))
         if variant == "primary" then
             btn:SetBackdropColor(state == "hover" and 0.10 or 0.055, state == "hover" and 0.24 or 0.15, state == "hover" and 0.52 or 0.38, 0.98)
+            btn:SetBackdropBorderColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], state == "hover" and 1 or 0.82)
+        elseif variant == "outline" then
+            btn:SetBackdropColor(0.01, 0.035, 0.075, state == "hover" and 0.55 or 0.30)
+            btn:SetBackdropBorderColor(Theme.BORDER[1], Theme.BORDER[2], Theme.BORDER[3], state == "hover" and 1 or 0.85)
         else
             btn:SetBackdropColor(state == "hover" and 0.07 or 0.028, state == "hover" and 0.18 or 0.09, state == "hover" and 0.38 or 0.24, 0.96)
+            btn:SetBackdropBorderColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], state == "hover" and 1 or 0.82)
         end
-        btn:SetBackdropBorderColor(Theme.GOLD[1], Theme.GOLD[2], Theme.GOLD[3], state == "hover" and 1 or 0.82)
         if state == "hover" then label:SetTextColor(0.86, 0.92, 1.0) end
     end
     btn.ApplyThemeState = ApplyState
+    function btn:SetVariant(newVariant)
+        variant = newVariant or "secondary"
+        ApplyState(btn:IsMouseOver() and "hover" or "idle")
+    end
     btn:SetScript("OnEnter", function() ApplyState("hover") end)
     btn:SetScript("OnLeave", function() ApplyState("idle") end)
     btn:HookScript("OnEnable", function() ApplyState("idle") end)

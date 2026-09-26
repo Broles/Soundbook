@@ -111,6 +111,8 @@ local CHECKBOX_HELP = {
     ["Show received sound details"] = "Print sender, source and sound information for received playback.",
     ["Show blocked/muted sound attempts"] = "Report attempts to play a sound that you muted locally.",
     ["Show delivery confirmations"] = "Show delivery confirmations returned by friends.",
+    ["Online Greetings"] = "Print a chat message when Friends or Guild members using Soundbook come online.",
+    ["Play Greeting Sound"] = "Show the Announcer and play their most-sent sound as their personal online greeting.",
     ["Show Mini Soundbook"] = "Show or hide the Mini Soundbook.",
     ["Open Mini Soundbook on Hover"] = "Open the Mini Soundbook by hovering its icon, no click needed. Off by default - the icon only opens it on left-click.",
     ["Lock position and size"] = "Prevent moving and resizing the Main Soundbook and the Mini Soundbook.",
@@ -125,23 +127,6 @@ local function Section(parent, text, anchorTo, yOffset)
     local section = SB.Theme.CreateSectionHeader(parent, text)
     section:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOffset or -16)
     section:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
-    return section
-end
-
--- Same idea as Section above, deliberately quieter (explicit requirement,
--- "Advanced Playback" - de-emphasized compared with normal playback
--- controls): dim small text, no gold divider line, so it reads as a
--- secondary sub-group rather than a peer of Playback/During Gameplay.
-local function DimSection(parent, text, anchorTo, yOffset)
-    local section = CreateFrame("Frame", nil, parent)
-    section:SetHeight(16)
-    section:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOffset or -16)
-    section:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
-    local label = section:CreateFontString(nil, "OVERLAY")
-    label:SetFontObject(SB.Fonts.DisableSmall)
-    label:SetPoint("LEFT", 0, 0)
-    label:SetText(text)
-    label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     return section
 end
 
@@ -657,9 +642,30 @@ local function BuildMultiplayerSection(content, topAnchor)
     end)
     notifyReceiptsCheck:SetChecked(SB.db.settings.notifyFriendReceipts)
 
-    -- De-emphasized versus the controls above (explicit requirement) -
-    -- dimmer header, no gold divider.
-    local advHeader = DimSection(content, "Remote Playback", notifyReceiptsCheck, -18)
+    -- Online Greetings - two entirely SEPARATE features (Communication.
+    -- lua's presence scan), not a shared notification with an optional
+    -- extra: "Online Greetings" is a plain chat line, never touching the
+    -- Announcer; "Play Greeting Sound" is the Announcer/sound side on its
+    -- own (Announcer.lua's SB:ShowOnlineGreeting), which only ever shows
+    -- when a real Greeting Sound actually plays. See Core.lua's
+    -- GetDefaultDB for the full default-value reasoning (on/off
+    -- respectively).
+    local onlineGreetingsCheck = Checkbox(content, "Online Greetings", notifyReceiptsCheck, 0, -2, function(checked)
+        SB.db.settings.onlineGreetings = checked
+    end)
+    onlineGreetingsCheck:SetChecked(SB.db.settings.onlineGreetings)
+
+    local playGreetingSoundCheck = Checkbox(content, "Play Greeting Sound", onlineGreetingsCheck, 0, -2, function(checked)
+        SB.db.settings.playGreetingSound = checked
+    end)
+    playGreetingSoundCheck:SetChecked(SB.db.settings.playGreetingSound)
+
+    -- Targeted correction round (explicit requirement): "Remote Playback"
+    -- now uses the same section-heading style as "Channels"/"Notifications"
+    -- above it (Theme.CreateSectionHeader - Normal font, gold text, gold
+    -- divider line) instead of the quieter DimSection treatment, which read
+    -- as visually weaker than its sibling headers in this section.
+    local advHeader = Section(content, "Remote Playback", playGreetingSoundCheck, -16)
 
     local cooldownLabel = content:CreateFontString(nil, "OVERLAY")
     cooldownLabel:SetFontObject(SB.Fonts.HighlightSmall)
