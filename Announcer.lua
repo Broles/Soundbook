@@ -831,17 +831,25 @@ local function RenderPrimary()
     -- notification-only greeting has no duration at all, so the existing
     -- ValidDuration(entry.duration) branch further down already hides the
     -- bar correctly with no special-casing needed there.
+    --
+    -- Layout refinement round (explicit requirement): reads first as the
+    -- SOUND, second as the online event - "PLAYERX IS ONLINE" is no longer
+    -- the headline, and the sound name is no longer squeezed into the
+    -- subtitle behind a "Greeting Sound: " prefix. Title is the sound's
+    -- own name, exactly like an ordinary local/remote play (or "Soundbook"
+    -- for a notification-only greeting with no real sound), getting the
+    -- SAME full-width title slot any other Now Playing sound name already
+    -- gets - the actual fix for long names truncating more than before.
+    -- The relationship (Friend/Guild/Friend + Guild) still drives the
+    -- progress bar's own colour below exactly as before; it's just no
+    -- longer spelled out as text here, so the subtitle can stay a short,
+    -- single "<Player> is online" line with no risk of overlap.
     local color
     if entry.isGreeting then
-        local relationship = entry.channelLabel or "Guild"
-        color = SB.GetChannelColor(relationship)
-        banner.nameText:SetText(string.format("%s IS ONLINE", string.upper(entry.sender or "?")))
+        color = SB.GetChannelColor(entry.channelLabel or "Guild")
+        banner.nameText:SetText(entry.soundID and SoundName(entry.soundID) or "Soundbook")
         banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
-        -- Plain ASCII separator/colon, not a Unicode middle dot - WoW's
-        -- bundled fonts don't reliably cover every codepoint (same
-        -- reasoning as the Library's section-header carets in UI.lua).
-        local soundPart = entry.soundID and ("Greeting Sound: " .. SoundName(entry.soundID)) or "Soundbook"
-        banner.subText:SetText(string.format("%s |cff%s- %s|r", soundPart, color.hex, relationship))
+        banner.subText:SetText(string.format("%s · is online", entry.sender or "?"))
     else
         banner.nameText:SetText(SoundName(entry.soundID))
         banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
@@ -1090,6 +1098,16 @@ end
 local greetingNotifyCounter = 0
 local GREETING_NOTIFY_SECONDS = 5
 
+-- Display-duration refinement round (explicit requirement): a Greeting
+-- Sound's own minimum visible time is a FIXED 2 seconds, deliberately
+-- independent of the user's configurable "Now Playing Minimum Duration"
+-- (SB.db.settings.announceDuration, 0-15s, applies to every ordinary
+-- sound below) - a Greeting toast must never vanish before 2s even if
+-- that setting is 0, and must never linger past 2s just because the
+-- setting happens to be higher. See the PLAYBACK_PROGRESS_ENDED handler
+-- below, which is the one place either minimum is actually enforced.
+local GREETING_MIN_DISPLAY_SECONDS = 2
+
 local function ShowGreetingNotification(playerName, relationshipLabel)
     if not icon or not icon:IsShown() then return end
     BuildBanner()
@@ -1151,7 +1169,8 @@ SB:On("PLAYBACK_PROGRESS_ENDED", function(state)
                 RemoveDisplayByInstance(state.instanceID)
                 return
             end
-            local minDisplay = tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
+            local minDisplay = entry.isGreeting and GREETING_MIN_DISPLAY_SECONDS
+                or tonumber(SB.db and SB.db.settings and SB.db.settings.announceDuration) or 3
             local minUntil = (entry.startedAt or 0) + math.max(0, minDisplay)
             local now = GetTime()
             if minDisplay > 0 and now < minUntil then
