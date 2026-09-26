@@ -1174,7 +1174,7 @@ end
 
 --- `ids` is a flat array of soundIDs (one tab's worth). Returns a NEW
 --- array. Regardless of sort mode, every "New" sound (SB:IsSoundNew - a
---- real library-addition date within the last 2 days (48h), see
+--- real library-addition date within the last 5 days (120h), see
 --- SoundRegistry.lua) is always moved to the very front, ahead of even
 --- the most popular sound - explicit request. The rest is then ordered
 --- per SB.db.settings.sortMode:

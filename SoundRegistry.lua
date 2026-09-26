@@ -325,7 +325,7 @@ end
 -- set explicitly by BackfillAddedAt below, once per soundID, ever.
 ------------------------------------------------------------------------
 
-local NEW_TAG_DAYS = 2 -- 48h
+local NEW_TAG_DAYS = 5 -- 120h
 
 -- Walks every CURRENTLY REGISTERED soundID once (idempotent - a soundID
 -- already in SB.db.knownSoundIDs is never touched again) and decides,
@@ -344,19 +344,55 @@ local NEW_TAG_DAYS = 2 -- 48h
 -- ADDON_LOADED wiring) - GetSoundSaved's own lazy-create would otherwise
 -- create an addedAt-less entry for an unrelated reason before this ever
 -- gets a chance to classify it correctly.
+--
+-- Also the ONE place a "latest update batch" gets recorded (SB.db.
+-- latestSoundUpdate - {soundIDs, autoShown}), a concept deliberately
+-- decoupled from the temporary New tag above: every soundID discovered as
+-- genuinely new IN THIS SAME RUN becomes the new persisted batch,
+-- replacing whatever batch was stored before (explicit "replace, don't
+-- merge/archive" requirement) - but ONLY when this run actually found at
+-- least one; an update that adds no new sounds must leave the previous
+-- batch (and its own autoShown state) exactly as it was. Never touched on
+-- a fresh install, same reasoning as addedAt above - the bundled starting
+-- library was never "an update" a returning player needs telling about.
 function SB:BackfillAddedAt()
     if not SB.db then return end
     local isFreshInstall = SB.isFreshInstall
     SB.db.knownSoundIDs = SB.db.knownSoundIDs or {}
+    local newBatch
     for soundID in pairs(SB.registry) do
         if not SB.db.knownSoundIDs[soundID] then
             SB.db.knownSoundIDs[soundID] = true
             if not isFreshInstall then
                 local saved = SB:GetSoundSaved(soundID)
                 saved.addedAt = time()
+                newBatch = newBatch or {}
+                table.insert(newBatch, soundID)
             end
         end
     end
+    if newBatch then
+        SB.db.latestSoundUpdate = { soundIDs = newBatch, autoShown = false }
+    end
+end
+
+-- The persisted latest-update batch's soundIDs, filtered to ones still in
+-- SB.registry (a later removal/rename must never crash or blank-render
+-- this list) - never filtered by SB:IsSoundNew or the batch's own age, by
+-- design: this is meant to keep working long after the New tag itself has
+-- expired (Settings' "Latest Sound Updates" button). Returns an empty
+-- table (never nil) when no batch has ever been recorded, so callers can
+-- always safely check #list == 0 rather than also handling nil.
+function SB:GetLatestSoundUpdateSoundIDs()
+    local batch = SB.db and SB.db.latestSoundUpdate
+    local ids = batch and batch.soundIDs
+    local list = {}
+    if type(ids) == "table" then
+        for _, soundID in ipairs(ids) do
+            if SB.registry[soundID] then table.insert(list, soundID) end
+        end
+    end
+    return list
 end
 
 -- Purely LOCAL, per-player "have I personally heard this enough" counters

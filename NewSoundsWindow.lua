@@ -1,15 +1,28 @@
 -- NewSoundsWindow.lua
 -- Intro.lua's little sibling for a RETURNING player (introSeen already
--- true - a genuinely fresh install gets the normal onboarding instead,
--- and never has anything "New" to show here anyway, per BackfillAddedAt's
--- own first-run rule in SoundRegistry.lua) - explicit request: the first
--- login after an update adds at least one genuinely new sound they
--- haven't been shown here before, a small popup lists exactly those so a
--- returning player can discover what's new without hunting for the New
--- tag pill themselves. Every sound here is clickable and always plays
--- SELF-only - this is for trying things out locally, never a broadcast.
--- Opt-out checkbox, plus a Settings button ("Latest Sound Updates") to
--- reopen or re-enable it anytime.
+-- true - a genuinely fresh install gets the normal onboarding instead) -
+-- shows the persisted "latest update batch" (SoundRegistry.lua's
+-- SB:GetLatestSoundUpdateSoundIDs/SB.db.latestSoundUpdate), a small popup
+-- listing whichever sounds the most recent Soundbook update actually
+-- introduced. Every sound here is clickable and always plays SELF-only -
+-- this is for trying things out locally, never a broadcast. Also carries
+-- the New Sounds task's own Add/Remove Favourite controls per row.
+--
+-- Deliberately decoupled from the temporary "New" tag (SB:IsSoundNew,
+-- SoundRegistry.lua's own 5-day addedAt window): that tag is short-lived
+-- and stops early once a player has personally heard a sound enough, but
+-- this window - and Settings' "Latest Sound Updates" button - must keep
+-- showing the same batch indefinitely, long after every one of its
+-- sounds has stopped being tagged "New". SB.db.latestSoundUpdate is the
+-- one persistent record of "which sounds were the last update", replaced
+-- wholesale whenever a later update introduces another batch (never
+-- merged/archived - only the single most recent batch is ever kept).
+--
+-- Opt-out checkbox controls the AUTOMATIC first-login popup only
+-- (SB.db.latestSoundUpdate.autoShown, set once the automatic trigger has
+-- shown a given batch so it never repeats) - manual access from Settings'
+-- "Latest Sound Updates" button always works regardless of the opt-out or
+-- whether the automatic popup already fired for this batch.
 
 local ADDON_NAME, SB = ...
 
@@ -21,55 +34,14 @@ local scrollWidget
 local emptyText
 local checkbox
 
--- Every soundID the popup system has ever accounted for - shown here at
--- some point, or already-existing before this feature shipped, so nothing
--- long-standing can retroactively surface here. Lazily created, same
--- pattern as SoundRegistry.lua's SB.db.knownSoundIDs.
-local function SeenTable()
-    SB.db.newSoundsPopupSeenIDs = SB.db.newSoundsPopupSeenIDs or {}
-    return SB.db.newSoundsPopupSeenIDs
-end
-
---- Every currently-registered soundID still within the New window
---- (SB:IsSoundNew - the exact same 48h window the tag pill uses,
---- SoundRegistry.lua), regardless of whether the popup has already
---- accounted for it - what the window actually displays, for both the
---- automatic first-login trigger and a manual reopen from Settings.
-local function ComputeCurrentlyNew()
-    local list = {}
-    for soundID in pairs(SB.registry) do
-        if SB:IsSoundNew(soundID) then
-            table.insert(list, soundID)
-        end
-    end
-    table.sort(list, function(a, b)
-        return SB:GetSoundDisplayName(a) < SB:GetSoundDisplayName(b)
-    end)
-    return list
-end
-
---- Subset of the above the popup has never shown before - only this one
---- decides whether the automatic login trigger actually fires; a manual
---- Settings reopen always shows the full current list instead (see below).
-local function ComputeUnseenNew()
-    local seen = SeenTable()
-    local list = {}
-    for _, soundID in ipairs(ComputeCurrentlyNew()) do
-        if not seen[soundID] then table.insert(list, soundID) end
-    end
-    return list
-end
-
--- Marks EVERY currently-registered soundID as accounted for, whether it
--- ended up shown or not - called once the window is actually shown, so a
--- later login or a manual reopen never lists the same batch again as
--- "new since your last update", and the automatic trigger stays quiet
--- until the NEXT genuinely new addition.
-local function MarkAllAccountedFor()
-    local seen = SeenTable()
-    for soundID in pairs(SB.registry) do
-        seen[soundID] = true
-    end
+-- True only once a real batch has actually been recorded (SoundRegistry.
+-- lua's BackfillAddedAt - never on a fresh install, never a manufactured
+-- "whole current library" placeholder) - the one thing that decides
+-- whether this window is allowed to open at all (explicit requirement:
+-- never a blank popup when nothing has ever been recorded).
+local function HasRecordedBatch()
+    local batch = SB.db and SB.db.latestSoundUpdate
+    return batch and type(batch.soundIDs) == "table" and #batch.soundIDs > 0
 end
 
 local function AcquireRow(index)
@@ -190,7 +162,14 @@ local function RefreshAllFavButtons()
 end
 
 local function RefreshList()
-    local list = ComputeCurrentlyNew()
+    -- The persisted batch, filtered to sounds still in the registry
+    -- (SoundRegistry.lua) - never filtered by SB:IsSoundNew, the 5-day
+    -- timer, or the local heard counters: explicit requirement, this list
+    -- must keep showing the same batch long after all three have expired.
+    local list = SB:GetLatestSoundUpdateSoundIDs()
+    table.sort(list, function(a, b)
+        return SB:GetSoundDisplayName(a) < SB:GetSoundDisplayName(b)
+    end)
     emptyText:SetShown(#list == 0)
     for i = 1, math.max(#list, #rows) do
         local row = AcquireRow(i)
@@ -289,7 +268,7 @@ local function BuildPopup()
     emptyText = popup:CreateFontString(nil, "OVERLAY")
     emptyText:SetFontObject(SB.Fonts.Highlight)
     emptyText:SetPoint("CENTER", sf.scroll, "CENTER", 0, 0)
-    emptyText:SetText("No new sounds right now - check back after the next update.")
+    emptyText:SetText("None of the sounds from the last update are available right now.")
     emptyText:SetTextColor(unpack(SB.Theme.TEXT_DIM))
     emptyText:SetWidth(WINDOW_W - 60)
     emptyText:SetJustifyH("CENTER")
@@ -300,29 +279,34 @@ end
 
 --- Rebuilds the list and shows the window right now - used both by the
 --- real first-login trigger below and Settings' "Latest Sound Updates"
---- button. Always shows whatever's currently within the New window,
---- regardless of whether it's ever been shown before - a manual reopen is
---- meant to let you look again, not just the untouched-since-last-time set.
+--- button, always the same way: manual access is never gated by the
+--- opt-out setting or by whether the automatic popup already fired for
+--- this batch (explicit requirement). If no batch has ever been recorded
+--- at all, prints a short chat message instead of opening a blank window.
 function SB:ShowNewSoundsWindow()
+    if not HasRecordedBatch() then
+        SB:Print("No sound update has been recorded yet.")
+        return
+    end
     BuildPopup()
     checkbox:SetChecked(SB.db.settings.newSoundsPopupOptOut and true or false)
     RefreshList()
-    MarkAllAccountedFor()
     popup:Show()
 end
 
 -- Real first-login trigger - only for a returning player (introSeen
--- already true; a fresh install gets the normal Intro instead and has
--- nothing New to show here anyway) who hasn't opted out, and only when
--- there's actually at least one unseen New sound to show - an empty
--- popup would just be annoying. A few seconds after Intro's own 2s delay
--- so the two can never compete for attention even in the unusual case
--- both would apply. SB.isFreshInstall is checked directly, not just
--- introSeen, as a second, deterministic guard - explicit requirement:
--- "Fresh install must win over any New Sounds detection during that
--- login", so this can never fire on a fresh install even if some future
--- change ever made introSeen true earlier than expected during that same
--- session (introSeen alone was previously the only guard here).
+-- already true; a fresh install gets the normal Intro instead) who hasn't
+-- opted out, and only when a real batch exists AND hasn't already been
+-- auto-shown (SB.db.latestSoundUpdate.autoShown - explicit requirement:
+-- never repeat the same batch on every login). A few seconds after
+-- Intro's own 2s delay so the two can never compete for attention even in
+-- the unusual case both would apply. SB.isFreshInstall is checked
+-- directly, not just introSeen, as a second, deterministic guard -
+-- explicit requirement: "Fresh install must win over any New Sounds
+-- detection during that login", so this can never fire on a fresh install
+-- even if some future change ever made introSeen true earlier than
+-- expected during that same session (introSeen alone was previously the
+-- only guard here).
 SB:On("PLAYER_LOGIN", function()
     if not (SB.db and SB.db.settings) then return end
     if SB.isFreshInstall then return end
@@ -332,7 +316,10 @@ SB:On("PLAYER_LOGIN", function()
         if not (SB.db and SB.db.settings) then return end
         if SB.isFreshInstall then return end
         if SB.db.settings.newSoundsPopupOptOut then return end
-        if #ComputeUnseenNew() == 0 then return end
+        local batch = SB.db.latestSoundUpdate
+        if not (batch and type(batch.soundIDs) == "table" and #batch.soundIDs > 0) then return end
+        if batch.autoShown then return end
         SB:ShowNewSoundsWindow()
+        batch.autoShown = true
     end)
 end)

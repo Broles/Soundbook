@@ -391,7 +391,7 @@ end
 -- real timestamp to measure it against) - still subject to the same
 -- DUSTY_MIN_DAYS floor via addedAt where one exists, so a sound added
 -- yesterday and simply not played YET still isn't dusty (it'd show "New"
--- anyway, see GetTag's precedence, until that 48h window passes).
+-- anyway, see GetTag's precedence, until that 5-day window passes).
 --
 -- Explicit correction, round 3: that math.huge sentinel bypasses the
 -- DUSTY_MIN_DAYS floor entirely for any addedAt-less sound - fine for an
@@ -632,7 +632,7 @@ end
 -- Explicit request: a filter pill only shows at all if at least one sound
 -- CURRENTLY actually carries that tag - "ich brauch nicht Trending sehen
 -- oben als Pille wenn es keine Sounds dafür gibt", same for New once its
--- 48h window has nothing in it. A full scan through GetTag for every
+-- 5-day window has nothing in it. A full scan through GetTag for every
 -- sound (not just checking each tag's own underlying qualifying set, e.g.
 -- SB.Analytics_TopTrendingSet non-empty) - a sound in that set could still
 -- actually be showing as Legendary/New instead once GetTag's own

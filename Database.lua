@@ -74,6 +74,22 @@ local function SanitizeDatabase(db, defaults)
     EnsureTable(db, "soundDurations")
     EnsureTable(db, "newSoundHeardCounts")
 
+    -- The persisted "latest update batch" (SoundRegistry.lua's
+    -- BackfillAddedAt/GetLatestSoundUpdateSoundIDs) - deliberately separate
+    -- from the temporary New tag's own addedAt timestamps, so Settings'
+    -- "Latest Sound Updates" keeps working long after those expire.
+    local latestUpdate = EnsureTable(db, "latestSoundUpdate")
+    local rawUpdateIDs = type(latestUpdate.soundIDs) == "table" and latestUpdate.soundIDs or {}
+    local cleanUpdateIDs, seenUpdateIDs = {}, {}
+    for _, soundID in ipairs(rawUpdateIDs) do
+        if SB.IsValidSoundID(soundID) and not seenUpdateIDs[soundID] then
+            table.insert(cleanUpdateIDs, soundID)
+            seenUpdateIDs[soundID] = true
+        end
+    end
+    latestUpdate.soundIDs = cleanUpdateIDs
+    latestUpdate.autoShown = BooleanOr(latestUpdate.autoShown, false)
+
     for soundID, saved in pairs(db.sounds) do
         if type(soundID) == "string" and SB.registry and SB.registry[soundID] then
             if type(saved) ~= "table" then saved = {}; db.sounds[soundID] = saved end
