@@ -130,23 +130,6 @@ local function Section(parent, text, anchorTo, yOffset)
     return section
 end
 
--- Same idea as Section above, deliberately quieter (explicit requirement,
--- "Advanced Playback" - de-emphasized compared with normal playback
--- controls): dim small text, no gold divider line, so it reads as a
--- secondary sub-group rather than a peer of Playback/During Gameplay.
-local function DimSection(parent, text, anchorTo, yOffset)
-    local section = CreateFrame("Frame", nil, parent)
-    section:SetHeight(16)
-    section:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", 0, yOffset or -16)
-    section:SetPoint("RIGHT", parent, "RIGHT", -20, 0)
-    local label = section:CreateFontString(nil, "OVERLAY")
-    label:SetFontObject(SB.Fonts.DisableSmall)
-    label:SetPoint("LEFT", 0, 0)
-    label:SetText(text)
-    label:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-    return section
-end
-
 local function Checkbox(parent, label, anchorTo, xOff, yOff, onClick)
     local check = SB.Theme.CreateCheckbox(parent, label, onClick)
     check:SetPoint("TOPLEFT", anchorTo, "BOTTOMLEFT", xOff or 0, yOff or -6)
@@ -675,9 +658,12 @@ local function BuildMultiplayerSection(content, topAnchor)
     end)
     playGreetingSoundCheck:SetChecked(SB.db.settings.playGreetingSound)
 
-    -- De-emphasized versus the controls above (explicit requirement) -
-    -- dimmer header, no gold divider.
-    local advHeader = DimSection(content, "Remote Playback", playGreetingSoundCheck, -18)
+    -- Targeted correction round (explicit requirement): "Remote Playback"
+    -- now uses the same section-heading style as "Channels"/"Notifications"
+    -- above it (Theme.CreateSectionHeader - Normal font, gold text, gold
+    -- divider line) instead of the quieter DimSection treatment, which read
+    -- as visually weaker than its sibling headers in this section.
+    local advHeader = Section(content, "Remote Playback", playGreetingSoundCheck, -16)
 
     local cooldownLabel = content:CreateFontString(nil, "OVERLAY")
     cooldownLabel:SetFontObject(SB.Fonts.HighlightSmall)

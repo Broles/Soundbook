@@ -1624,6 +1624,10 @@ local function HandleSlash(msg)
     elseif cmd == "debug" then
         SB.db.settings.debug = not SB.db.settings.debug
         SB:Print("Debug mode " .. (SB.db.settings.debug and "ON" or "OFF"))
+    elseif cmd == "testgreeting" then
+        if SB.SimulateOnlineGreeting then
+            SB:SimulateOnlineGreeting(rest)
+        end
     elseif cmd == "help" then
         SB:Print("Commands:")
         SB:Print("  /sb - toggle the main Soundbook window")
@@ -1634,6 +1638,7 @@ local function HandleSlash(msg)
         SB:Print("  /sb play <category::name>[::<target>] - play (and optionally send) a sound")
         SB:Print("  /sb stop - stop anything currently playing and clear the incoming queue")
         SB:Print("  /sb mute - toggle receiving remote sounds (keeps your previous channel choices)")
+        SB:Print("  /sb testgreeting <name> - preview the Online Greeting banner for that name")
         SB:Print("  /sb doctor - print a short runtime diagnostic report")
         SB:Print("  /sb reset - reset window positions and Mini Soundbook size")
         SB:Print("  /sb debug - toggle debug logging")

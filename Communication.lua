@@ -2985,6 +2985,69 @@ function SB:GetGreetingSoundFor(name)
     return bestID
 end
 
+-- Manual test hook (/sb testgreeting <name>, Core.lua) - previews the
+-- Online Greeting banner for a name of your choosing without needing a
+-- second real Soundbook client to actually go offline/online. Reuses the
+-- exact same settings truth table and rendering path a real detected
+-- transition uses (SB:ShowOnlineGreeting/SB:GetGreetingSoundFor) - only
+-- the presence edge-detection and the "confirmed Soundbook user" check are
+-- skipped, since a test name has neither. Relationship is read from your
+-- REAL current Friends/Guild roster whenever the name matches someone on
+-- it, so a real name previews its real "Friend"/"Guild"/"Friend + Guild"
+-- label and (if Play Greeting Sound is on) its real Greeting Sound
+-- history; an unmatched name just defaults to "Friend" for preview
+-- purposes.
+function SB:SimulateOnlineGreeting(name)
+    name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if name == "" then
+        SB:Print("Usage: /sb testgreeting <name>")
+        return
+    end
+
+    local key = IdentityKey(name)
+    local isFriend, isGuild = false, false
+
+    local n = SB.GetNumFriends()
+    for i = 1, n do
+        local friendName, connected = SB.GetFriendInfoByIndex(i)
+        if friendName and connected and IdentityKey(friendName) == key then
+            isFriend = true
+        end
+    end
+    if IsInGuild() and GetNumGuildMembers then
+        for i = 1, GetNumGuildMembers() do
+            local fullName, _, _, _, _, _, _, _, isOnline = GetGuildRosterInfo(i)
+            if fullName and isOnline and IdentityKey(fullName) == key then
+                isGuild = true
+            end
+        end
+    end
+    local relationship = (isFriend and isGuild) and "Friend + Guild" or (isGuild and "Guild") or "Friend"
+
+    local greetingsOn = SB.db and SB.db.settings and SB.db.settings.onlineGreetings
+    local playSoundOn = SB.db and SB.db.settings and SB.db.settings.playGreetingSound
+    local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
+    local soundID = playSoundOn and SB:GetGreetingSoundFor(name) or nil
+    local soundName = soundID and SB.GetSoundDisplayName and SB:GetSoundDisplayName(soundID)
+
+    SB:Print(string.format("Simulating Online Greeting for %s (%s)%s", displayName, relationship,
+        soundName and (" - Greeting Sound: " .. soundName)
+            or (playSoundOn and " - no Greeting Sound history for them" or "")))
+
+    if not greetingsOn and not playSoundOn then
+        SB:Print("Online Greetings and Play Greeting Sound are both off - nothing would show for a real transition either.")
+        return
+    end
+
+    if greetingsOn then
+        if SB.ShowOnlineGreeting then
+            SB:ShowOnlineGreeting(displayName, relationship, soundID)
+        end
+    elseif soundID then
+        SB:TriggerSound(soundID, "SELF")
+    end
+end
+
 -- A remote sound actually played for you - the base "did I miss
 -- something" notification.
 --
