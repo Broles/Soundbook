@@ -281,9 +281,19 @@ end
 --- real first-login trigger below and Settings' "Latest Sound Updates"
 --- button, always the same way: manual access is never gated by the
 --- opt-out setting or by whether the automatic popup already fired for
---- this batch (explicit requirement). If no batch has ever been recorded
---- at all, prints a short chat message instead of opening a blank window.
+--- this batch (explicit requirement). If no batch has ever been recorded,
+--- attempts SB:RecoverLatestSoundUpdateBatch() first - an existing install
+--- that already had real addedAt timestamps from before this batch
+--- concept existed must not be stuck seeing "no update recorded" forever;
+--- recovery persists whatever it finds immediately, so this same call
+--- both fixes the stored state AND opens the result in one step, no
+--- reload/relog/second click needed. Only once recovery ALSO finds
+--- nothing does this print a short chat message instead of opening a
+--- blank window.
 function SB:ShowNewSoundsWindow()
+    if not HasRecordedBatch() and SB.RecoverLatestSoundUpdateBatch then
+        SB:RecoverLatestSoundUpdateBatch()
+    end
     if not HasRecordedBatch() then
         SB:Print("No sound update has been recorded yet.")
         return
