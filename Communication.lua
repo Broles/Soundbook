@@ -27,8 +27,43 @@ end
 SB.KnownUserInfo = KnownUserInfo
 
 local function IsSelf(sender)
-    local me = SB.GetUnitFullName and SB.GetUnitFullName("player") or UnitName("player")
-    return IdentityKey(sender) == IdentityKey(me)
+    if type(sender) ~= "string" or sender == "" then return false end
+
+    local meFull = SB.GetUnitFullName and SB.GetUnitFullName("player") or UnitName("player")
+    local meName = UnitName and UnitName("player") or meFull
+
+    -- Primary path: realm-aware canonical identity.
+    local senderKey = IdentityKey(sender)
+    local meKey = IdentityKey(meFull or meName)
+    if senderKey and meKey and senderKey == meKey then return true end
+
+    -- Some supported clients/APIs hand roster/addon names back in a legacy
+    -- display form that does not round-trip through PlayerKey exactly
+    -- (notably realm/display separators). Character names themselves cannot
+    -- contain spaces or "-", so comparing the character-name component is a
+    -- safe compatibility fallback for identifying our own row/message.
+    local function CharacterPart(value)
+        if type(value) ~= "string" then return nil end
+        value = (SB.TrimText and SB.TrimText(value)) or value:match("^%s*(.-)%s*$")
+        if not value or value == "" then return nil end
+        local part = value:match("^([^%-%s]+)") or value
+        return part ~= "" and part or nil
+    end
+
+    local senderChar = CharacterPart(sender)
+    local meChar = CharacterPart(meName or meFull)
+    if senderChar and meChar and senderChar == meChar then return true end
+
+    -- Final compatibility path for clients that expose Ambiguate.
+    if Ambiguate then
+        local okSender, shortSender = pcall(Ambiguate, sender, "none")
+        local okMe, shortMe = pcall(Ambiguate, meFull or meName, "none")
+        if okSender and okMe and shortSender and shortMe and shortSender == shortMe then
+            return true
+        end
+    end
+
+    return false
 end
 
 ------------------------------------------------------------------------
@@ -220,7 +255,7 @@ local function SendToFriends(text, covered)
         -- blind broadcast CAN filter per-recipient, so it silently skips an
         -- ignored name (same "skip and continue" shape as the `covered`
         -- de-dup above) rather than aborting the whole send.
-        if name and connected and not covered[IdentityKey(name)] and not SB:IsIgnored(name) then
+        if name and connected and not IsSelf(name) and not covered[IdentityKey(name)] and not SB:IsIgnored(name) then
             SB.SendAddonMessage(SB.COMM_PREFIX, text, "WHISPER", name)
         end
     end
@@ -303,7 +338,7 @@ local function SendToAllFriendsSilent(soundID)
 end
 
 local function SendToPlayerSilent(soundID, name)
-    if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
+    if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) or IsSelf(name) then return end
     -- Ignore blocking - silent here, matching this function's "no chat
     -- line" design. SB:SendSoundToPlayer below is the surface with an
     -- explicit chat confirmation, and checks this itself first so it can
@@ -339,7 +374,7 @@ local function SendSubsetSilent(soundID, names, bucket)
     local text = SB.PROTOCOL_VERSION .. SEP .. "PLAY" .. SEP .. soundID .. SEP .. flag
     local sentAny = false
     for _, name in ipairs(names) do
-        if SB.IsValidPlayerTarget(name) and not SB:IsIgnored(name) then
+        if SB.IsValidPlayerTarget(name) and not IsSelf(name) and not SB:IsIgnored(name) then
             SB.SendAddonMessage(SB.COMM_PREFIX, text, "WHISPER", name)
             sentAny = true
         end
@@ -389,6 +424,12 @@ function SB.ComputeReachablePlayers()
     local function CollectInto(bucketName, iterFn)
         local bucket = result[bucketName]
         iterFn(function(rawName)
+            -- Local playback is unconditional for the sender, so the player
+            -- must never appear as one of their own selectable recipients.
+            -- Keeping this at the canonical reachable-player boundary removes
+            -- Self consistently from Guild/Raid/Friends checkbox lists,
+            -- counts, saved-subset resolution and actual subset dispatch.
+            if IsSelf(rawName) then return end
             local key = IdentityKey(rawName)
             if not key or not KnownUserInfo(rawName) or claimedBy[key] then return end
             claimedBy[key] = true
@@ -1014,6 +1055,13 @@ end
 -- confirmed friends is a different, much narrower thing.
 function SB:SendSoundToPlayer(soundID, name)
     if not SB.registry[soundID] or not SB.IsValidPlayerTarget(name) then return end
+    if IsSelf(name) then
+        -- Self is local playback, never a network recipient. This also
+        -- protects stale saved PLAYER:<self> targets from producing a second
+        -- copy of the same sound through a whisper loopback.
+        PlayLocally(soundID, "SELF")
+        return
+    end
     -- Ignore blocking - checked first, ahead of the raid-mute Friend
     -- exemption below: absolute, no exceptions. DispatchDefaultOutput's
     -- own PLAYER target shares the same underlying block via
@@ -1148,6 +1196,7 @@ end
 -- `code` is the single-letter channel (F/P/R/G) the acking player actually
 -- received the sound over - see CHANNEL_CODE above.
 local function HandleAck(soundID, code, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return -- not something we broadcast recently - ignore
@@ -1171,6 +1220,7 @@ end
 -- counts for Analytics (CreditAnalyticsOnce above) - a real other
 -- player's client genuinely received it, they just chose not to hear it.
 local function HandleMuteAck(soundID, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return
@@ -1195,6 +1245,7 @@ end
 -- sound was never sent. Analytics crediting happens regardless of Debug
 -- Mode (same reasoning as HandleMuteAck above).
 local function HandleRxOffAck(soundID, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return
@@ -1220,6 +1271,7 @@ end
 -- Analytics the same way a mute is - a real other client genuinely
 -- received and processed the message, they just aren't allowed to play it.
 local function HandleIgnoreAck(soundID, sender)
+    if IsSelf(sender) then return end -- never report/credit our own client as a recipient
     local sentAt = recentBroadcasts[soundID]
     if not sentAt or (GetTime() - sentAt) > ACK_CLAIM_WINDOW then
         return
