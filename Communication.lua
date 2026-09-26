@@ -2800,17 +2800,36 @@ end)
 
 ------------------------------------------------------------------------
 -- Online Greetings (Settings -> Multiplayer -> Notifications) - a known
--- Soundbook Friend/Guild member's own offline -> online transition, shown
--- via Announcer.lua's SB:ShowOnlineGreeting. "Does this person even run
--- Soundbook" reuses the existing HELLO-driven knownUsers table above
--- unchanged; what's genuinely new here is the offline/online EDGE
--- detection itself - knownUsers only ever accumulates a lastSeen
--- timestamp, it has no notion of "offline" at all. Built on Blizzard's own
--- real Friends/Guild roster online state instead (the same GetFriendInfo/
--- GetGuildRosterInfo calls SB.ComputeReachablePlayers above already uses),
--- driven purely by the GUILD_ROSTER_UPDATE/FRIENDLIST_UPDATE events WoW
--- already fires on its own - no new outgoing traffic, no polling ticker.
+-- Soundbook Friend/Guild member's own offline -> online transition.
+-- "Does this person even run Soundbook" reuses the existing HELLO-driven
+-- knownUsers table above unchanged; what's genuinely new here is the
+-- offline/online EDGE detection itself - knownUsers only ever accumulates
+-- a lastSeen timestamp, it has no notion of "offline" at all. Built on
+-- Blizzard's own real Friends/Guild roster online state instead (the same
+-- GetFriendInfo/GetGuildRosterInfo calls SB.ComputeReachablePlayers above
+-- already uses), driven purely by the GUILD_ROSTER_UPDATE/FRIENDLIST_UPDATE
+-- events WoW already fires on its own - no new outgoing traffic, no
+-- polling ticker.
+--
+-- Redesign (explicit requirement): the two settings are two entirely
+-- separate FEATURES, not a shared banner with an optional extra:
+--   - "Online Greetings" -> a plain in-chat text line ("PlayerX is
+--     online"), nothing more. Never touches the Announcer at all.
+--   - "Play Greeting Sound" -> the Announcer/sound side, completely on
+--     its own - shows the Announcer banner ONLY when a real Greeting
+--     Sound actually plays. No sound resolved (no history, no eligible
+--     favourite) means no Announcer, ever - never a generic/soundless
+--     banner. See Announcer.lua's SB:ShowOnlineGreeting, which is now a
+--     thin "play soundID, show it if it played" wrapper with no
+--     notification-only fallback shape left in it at all.
 ------------------------------------------------------------------------
+
+--- The chat line for "Online Greetings" - independent of, and never
+--- gated by, whether a Greeting Sound plays.
+local function PrintOnlineGreeting(displayName, relationship)
+    local color = SB.GetChannelColor(relationship)
+    SB:Print(string.format("%s is online |cff%s- %s|r", displayName, color.hex, relationship))
+end
 
 -- [IdentityKey] = true for every Friend/Guild member CURRENTLY seen
 -- online, replaced wholesale on every scan (see ScanPresence below) -
@@ -2845,21 +2864,17 @@ local function VerifyAndFireGreeting(key, name, isFriend, isGuild)
     if not greetingsOn and not playSoundOn then return end
 
     local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
-    local soundID = playSoundOn and SB:ResolveGreetingSound(name) or nil
+    local relationship = (isFriend and isGuild) and "Friend + Guild" or (isFriend and "Friend") or "Guild"
 
     if greetingsOn then
-        local relationship = (isFriend and isGuild) and "Friend + Guild" or (isFriend and "Friend") or "Guild"
-        if SB.ShowOnlineGreeting then
+        PrintOnlineGreeting(displayName, relationship)
+    end
+
+    if playSoundOn then
+        local soundID = SB:ResolveGreetingSound(name)
+        if soundID and SB.ShowOnlineGreeting then
             SB:ShowOnlineGreeting(displayName, relationship, soundID)
         end
-    elseif soundID then
-        -- Online Greetings itself is off, but Play Greeting Sound is on
-        -- and there IS a sound to play - explicit requirement: still show
-        -- the Announcer as required playback feedback, but never the
-        -- standalone "PLAYERX IS ONLINE" framing. Plays through the exact
-        -- same SELF-only path any other local trigger uses, so it reads
-        -- as an entirely ordinary sound play, nothing greeting-specific.
-        SB:TriggerSound(soundID, "SELF")
     end
 end
 
@@ -3074,18 +3089,18 @@ function SB:ResolveGreetingSound(name)
     return SB:GetGreetingSoundFor(name) or SB:GetGreetingFallbackSoundFor(name)
 end
 
--- Manual test hook (/sb testgreeting <name>, Core.lua) - previews the
--- Online Greeting banner for a name of your choosing without needing a
+-- Manual test hook (/sb testgreeting <name>, Core.lua) - previews both
+-- Online Greeting halves for a name of your choosing without needing a
 -- second real Soundbook client to actually go offline/online. Reuses the
--- exact same settings truth table and rendering path a real detected
--- transition uses (SB:ShowOnlineGreeting/SB:GetGreetingSoundFor) - only
--- the presence edge-detection and the "confirmed Soundbook user" check are
--- skipped, since a test name has neither. Relationship is read from your
--- REAL current Friends/Guild roster whenever the name matches someone on
--- it, so a real name previews its real "Friend"/"Guild"/"Friend + Guild"
--- label and (if Play Greeting Sound is on) its real Greeting Sound
--- history; an unmatched name just defaults to "Friend" for preview
--- purposes.
+-- exact same settings truth table and code paths a real detected
+-- transition uses (PrintOnlineGreeting/SB:ShowOnlineGreeting/
+-- SB:ResolveGreetingSound) - only the presence edge-detection and the
+-- "confirmed Soundbook user" check are skipped, since a test name has
+-- neither. Relationship is read from your REAL current Friends/Guild
+-- roster whenever the name matches someone on it, so a real name previews
+-- its real "Friend"/"Guild"/"Friend + Guild" label and (if Play Greeting
+-- Sound is on) its real Greeting Sound history; an unmatched name just
+-- defaults to "Friend" for preview purposes.
 function SB:SimulateOnlineGreeting(name)
     name = (name or ""):gsub("^%s+", ""):gsub("%s+$", "")
     if name == "" then
@@ -3116,35 +3131,32 @@ function SB:SimulateOnlineGreeting(name)
     local greetingsOn = SB.db and SB.db.settings and SB.db.settings.onlineGreetings
     local playSoundOn = SB.db and SB.db.settings and SB.db.settings.playGreetingSound
     local displayName = (SB.GetPlayerDisplayName and SB.GetPlayerDisplayName(name)) or name
-    local soundID = playSoundOn and SB:ResolveGreetingSound(name) or nil
-    local soundName = soundID and SB.GetSoundDisplayName and SB:GetSoundDisplayName(soundID)
-
-    -- Explicit about WHY there's no sound in every case - not knowing the
-    -- typed name is never the reason (the fallback pool works for ANY
-    -- name, real or made up); "Play Greeting Sound" being off, or genuinely
-    -- no history/eligible favourite, are the only two possibilities, and
-    -- a tester should never have to guess which.
-    local soundNote
-    if soundName then
-        soundNote = " - Greeting Sound: " .. soundName
-    elseif not playSoundOn then
-        soundNote = " - Play Greeting Sound is OFF in Settings, so no sound will play regardless of history/fallback"
-    else
-        soundNote = " - no Greeting Sound available (no history, no eligible favourite)"
-    end
-    SB:Print(string.format("Simulating Online Greeting for %s (%s)%s", displayName, relationship, soundNote))
 
     if not greetingsOn and not playSoundOn then
-        SB:Print("Online Greetings and Play Greeting Sound are both off - nothing would show for a real transition either.")
+        SB:Print("Online Greetings and Play Greeting Sound are both off - nothing would happen for a real transition either.")
         return
     end
 
+    -- Two entirely independent halves, previewed separately - matches
+    -- production exactly: the chat line never depends on a sound, and the
+    -- Announcer/sound never depends on the chat line.
     if greetingsOn then
-        if SB.ShowOnlineGreeting then
+        PrintOnlineGreeting(displayName, relationship)
+    else
+        SB:Print("Online Greetings is OFF in Settings, so no chat line would print for a real transition.")
+    end
+
+    if playSoundOn then
+        local soundID = SB:ResolveGreetingSound(name)
+        if soundID and SB.ShowOnlineGreeting then
+            local soundName = SB.GetSoundDisplayName and SB:GetSoundDisplayName(soundID)
+            SB:Print("Play Greeting Sound: playing " .. tostring(soundName or soundID))
             SB:ShowOnlineGreeting(displayName, relationship, soundID)
+        else
+            SB:Print("Play Greeting Sound is on, but no Greeting Sound is available for " .. displayName .. " (no history, no eligible favourite) - no Announcer for a real transition either.")
         end
-    elseif soundID then
-        SB:TriggerSound(soundID, "SELF")
+    else
+        SB:Print("Play Greeting Sound is OFF in Settings, so no sound/Announcer would show for a real transition.")
     end
 end
 

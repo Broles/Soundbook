@@ -824,20 +824,18 @@ local function RenderPrimary()
     -- Online Greeting entries (SB:ShowOnlineGreeting below) get their own
     -- title/subtitle framing - explicit requirement: this must read as a
     -- distinct Soundbook social event, never like an ordinary sound
-    -- trigger. Icon/progress-bar/ticker logic below is entirely shared
-    -- and unchanged: a real Greeting Sound has a real entry.duration (set
-    -- exactly like any other local play), so it gets the exact same
-    -- "normal playback progress behaviour" any other sound does; a
-    -- notification-only greeting has no duration at all, so the existing
-    -- ValidDuration(entry.duration) branch further down already hides the
-    -- bar correctly with no special-casing needed there.
+    -- trigger. Icon/progress-bar/ticker logic below is entirely shared and
+    -- unchanged: a Greeting entry only ever exists here with a real
+    -- soundID and a real entry.duration (set exactly like any other local
+    -- play - SB:ShowOnlineGreeting never creates one without both), so it
+    -- gets the exact same "normal playback progress behaviour" any other
+    -- sound does, with zero special-casing needed further down.
     --
     -- Layout refinement round (explicit requirement): reads first as the
     -- SOUND, second as the online event - "PLAYERX IS ONLINE" is no longer
     -- the headline, and the sound name is no longer squeezed into the
     -- subtitle behind a "Greeting Sound: " prefix. Title is the sound's
-    -- own name, exactly like an ordinary local/remote play (or "Soundbook"
-    -- for a notification-only greeting with no real sound), getting the
+    -- own name, exactly like an ordinary local/remote play, getting the
     -- SAME full-width title slot any other Now Playing sound name already
     -- gets - the actual fix for long names truncating more than before.
     -- The relationship (Friend/Guild/Friend + Guild) still drives the
@@ -847,7 +845,7 @@ local function RenderPrimary()
     local color
     if entry.isGreeting then
         color = SB.GetChannelColor(entry.channelLabel or "Guild")
-        banner.nameText:SetText(entry.soundID and SoundName(entry.soundID) or "Soundbook")
+        banner.nameText:SetText(SoundName(entry.soundID))
         banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
         banner.subText:SetText(string.format("%s · is online", entry.sender or "?"))
     else
@@ -865,10 +863,6 @@ local function RenderPrimary()
     if queued > 0 then
         banner.timeText:SetText(string.format("+%d queued", queued))
     elseif ValidDuration(entry.duration) then
-        banner.timeText:SetText("")
-    elseif entry.isGreeting then
-        -- No real sound behind this one - a notification-only greeting
-        -- toast has nothing "playing" to claim.
         banner.timeText:SetText("")
     else
         banner.timeText:SetText("Playing")
@@ -1080,23 +1074,20 @@ local function RemoveDisplayByInstance(instanceID)
 end
 
 ------------------------------------------------------------------------
--- Online Greetings (Communication.lua's presence scan calls into this) -
--- a known Soundbook Friend/Guild member's own offline -> online
--- transition. Two shapes, both rendered through RenderPrimary's own
--- entry.isGreeting branch above:
---   - a real Greeting Sound: goes through the exact same activeDisplays/
---     progress-ticker machinery any other local play uses (SB:PlaySound
---     is called directly, not SB:TriggerSound, since this is never
---     subject to Default Output routing - it is strictly local/Self by
---     definition, matches the explicit "never broadcast, never generate
---     delivery receipts" requirement).
---   - no sound (Play Greeting Sound off, or no history for this player) -
---     a short, self-dismissing notification-only toast with no real
---     sound behind it at all.
+-- Online Greetings, the "Play Greeting Sound" half only (Communication.
+-- lua's presence scan calls into this) - the "Online Greetings" chat-line
+-- half lives entirely in Communication.lua and never touches the
+-- Announcer at all. This function ONLY ever shows the Announcer when a
+-- real Greeting Sound actually plays - a real Greeting Sound goes through
+-- the exact same activeDisplays/progress-ticker machinery any other local
+-- play uses (SB:PlaySound is called directly, not SB:TriggerSound, since
+-- this is never subject to Default Output routing - it is strictly
+-- local/Self by definition, matches the explicit "never broadcast, never
+-- generate delivery receipts" requirement). No sound resolved, or a
+-- resolved sound that fails to play, means no Announcer at all - there is
+-- no notification-only shape left here any more (explicit requirement:
+-- never a generic/soundless banner).
 ------------------------------------------------------------------------
-
-local greetingNotifyCounter = 0
-local GREETING_NOTIFY_SECONDS = 5
 
 -- Display-duration refinement round (explicit requirement): a Greeting
 -- Sound's own minimum visible time is a FIXED 2 seconds, deliberately
@@ -1108,47 +1099,28 @@ local GREETING_NOTIFY_SECONDS = 5
 -- below, which is the one place either minimum is actually enforced.
 local GREETING_MIN_DISPLAY_SECONDS = 2
 
-local function ShowGreetingNotification(playerName, relationshipLabel)
-    if not icon or not icon:IsShown() then return end
-    BuildBanner()
-    greetingNotifyCounter = greetingNotifyCounter + 1
-    local instanceID = "greeting-notify-" .. greetingNotifyCounter
-    if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
-    table.insert(activeDisplays, {
-        soundID = nil, sender = playerName, channelLabel = relationshipLabel,
-        startedAt = GetTime(), instanceID = instanceID, isGreeting = true,
-    })
-    RenderPrimary()
-    RefreshOverlapMarkers()
-    C_Timer.After(GREETING_NOTIFY_SECONDS, function()
-        RemoveDisplayByInstance(instanceID)
-    end)
-end
-
--- `soundID` may be nil (notification-only). Called only when Online
--- Greetings itself is on (Communication.lua's VerifyAndFireGreeting
--- decides that) - this function's own job is purely how to SHOW it, not
--- whether to.
+--- Plays `soundID` as a Greeting Sound and shows the Announcer for it.
+--- Called only when Play Greeting Sound is on AND a Greeting Sound was
+--- actually resolved (Communication.lua's VerifyAndFireGreeting) - never
+--- called with a nil soundID. Returns true if it actually played.
 function SB:ShowOnlineGreeting(playerName, relationshipLabel, soundID)
-    if not (icon and icon:IsShown()) then return end
-    if soundID then
-        BuildBanner()
-        local played = SB:PlaySound(soundID, "local")
-        if played then
-            AddDisplay(soundID, playerName, relationshipLabel, true)
-            return
-        end
+    if not (icon and icon:IsShown()) or not soundID then return false end
+    BuildBanner()
+    local played = SB:PlaySound(soundID, "local")
+    if played then
+        AddDisplay(soundID, playerName, relationshipLabel, true)
+    else
         -- Sound failed to play (muted mid-flight, combat/encounter-gated,
-        -- missing file, etc.) - fall through to the notification-only
-        -- toast instead of silently showing nothing. SB:PlaySound already
-        -- logged the specific reason via its own SB:Debug calls; this one
-        -- confirms it was specifically an Online Greeting that hit that
-        -- fallthrough, so "notification shown but no sound" is traceable
-        -- with Debug Mode on instead of a silent mystery.
-        SB:Debug("Online Greeting for %s: Greeting Sound '%s' failed to play, falling back to notification-only.",
+        -- missing file, etc.) - SB:PlaySound already logged the specific
+        -- reason via its own SB:Debug calls; this one confirms it was
+        -- specifically an Online Greeting that hit it, so a "no Announcer
+        -- appeared" report is traceable with Debug Mode on instead of a
+        -- silent mystery. No notification-only fallback any more - a
+        -- failed Greeting Sound simply shows nothing.
+        SB:Debug("Online Greeting for %s: Greeting Sound '%s' failed to play.",
             tostring(playerName), tostring(soundID))
     end
-    ShowGreetingNotification(playerName, relationshipLabel)
+    return played
 end
 
 SB:On("PLAYBACK_PROGRESS_STARTED", function(state)

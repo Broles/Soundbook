@@ -632,16 +632,19 @@ local function GetDefaultDB()
             -- Debug Mode on.
             notifyMutedAttempts = true,
             notifyFriendReceipts = true, -- who received/played sounds you sent
-            -- Online Greetings (Communication.lua's presence scan +
-            -- Announcer.lua's SB:ShowOnlineGreeting) - a known Soundbook
-            -- Friend/Guild member's own offline -> online transition.
-            -- Independent toggles on purpose: onlineGreetings controls the
-            -- notification itself (default ON - this is the discoverable,
-            -- low-cost half of the feature); playGreetingSound controls
-            -- whether their personal "Greeting Sound" (the sound they've
-            -- sent US most often, see SB:GetGreetingSoundFor) also plays
-            -- locally (default OFF - actual audio playback is the one a
-            -- player should opt INTO, not be surprised by).
+            -- Online Greetings (Communication.lua's presence scan) - a
+            -- known Soundbook Friend/Guild member's own offline -> online
+            -- transition. Two entirely SEPARATE features, not one
+            -- notification with an optional extra: onlineGreetings prints
+            -- a plain chat line (default ON - discoverable, low-cost,
+            -- never touches the Announcer); playGreetingSound is the
+            -- Announcer/sound side on its own (Announcer.lua's
+            -- SB:ShowOnlineGreeting) - plays their personal "Greeting
+            -- Sound" (the sound they've sent US most often, or a
+            -- persisted fallback, see SB:ResolveGreetingSound) and shows
+            -- the Announcer ONLY when that actually happens (default OFF -
+            -- actual audio playback is the one a player should opt INTO,
+            -- not be surprised by).
             onlineGreetings   = true,
             playGreetingSound = false,
             -- Anonymous usage analytics (Analytics.lua, /sb analytics) - on

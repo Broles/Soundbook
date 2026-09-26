@@ -2548,3 +2548,21 @@ Follow-up to the previous round's investigation: a player tested `/sb testgreeti
 Full mock suite re-run (the same three pre-existing, unrelated failures aside - `loader.lua`, `loader_minititle.lua`, `loader_settings.lua`); `luac -p` clean across every `Soundbook.toc`-listed file.
 
 No version bump this round - still 3.0.4, unreleased/unmerged.
+
+## Soundbook 3.0.4: Online Greetings redesign - two fully independent features
+
+Ausbau, explicit requirement: "Online Greetings" and "Play Greeting Sound" are no longer one shared banner with an optional sound attached - they are now two entirely separate features that never gate or depend on each other.
+
+**Before**: "Online Greetings" controlled whether the Announcer banner showed at all (with or without a sound); "Play Greeting Sound" only controlled whether that banner's sound was populated. Turning Play Greeting Sound off still showed a generic, soundless "Soundbook" Announcer banner whenever Online Greetings was on - confusing in practice, since a player watching for it had no way to tell "no Greeting Sound resolved" apart from "feature working as designed."
+
+**After**:
+- **"Online Greetings"** (`Communication.lua`'s new `PrintOnlineGreeting`) is now a plain in-chat text line ("PlayerX is online |cffHEX- Relationship|r") - it never touches the Announcer at all.
+- **"Play Greeting Sound"** (`Announcer.lua`'s `SB:ShowOnlineGreeting`, substantially simplified) is the Announcer/sound side entirely on its own - it shows the Announcer banner ONLY when a real Greeting Sound actually plays (`SB:PlaySound` succeeds). No sound resolved (no history, no eligible favourite) or a resolved sound that fails to play (muted mid-flight, combat/encounter-gated, missing file) both now mean **no Announcer at all** - the generic/soundless "Soundbook" fallback banner and its whole `ShowGreetingNotification`/`GREETING_NOTIFY_SECONDS` machinery are removed entirely, not just hidden behind a flag.
+
+`Communication.lua`'s `VerifyAndFireGreeting` reflects this directly: `if greetingsOn then PrintOnlineGreeting(...) end` and `if playSoundOn then local soundID = SB:ResolveGreetingSound(name); if soundID then SB:ShowOnlineGreeting(...) end end` - two independent `if` blocks, neither reads the other's setting at all any more. `/sb testgreeting <name>` (`SB:SimulateOnlineGreeting`) mirrors this exactly, previewing both halves separately with their own explicit chat feedback, so a tester always knows precisely which half did or didn't fire and why.
+
+Settings help text and default-value comments (`Settings.lua`, `Core.lua`) updated to describe the new independent-features model instead of the old shared-notification one.
+
+**Tests**: `loader_onlinegreetings.lua`'s 10 scenarios and `loader_testgreeting_cmd.lua`'s 7 scenarios rewritten for the new model - a new `ChatGreetingSpy` (filters `SB:Print` calls containing "is online") verifies the chat-line half independently from the existing `ShowOnlineGreeting`-wrapping `GreetingSpy` for the sound half; several scenarios now explicitly prove independence (Online Greetings off + Play Greeting Sound on still plays the sound with no chat line; Play Greeting Sound off + real history never shows the Announcer despite the chat line still firing). `loader_greeting_layout_duration.lua`'s scenario 2 rewritten to confirm `SB:ShowOnlineGreeting(name, rel, nil)` now returns `false` and leaves the banner completely untouched (no generic fallback banner to render at all). All pass; `loader_greeting_e2e_fallback.lua` and `loader_greetingfallback.lua` needed no changes (they exercise resolution, which is unaffected). Full mock suite re-run (the same three pre-existing, unrelated failures aside - `loader.lua`, `loader_minititle.lua`, `loader_settings.lua`); `luac -p` clean across every `Soundbook.toc`-listed file.
+
+No version bump this round - still 3.0.4, unreleased/unmerged.

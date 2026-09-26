@@ -111,8 +111,8 @@ local CHECKBOX_HELP = {
     ["Show received sound details"] = "Print sender, source and sound information for received playback.",
     ["Show blocked/muted sound attempts"] = "Report attempts to play a sound that you muted locally.",
     ["Show delivery confirmations"] = "Show delivery confirmations returned by friends.",
-    ["Online Greetings"] = "Show when Friends or Guild members using Soundbook come online.",
-    ["Play Greeting Sound"] = "Play their most-sent sound as their personal online greeting.",
+    ["Online Greetings"] = "Print a chat message when Friends or Guild members using Soundbook come online.",
+    ["Play Greeting Sound"] = "Show the Announcer and play their most-sent sound as their personal online greeting.",
     ["Show Mini Soundbook"] = "Show or hide the Mini Soundbook.",
     ["Open Mini Soundbook on Hover"] = "Open the Mini Soundbook by hovering its icon, no click needed. Off by default - the icon only opens it on left-click.",
     ["Lock position and size"] = "Prevent moving and resizing the Main Soundbook and the Mini Soundbook.",
@@ -642,10 +642,12 @@ local function BuildMultiplayerSection(content, topAnchor)
     end)
     notifyReceiptsCheck:SetChecked(SB.db.settings.notifyFriendReceipts)
 
-    -- Online Greetings - two independent toggles (Communication.lua's
-    -- presence scan + Announcer.lua's SB:ShowOnlineGreeting): whether the
-    -- notification itself shows at all, and separately whether it also
-    -- plays that player's own Greeting Sound locally. See Core.lua's
+    -- Online Greetings - two entirely SEPARATE features (Communication.
+    -- lua's presence scan), not a shared notification with an optional
+    -- extra: "Online Greetings" is a plain chat line, never touching the
+    -- Announcer; "Play Greeting Sound" is the Announcer/sound side on its
+    -- own (Announcer.lua's SB:ShowOnlineGreeting), which only ever shows
+    -- when a real Greeting Sound actually plays. See Core.lua's
     -- GetDefaultDB for the full default-value reasoning (on/off
     -- respectively).
     local onlineGreetingsCheck = Checkbox(content, "Online Greetings", notifyReceiptsCheck, 0, -2, function(checked)
