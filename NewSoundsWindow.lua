@@ -68,7 +68,11 @@ local function AcquireRow(index)
     -- top of a clickable row without triggering the row's own click"
     -- pattern UI.lua's section-header Keybinds button already relies on -
     -- so this can never accidentally trigger the SELF-only preview below.
-    local favBtn = SB.Theme.CreateFlatButton(row, "Add Favourite", 112, 22)
+    -- "primary" here is just the sane initial look before RefreshFavButton
+    -- ever runs (always right after, on the very first populate) - the
+    -- real Add/Remove distinction lives entirely in RefreshFavButton's own
+    -- SetVariant call below.
+    local favBtn = SB.Theme.CreateFlatButton(row, "Add Favourite", 112, 22, "primary")
     favBtn:SetPoint("RIGHT", -8, 0)
     row.favBtn = favBtn
 
@@ -144,15 +148,23 @@ local function AcquireRow(index)
     return row
 end
 
--- Just the button label - called on every FAVOURITES_CHANGED while the
--- window is open (add/remove/replace, from this window or anywhere else
--- that touches Favourites) so a row always reflects the real, current
+-- Label AND styling - called on every FAVOURITES_CHANGED while the window
+-- is open (add/remove/replace, from this window or anywhere else that
+-- touches Favourites) so a row always reflects the real, current
 -- Favourite state without needing to reopen New Sounds. Deliberately NOT
 -- RefreshList() - New Sounds membership itself never depends on Favourite
--- status, only the button label does.
+-- status, only the button does. Explicit requirement (round 2): Add
+-- Favourite stays the prominent "primary" look, Remove Favourite becomes
+-- the dimmer "outline" one (no gold fill) - immediately readable as
+-- primary-action vs. already-added/secondary, purely via Theme.lua's own
+-- existing button variants (SetVariant), no bespoke styling here.
 local function RefreshFavButton(row)
     if not row.soundID then return end
-    row.favBtn.label:SetText(SB:IsFavourite(row.soundID) and "Remove Favourite" or "Add Favourite")
+    local isFav = SB:IsFavourite(row.soundID)
+    row.favBtn.label:SetText(isFav and "Remove Favourite" or "Add Favourite")
+    if row.favBtn.SetVariant then
+        row.favBtn:SetVariant(isFav and "outline" or "primary")
+    end
 end
 
 local function RefreshAllFavButtons()

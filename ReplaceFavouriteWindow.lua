@@ -4,15 +4,21 @@
 -- reporting the failure to chat (NewSoundsWindow.lua checks SB:
 -- GetFavouriteCount() itself before ever calling SB:AddFavourite, so that
 -- chat-only failure path is never reached from here). Shows all 20 slots
--- as a fixed 5x4 grid in slot order; picking one replaces ONLY that slot's
+-- as a fixed 4x5 grid in slot order; picking one replaces ONLY that slot's
 -- sound - never moves, hides, or reorders any other slot, and never
 -- touches that slot's own keybind (keyed by slot number in Keybindings.lua,
 -- entirely independent of which sound occupies it).
+--
+-- Explicit requirement (round 2): identify each cell by icon + sound name
+-- only - no slot number, no keybind, anywhere in the grid or its hover
+-- tooltip. `cell.slot` still exists as internal state (SB:ReplaceFavourite
+-- needs to know which slot a click targets), it's just never rendered.
 
 local ADDON_NAME, SB = ...
 
-local COLUMNS, ROWS = 5, 4
-local CELL_W, CELL_H = 74, 64
+local COLUMNS, ROWS = 4, 5
+local ICON_SIZE = 30
+local CELL_W, CELL_H = 90, 70
 local CELL_GAP = 8
 local CONTENT_MARGIN = 20
 local GRID_W = COLUMNS * CELL_W + (COLUMNS - 1) * CELL_GAP
@@ -30,39 +36,44 @@ local function BuildCell(index)
     cell:SetBackdropColor(0.01, 0.03, 0.07, 0.9)
     cell:SetBackdropBorderColor(unpack(SB.Theme.GOLD_DIM))
 
+    -- Icon visually dominant, sitting above the name - explicit requirement,
+    -- identify the sound by icon + name, never by slot number.
     local icon = cell:CreateTexture(nil, "ARTWORK")
-    icon:SetSize(28, 28)
-    icon:SetPoint("TOP", 0, -6)
+    icon:SetSize(ICON_SIZE, ICON_SIZE)
+    icon:SetPoint("TOP", 0, -7)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     cell.icon = icon
 
-    local slotLabel = cell:CreateFontString(nil, "OVERLAY")
-    slotLabel:SetFontObject(SB.Fonts.DisableSmall)
-    slotLabel:SetPoint("TOP", icon, "BOTTOM", 0, -2)
-    slotLabel:SetTextColor(unpack(SB.Theme.TEXT_DIM))
-    cell.slotLabel = slotLabel
-
-    local keyLabel = cell:CreateFontString(nil, "OVERLAY")
-    keyLabel:SetFontObject(SB.Fonts.DisableSmall)
-    keyLabel:SetPoint("TOP", slotLabel, "BOTTOM", 0, -1)
-    keyLabel:SetTextColor(unpack(SB.Theme.GOLD))
-    cell.keyLabel = keyLabel
+    -- Centered, up to 2 lines, constrained to the cell's own width so a
+    -- long name can never overlap a neighbouring cell - SetMaxLines(2)
+    -- (a real FontString API on every client this addon targets) both
+    -- caps the wrap at 2 lines AND appends the "..." ellipsis itself when
+    -- a name still doesn't fit, so no separate manual truncation is
+    -- needed. The mock harness stubs SetMaxLines as a no-op (nothing to
+    -- assert on wrap/ellipsis rendering itself), same treatment as its
+    -- existing SetWordWrap/SetJustifyH stubs.
+    local nameText = cell:CreateFontString(nil, "OVERLAY")
+    nameText:SetFontObject(SB.Fonts.HighlightSmall)
+    nameText:SetPoint("TOP", icon, "BOTTOM", 0, -4)
+    nameText:SetWidth(CELL_W - 8)
+    nameText:SetJustifyH("CENTER")
+    nameText:SetWordWrap(true)
+    if nameText.SetMaxLines then nameText:SetMaxLines(2) end
+    nameText:SetTextColor(unpack(SB.Theme.TEXT))
+    cell.nameText = nameText
 
     local highlight = cell:CreateTexture(nil, "HIGHLIGHT")
     highlight:SetAllPoints()
     highlight:SetColorTexture(SB.Theme.ACCENT[1], SB.Theme.ACCENT[2], SB.Theme.ACCENT[3], 0.16)
     highlight:SetBlendMode("ADD")
 
+    -- Full, untruncated name only - explicit requirement, no slot number
+    -- or keybind anywhere in the grid OR its hover state. Still useful
+    -- when the 2-line cap above has ellipsized a long name.
     cell:SetScript("OnEnter", function(self)
+        if not self.slotSoundID then return end
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
-        GameTooltip:SetText("Slot " .. self.slot, 1, 0.82, 0)
-        if self.slotSoundID then
-            GameTooltip:AddLine(SB:GetSoundDisplayName(self.slotSoundID), 0.86, 0.90, 0.96)
-        end
-        local key = SB:GetFavouriteHotkeyLabel(self.slot)
-        if key then
-            GameTooltip:AddLine("Keybind: " .. key, 0.86, 0.90, 0.96)
-        end
+        GameTooltip:SetText(SB:GetSoundDisplayName(self.slotSoundID), 1, 0.82, 0)
         GameTooltip:Show()
     end)
     cell:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -98,15 +109,14 @@ local function PopulateGrid()
         local soundID = favourites[slot]
         cell.slot = slot
         cell.slotSoundID = soundID
-        cell.slotLabel:SetText(tostring(slot))
         if soundID and SB.registry[soundID] then
             cell.icon:SetTexture(SB:GetSoundIcon(soundID))
             cell.icon:Show()
+            cell.nameText:SetText(SB:GetSoundDisplayName(soundID))
         else
             cell.icon:Hide()
+            cell.nameText:SetText("")
         end
-        local key = SB:GetFavouriteHotkeyLabel(slot)
-        cell.keyLabel:SetText(key or "")
     end
 end
 
