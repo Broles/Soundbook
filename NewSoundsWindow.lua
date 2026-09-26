@@ -88,10 +88,22 @@ local function AcquireRow(index)
     iconSlot:SetPoint("LEFT", 6, 0)
     row.icon = iconSlot.texture
 
+    -- Add/Remove Favourite - explicit requirement: far right of the row,
+    -- vertically centred, existing Soundbook button styling (no new visual
+    -- style), enough right padding to clear the row border. A real Button
+    -- sitting on top of `row` (itself a Button) intercepts its own clicks
+    -- before they ever reach row's own OnClick - the same "control sits on
+    -- top of a clickable row without triggering the row's own click"
+    -- pattern UI.lua's section-header Keybinds button already relies on -
+    -- so this can never accidentally trigger the SELF-only preview below.
+    local favBtn = SB.Theme.CreateFlatButton(row, "Add Favourite", 112, 22)
+    favBtn:SetPoint("RIGHT", -8, 0)
+    row.favBtn = favBtn
+
     local name = row:CreateFontString(nil, "OVERLAY")
     name:SetFontObject(SB.Fonts.HighlightSmall)
     name:SetPoint("LEFT", iconSlot, "RIGHT", 8, 0)
-    name:SetPoint("RIGHT", -8, 0)
+    name:SetPoint("RIGHT", favBtn, "LEFT", -8, 0)
     name:SetJustifyH("LEFT")
     name:SetWordWrap(false)
     name:SetTextColor(unpack(SB.Theme.TEXT))
@@ -134,8 +146,47 @@ local function AcquireRow(index)
     end)
     row:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+    -- Favourite action only - explicit requirement: never plays the sound,
+    -- regardless of what the surrounding row's own OnClick does. Reuses
+    -- the exact same Favourite functions the rest of the addon already
+    -- uses (SB:AddFavourite/RemoveFavourite - first-empty-slot placement,
+    -- no compaction, SB:Fire("FAVOURITES_CHANGED")) rather than touching
+    -- SB.db.favourites directly - no second Favourite state, no duplicated
+    -- slot logic. "Favourites are full" is detected BEFORE ever calling
+    -- SB:AddFavourite (which would otherwise only report that failure to
+    -- chat) so the Replace Favourite modal is the real, primary path for
+    -- that case, not a fallback after a chat message.
+    row.favBtn:SetScript("OnClick", function(self)
+        local r = self:GetParent()
+        if not r.soundID then return end
+        if SB:IsFavourite(r.soundID) then
+            SB:RemoveFavourite(r.soundID)
+        elseif SB:GetFavouriteCount() >= SB.MAX_FAVOURITES then
+            SB:ShowReplaceFavouriteWindow(r.soundID)
+        else
+            SB:AddFavourite(r.soundID)
+        end
+    end)
+
     rows[index] = row
     return row
+end
+
+-- Just the button label - called on every FAVOURITES_CHANGED while the
+-- window is open (add/remove/replace, from this window or anywhere else
+-- that touches Favourites) so a row always reflects the real, current
+-- Favourite state without needing to reopen New Sounds. Deliberately NOT
+-- RefreshList() - New Sounds membership itself never depends on Favourite
+-- status, only the button label does.
+local function RefreshFavButton(row)
+    if not row.soundID then return end
+    row.favBtn.label:SetText(SB:IsFavourite(row.soundID) and "Remove Favourite" or "Add Favourite")
+end
+
+local function RefreshAllFavButtons()
+    for _, row in ipairs(rows) do
+        if row.soundID then RefreshFavButton(row) end
+    end
 end
 
 local function RefreshList()
@@ -148,6 +199,7 @@ local function RefreshList()
             row.soundID = soundID
             row.icon:SetTexture(SB:GetSoundIcon(soundID))
             row.name:SetText(SB:GetSoundDisplayName(soundID))
+            RefreshFavButton(row)
             row:Show()
         else
             row.soundID = nil
@@ -158,6 +210,10 @@ local function RefreshList()
     -- scrollbar thumb in sync automatically - nothing further needed here.
     scrollWidget.content:SetSize(WINDOW_W - 40, math.max(1, #list) * (ROW_H + ROW_GAP))
 end
+
+SB:On("FAVOURITES_CHANGED", function()
+    if popup and popup:IsShown() then RefreshAllFavButtons() end
+end)
 
 local function BuildPopup()
     if popup then return popup end
