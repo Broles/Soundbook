@@ -1140,7 +1140,13 @@ function SB:ShowOnlineGreeting(playerName, relationshipLabel, soundID)
         end
         -- Sound failed to play (muted mid-flight, combat/encounter-gated,
         -- missing file, etc.) - fall through to the notification-only
-        -- toast instead of silently showing nothing.
+        -- toast instead of silently showing nothing. SB:PlaySound already
+        -- logged the specific reason via its own SB:Debug calls; this one
+        -- confirms it was specifically an Online Greeting that hit that
+        -- fallthrough, so "notification shown but no sound" is traceable
+        -- with Debug Mode on instead of a silent mystery.
+        SB:Debug("Online Greeting for %s: Greeting Sound '%s' failed to play, falling back to notification-only.",
+            tostring(playerName), tostring(soundID))
     end
     ShowGreetingNotification(playerName, relationshipLabel)
 end
