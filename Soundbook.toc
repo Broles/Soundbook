@@ -1,7 +1,7 @@
 ## Interface: 11509, 16001, 20506, 50504, 120100
 ## Title: Soundbook
 ## Notes: Arcane Codex soundboard for local sounds and multiplayer sharing.
-## Version: 3.0.3
+## Version: 3.0.4
 ## SavedVariables: SoundbookDB
 ## DefaultState: Enabled
 

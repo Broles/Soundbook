@@ -820,14 +820,34 @@ local function RenderPrimary()
 
     banner.soundbookSoundID = entry.soundID
     banner.slot.texture:SetTexture(SoundIcon(entry.soundID))
-    banner.nameText:SetText(SoundName(entry.soundID))
-    banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
 
-    -- Plain ASCII separator, not a Unicode middle dot - WoW's bundled
-    -- fonts don't reliably cover every codepoint (same reasoning as the
-    -- Library's section-header carets in UI.lua).
-    local color = SB.GetChannelColor(entry.channelLabel or "Self")
-    banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
+    -- Online Greeting entries (SB:ShowOnlineGreeting below) get their own
+    -- title/subtitle framing - explicit requirement: this must read as a
+    -- distinct Soundbook social event, never like an ordinary sound
+    -- trigger. Icon/progress-bar/ticker logic below is entirely shared
+    -- and unchanged: a real Greeting Sound has a real entry.duration (set
+    -- exactly like any other local play), so it gets the exact same
+    -- "normal playback progress behaviour" any other sound does; a
+    -- notification-only greeting has no duration at all, so the existing
+    -- ValidDuration(entry.duration) branch further down already hides the
+    -- bar correctly with no special-casing needed there.
+    local color
+    if entry.isGreeting then
+        local relationship = entry.channelLabel or "Guild"
+        color = SB.GetChannelColor(relationship)
+        banner.nameText:SetText(string.format("%s IS ONLINE", string.upper(entry.sender or "?")))
+        banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
+        -- Plain ASCII separator/colon, not a Unicode middle dot - WoW's
+        -- bundled fonts don't reliably cover every codepoint (same
+        -- reasoning as the Library's section-header carets in UI.lua).
+        local soundPart = entry.soundID and ("Greeting Sound: " .. SoundName(entry.soundID)) or "Soundbook"
+        banner.subText:SetText(string.format("%s |cff%s- %s|r", soundPart, color.hex, relationship))
+    else
+        banner.nameText:SetText(SoundName(entry.soundID))
+        banner.nameText:SetTextColor(unpack(V3.TEXT_PRIMARY))
+        color = SB.GetChannelColor(entry.channelLabel or "Self")
+        banner.subText:SetText(string.format("%s |cff%s- %s|r", entry.sender or "?", color.hex, entry.channelLabel or "Self"))
+    end
     -- Progress bar takes on the channel's own colour (green for Guild, etc.)
     -- instead of always gold - same SB.CHANNEL_COLOR semantics used
     -- everywhere else a channel is shown.
@@ -837,6 +857,10 @@ local function RenderPrimary()
     if queued > 0 then
         banner.timeText:SetText(string.format("+%d queued", queued))
     elseif ValidDuration(entry.duration) then
+        banner.timeText:SetText("")
+    elseif entry.isGreeting then
+        -- No real sound behind this one - a notification-only greeting
+        -- toast has nothing "playing" to claim.
         banner.timeText:SetText("")
     else
         banner.timeText:SetText("Playing")
@@ -969,7 +993,7 @@ local function LocalTargetToChannelLabel(target)
     return LOCAL_TARGET_LABEL[target] or "Self"
 end
 
-local function AddDisplay(soundID, sender, channelLabel)
+local function AddDisplay(soundID, sender, channelLabel, isGreeting)
     -- No Now Playing display at all while the HUD itself is hidden (a
     -- fresh install defaults to hidden - see Core.lua's "safer first start").
     if not icon or not icon:IsShown() then return end
@@ -992,6 +1016,12 @@ local function AddDisplay(soundID, sender, channelLabel)
         -- never soundID alone (would confuse overlapping instances of the
         -- same sound).
         instanceID = instanceID,
+        -- Online Greetings (SB:ShowOnlineGreeting below) - `sender`/
+        -- `channelLabel` are reused as-is (the player who came online /
+        -- their relationship), only this flag changes how RenderPrimary
+        -- renders the title+subtitle. Every existing caller omits this
+        -- argument, so nil/false for every ordinary sound, unchanged.
+        isGreeting = isGreeting or nil,
     })
     if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
     RenderPrimary()
@@ -1039,6 +1069,62 @@ local function RemoveDisplayByInstance(instanceID)
     else
         ScheduleCollapse()
     end
+end
+
+------------------------------------------------------------------------
+-- Online Greetings (Communication.lua's presence scan calls into this) -
+-- a known Soundbook Friend/Guild member's own offline -> online
+-- transition. Two shapes, both rendered through RenderPrimary's own
+-- entry.isGreeting branch above:
+--   - a real Greeting Sound: goes through the exact same activeDisplays/
+--     progress-ticker machinery any other local play uses (SB:PlaySound
+--     is called directly, not SB:TriggerSound, since this is never
+--     subject to Default Output routing - it is strictly local/Self by
+--     definition, matches the explicit "never broadcast, never generate
+--     delivery receipts" requirement).
+--   - no sound (Play Greeting Sound off, or no history for this player) -
+--     a short, self-dismissing notification-only toast with no real
+--     sound behind it at all.
+------------------------------------------------------------------------
+
+local greetingNotifyCounter = 0
+local GREETING_NOTIFY_SECONDS = 5
+
+local function ShowGreetingNotification(playerName, relationshipLabel)
+    if not icon or not icon:IsShown() then return end
+    BuildBanner()
+    greetingNotifyCounter = greetingNotifyCounter + 1
+    local instanceID = "greeting-notify-" .. greetingNotifyCounter
+    if collapseTimer then collapseTimer:Cancel(); collapseTimer = nil end
+    table.insert(activeDisplays, {
+        soundID = nil, sender = playerName, channelLabel = relationshipLabel,
+        startedAt = GetTime(), instanceID = instanceID, isGreeting = true,
+    })
+    RenderPrimary()
+    RefreshOverlapMarkers()
+    C_Timer.After(GREETING_NOTIFY_SECONDS, function()
+        RemoveDisplayByInstance(instanceID)
+    end)
+end
+
+-- `soundID` may be nil (notification-only). Called only when Online
+-- Greetings itself is on (Communication.lua's VerifyAndFireGreeting
+-- decides that) - this function's own job is purely how to SHOW it, not
+-- whether to.
+function SB:ShowOnlineGreeting(playerName, relationshipLabel, soundID)
+    if not (icon and icon:IsShown()) then return end
+    if soundID then
+        BuildBanner()
+        local played = SB:PlaySound(soundID, "local")
+        if played then
+            AddDisplay(soundID, playerName, relationshipLabel, true)
+            return
+        end
+        -- Sound failed to play (muted mid-flight, combat/encounter-gated,
+        -- missing file, etc.) - fall through to the notification-only
+        -- toast instead of silently showing nothing.
+    end
+    ShowGreetingNotification(playerName, relationshipLabel)
 end
 
 SB:On("PLAYBACK_PROGRESS_STARTED", function(state)

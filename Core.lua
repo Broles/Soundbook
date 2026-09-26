@@ -100,6 +100,13 @@ local CHANNEL_COLOR_BY_LABEL = {
     Party = SB.CHANNEL_COLOR.PARTY,
     Self = SB.CHANNEL_COLOR.SELF,
     All = TARGET_WHITE,
+    -- Online Greetings' own combined relationship label (Communication.lua's
+    -- presence scan) - reuses the Friends colour rather than inventing a
+    -- third one: Friends already outranks Guild everywhere else a player
+    -- can belong to both (SB.ComputeReachablePlayers' own Friends > Raid >
+    -- Guild priority), so this stays consistent with that established
+    -- precedence.
+    ["Friend + Guild"] = SB.CHANNEL_COLOR.FRIENDS,
 }
 function SB.GetChannelColor(label)
     return CHANNEL_COLOR_BY_LABEL[label] or TARGET_WHITE
@@ -527,6 +534,15 @@ local function GetDefaultDB()
         -- the menu only shows someone also currently online in a reachable
         -- group, so a stale entry just never surfaces.
         knownUsers = {},
+        -- [IdentityKey] = { [soundID] = { count, lastReceived } } - purely
+        -- local per-player received-sound tallies (Communication.lua's
+        -- BumpGreetingStat, hooked into the existing REMOTE_SOUND_PLAYED
+        -- event - so a muted/rejected/invalid incoming sound, which never
+        -- reaches that event, never counts). Powers Online Greetings' own
+        -- "Greeting Sound" selection (SB:GetGreetingSoundFor) - the sound a
+        -- given player has sent YOU most often - never the anonymous
+        -- community Analytics system.
+        greetingStats = {},
         categories = {
             ["Legacy"] = { name = SB.DEFAULT_CATEGORY_INFO["Legacy"].name, icon = SB.DEFAULT_CATEGORY_INFO["Legacy"].icon },
             ["German Memes"] = { name = SB.DEFAULT_CATEGORY_INFO["German Memes"].name, icon = SB.DEFAULT_CATEGORY_INFO["German Memes"].icon },
@@ -608,6 +624,18 @@ local function GetDefaultDB()
             -- Debug Mode on.
             notifyMutedAttempts = true,
             notifyFriendReceipts = true, -- who received/played sounds you sent
+            -- Online Greetings (Communication.lua's presence scan +
+            -- Announcer.lua's SB:ShowOnlineGreeting) - a known Soundbook
+            -- Friend/Guild member's own offline -> online transition.
+            -- Independent toggles on purpose: onlineGreetings controls the
+            -- notification itself (default ON - this is the discoverable,
+            -- low-cost half of the feature); playGreetingSound controls
+            -- whether their personal "Greeting Sound" (the sound they've
+            -- sent US most often, see SB:GetGreetingSoundFor) also plays
+            -- locally (default OFF - actual audio playback is the one a
+            -- player should opt INTO, not be surprised by).
+            onlineGreetings   = true,
+            playGreetingSound = false,
             -- Anonymous usage analytics (Analytics.lua, /sb analytics) - on
             -- by default, with a single switch to fully stop collecting
             -- and transmitting. Never stores/sends character names, GUIDs,

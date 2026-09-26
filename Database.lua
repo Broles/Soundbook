@@ -73,6 +73,13 @@ local function SanitizeDatabase(db, defaults)
     EnsureTable(db, "knownSoundIDs")
     EnsureTable(db, "soundDurations")
     EnsureTable(db, "newSoundHeardCounts")
+    -- Online Greetings' local per-player received-sound tallies (see
+    -- Core.lua's GetDefaultDB comment) - same lightweight
+    -- EnsureTable-only treatment as newSoundHeardCounts above; malformed
+    -- per-player/per-sound entries are skipped defensively at READ time
+    -- instead (SB:GetGreetingSoundFor/BumpGreetingStat), not sanitized
+    -- eagerly here.
+    EnsureTable(db, "greetingStats")
 
     -- The persisted "latest update batch" (SoundRegistry.lua's
     -- BackfillAddedAt/GetLatestSoundUpdateSoundIDs) - deliberately separate
